@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head><meta charset="UTF-8"><link rel="stylesheet" href="style.css"></head>
+<body class="{{THEME}}">
+  {{STATUSBAR}}
+  <div class="subtop">
+    <a href="act:backfunc" class="subback">返回</a>
+    <span class="subname">WiFi</span>
+  </div>
+
+  <div class="card">
+    <div class="title">WiFi 分享</div>
+    <table>
+      <tr><td class="kv-l">名称</td><td class="val">{{SSID}}</td></tr>
+      <tr><td class="kv-l">密码 <a href="act:revealkey" class="rev">{{KEYBTN}}</a></td><td class="val">{{KEY}}</td></tr>
+      <tr><td class="kv-l">加密</td><td class="val">{{ENC}}</td></tr>
+    </table>
+    <div class="row">
+      <span class="lab">WiFi 总开关<span class="st">{{WIFISTATE}}</span></span>
+      <span class="ctrl"><a href="act:wifi" class="sw {{WIFICLASS}}"><span class="kn"></span></a></span>
+    </div>
+    <div class="row">
+      <span class="lab">2.4G 频段<span class="st">{{WIFI24STATE}}</span></span>
+      <span class="ctrl"><a href="act:wifi24" class="sw {{WIFI24CLASS}}"><span class="kn"></span></a></span>
+    </div>
+    <div class="row">
+      <span class="lab">5G 频段<span class="st">{{WIFI5STATE}}</span></span>
+      <span class="ctrl"><a href="act:wifi5" class="sw {{WIFI5CLASS}}"><span class="kn"></span></a></span>
+    </div>
+    <div class="row">
+      <span class="lab">WiFi 节能模式<span class="st">{{PSMSTATE}}</span></span>
+      <span class="ctrl"><a href="act:psm" class="sw {{PSMCLASS}}"><span class="kn"></span></a></span>
+    </div>
+    <div class="row">
+      <span class="lab">NFC 碰一碰<span class="st">{{NFCSTATE}}</span></span>
+      <span class="ctrl"><a href="act:nfc" class="sw {{NFCCLASS}}"><span class="kn"></span></a></span>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="title">已连接设备 <span class="r muted">{{CLIENTS}} 台</span></div>
+    {{CLIENTLIST}}
+  </div>
+
+  <div class="card">
+    <div class="title">DHCP</div>
+    <table>
+      <tr><td class="kv-l">网关</td><td class="val">{{DHCP_IP}}</td></tr>
+      <tr><td class="kv-l">地址池</td><td class="val">{{DHCP_POOL}}</td></tr>
+      <tr><td class="kv-l">租期</td><td class="val">{{DHCP_LEASE}}</td></tr>
+    </table>
+  </div>
+
+  <div class="pgpad"></div>
+</body>
+</html>

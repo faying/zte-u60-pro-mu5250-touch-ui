@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>自定义页面示例</title>
+</head>
+<body>
+  <div class="card">
+    <div class="title">自定义页面示例</div>
+    <p class="func-note">把 HTML 文件放到 <span class="mono">ui/functions/</span>，更多功能页会自动新增入口。</p>
+  </div>
+
+  <div class="card">
+    <div class="title">支持格式</div>
+    <table>
+      <tr><td class="kv-l">文件名</td><td class="val">任意安全的 <span class="mono">*.html</span></td></tr>
+      <tr><td class="kv-l">入口名</td><td class="val">优先读取 <span class="mono">&lt;title&gt;</span></td></tr>
+      <tr><td class="kv-l">页面内容</td><td class="val">可写完整 HTML，也可只写片段</td></tr>
+      <tr><td class="kv-l">动态值</td><td class="val">支持现有 <span class="mono">{{TOKEN}}</span> 替换</td></tr>
+    </table>
+  </div>
+
+  <div class="card">
+    <div class="title">自动外壳尺寸</div>
+    <table>
+      <tr><td class="kv-l">屏幕</td><td class="val">320 x 480 px</td></tr>
+      <tr><td class="kv-l">状态栏</td><td class="val">顶部约 26 px，由 DevUI 自动绘制</td></tr>
+      <tr><td class="kv-l">返回栏</td><td class="val">42 px，高度固定，自动插入</td></tr>
+      <tr><td class="kv-l">内容区</td><td class="val">从返回栏下方开始，可上下滚动</td></tr>
+    </table>
+  </div>
+
+  <div class="card">
+    <div class="title">推荐写法</div>
+    <p class="func-note">优先复用 <span class="mono">card</span>、<span class="mono">title</span>、<span class="mono">row</span>、<span class="mono">kv-l</span>、<span class="mono">val</span> 这些现有样式。不要依赖 JavaScript、图片或 CSS Grid。</p>
+  </div>
+
+  <div class="card">
+    <div class="title">触控触发方式</div>
+    <table>
+      <tr><td class="kv-l">可点元素</td><td class="val">使用 <span class="mono">&lt;a href="act:..."&gt;</span></td></tr>
+      <tr><td class="kv-l">触发时机</td><td class="val">手指点击并松开后执行</td></tr>
+      <tr><td class="kv-l">点击范围</td><td class="val">按元素排版后的矩形区域识别</td></tr>
+      <tr><td class="kv-l">不要使用</td><td class="val">JS、onclick、button、form</td></tr>
+    </table>
+    <p class="func-note">整张卡可点时，把 <span class="mono">card</span> 写到 <span class="mono">&lt;a&gt;</span> 上；小按钮也必须是 <span class="mono">&lt;a&gt;</span>。</p>
+  </div>
+
+  <a href="act:theme" class="card lockcard">
+    <div class="lc-t">示例：切换深浅色</div>
+    <div class="lc-b">点击整张卡触发 <span class="mono">act:theme</span></div>
+  </a>
+
+  <div class="card">
+    <div class="title">常用 act 动作</div>
+    <table>
+      <tr><td class="kv-l">返回</td><td class="val"><span class="mono">act:backfunc</span></td></tr>
+      <tr><td class="kv-l">打开子页</td><td class="val"><span class="mono">act:sub:wifi.html</span></td></tr>
+      <tr><td class="kv-l">打开自定义页</td><td class="val"><span class="mono">act:func:example.html</span></td></tr>
+      <tr><td class="kv-l">信令设置</td><td class="val"><span class="mono">act:openmodal:sig</span></td></tr>
+      <tr><td class="kv-l">重新搜网</td><td class="val"><span class="mono">act:sigrescan</span></td></tr>
+    </table>
+    <div class="seg seg4">
+      <a href="act:backfunc" class="segc">返回</a>
+      <a href="act:sub:wifi.html" class="segc">WiFi</a>
+      <a href="act:sub:sms.html" class="segc">短信</a>
+      <a href="act:openmodal:sig" class="segc seg-on">信令</a>
+    </div>
+  </div>
+</body>
+</html>

@@ -1,0 +1,33 @@
+ZTE U60 Pro (MU5250) Touch UI
+
+Copyright (c) 2026 u60pro-devui contributors
+Copyright (c) 2026 Wei REN
+
+Licensed under the MIT License (see LICENSE).
+
+Sources
+-------
+- 33333s/u60pro-devui (MIT): https://github.com/33333s/u60pro-devui
+- Later changes by Wei REN (CHILL panel, on-screen eSIM switching page,
+  Tailscale status card), snapshot 4cb083e (2026-09-14).
+
+This repository starts from a cleaned snapshot of that work, not from its git
+history. Removed before publishing:
+- third_party/lvgl/, Makefile, lv_conf.h, src/main.c, src/ui.c, include/ui.h
+  (legacy LVGL renderer, unused by scripts/build.sh since v0.2.0)
+- ubus_list.txt (runtime dump of a real device)
+- scripts/remote-build.sh (tied to a private build machine)
+Private host names in comments and docs were replaced with placeholders.
+
+Third-party components
+----------------------
+- third_party/stb/stb_image.h: public domain / MIT (see the file header).
+- Build-time dependencies, not included: litehtml (BSD-3-Clause, docs/CHILL.md
+  uses tag v0.10) and FreeType (FreeType License or GPLv2). The statically
+  linked binary carries their licenses; ship their license texts with any
+  binary you distribute.
+
+Trademarks
+----------
+Not affiliated with, endorsed or sponsored by ZTE Corporation. "ZTE",
+"U60 Pro" and "MU5250" are used only to describe hardware compatibility.

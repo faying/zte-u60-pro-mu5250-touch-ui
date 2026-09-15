@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head><meta charset="UTF-8"><title>CHILL</title><meta name="description" content="CHILL Your Network"></head>
+<body>
+  <div class="card">
+    <table>
+      <tr><td class="kv-l">内核</td><td class="val">{{SC_CORE}}</td></tr>
+      <tr><td class="kv-l">模式</td><td class="val">{{SC_MODE}}</td></tr>
+      <tr><td class="kv-l">出口</td><td class="val sm">{{SC_CHAIN}}</td></tr>
+      <tr><td class="kv-l">速率</td><td class="val sm">{{SC_SPEED}}</td></tr>
+      <tr><td class="kv-l">流量</td><td class="val sm">{{SC_TRAFFIC}}</td></tr>
+      <tr><td class="kv-l">连接</td><td class="val sm">{{SC_CONNS}} · {{SC_CONNSPLIT}}</td></tr>
+    </table>
+  </div>
+
+  <div class="card">
+    <div class="title">模式</div>
+    <div class="sc-row">
+      <a href="act:scmode:rule" class="sc-btn {{SC_CLS_RULE}}">规则</a><a href="act:scmode:global" class="sc-btn {{SC_CLS_GLOBAL}}">全局</a><a href="act:scmode:direct" class="sc-btn {{SC_CLS_DIRECT}}">直连</a>
+    </div>
+    <div class="sc-row">
+      <a href="act:scdelay" class="sc-btn sc-w2 {{SC_DELAY_CLS}}">{{SC_DELAY_LBL}}</a><a href="act:screstart" class="sc-btn sc-w2 sc-warn {{SC_RESTART_CLS}}">{{SC_RESTART_LBL}}</a>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="sc-row"><a href="act:exitstock" class="sc-btn sc-full sc-warn">切回原厂界面</a></div>
+  </div>
+
+  <div class="card">
+    <div class="title">查看组 <span class="sc-hint">● = 流量正走这条</span></div>
+    <div class="sc-grps">{{SC_GROUPLIST}}</div>
+  </div>
+
+  <div class="card">
+    <div class="title">节点 · {{SC_GROUP}}</div>
+    {{SC_NODELIST}}
+  </div>
+</body>
+</html>
