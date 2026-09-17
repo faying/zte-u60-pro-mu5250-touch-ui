@@ -16,8 +16,17 @@
 #ifndef U60_CHILL_H
 #define U60_CHILL_H
 
-/* Poll the API if the cache has expired. Cheap to call on every render. */
-void chill_refresh(void);
+/*
+ * Poll the API if `active` and the cache has expired. Pass 0 when this screen
+ * doesn't need CHILL data (mirrors tailscale_poll()/esim_poll()) — the main
+ * loop is the only caller, gated on path_is_signal_home()/path_is_chill().
+ * Returns 1 if a fetch actually ran (caller should consider a re-render).
+ */
+int chill_poll(int active);
+
+/* Home-screen / lock-screen summary card. Pure formatter (no I/O), same
+ * pattern as tailscale_card_html(). locked=1 hides mode/node/speed. */
+const char *chill_card_html(int locked);
 
 /* Display values. All return a stable pointer valid until the next refresh. */
 const char *chill_core(void);      /* 运行中 / 已停止 */

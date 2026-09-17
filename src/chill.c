@@ -47,6 +47,7 @@ static char s_chain_raw[4][SC_NAME_MAX];  /* 链路上各跳的原名，用于�
 static int  s_chain_n;
 static long s_prev_dl, s_prev_ul, s_prev_t;
 static char s_conns[16];
+static int  s_conns_truncated;   /* 1 = /connections 被截断，连接数是下限不是准确值 */
 static int  s_core_running;
 
 static char s_nodes[SC_MAX_NODE][SC_NAME_MAX];      /* 显示用（已去 emoji） */
@@ -56,6 +57,7 @@ static int  s_node_count;
 
 static char s_listhtml[24576];
 static char s_grphtml[4096];
+static char s_card[1024];       /* 首页/锁屏 CHILL 卡片，见 chill_card_html() */
 
 #define SC_MAX_GRP 16
 static char s_grp_raw[SC_MAX_GRP][SC_NAME_MAX];   /* 原名，调 API 用 */
@@ -192,6 +194,11 @@ static size_t dechunk(char *body, size_t len)
  * 调用方注意：下一次调用会覆盖上一次的返回内容。要用同一份响应里的多个字段，
  * 必须在发下一个请求之前全部取完，不能一边解析一边发新请求。
  */
+/* 1 = 上一次 sc_http() 调用因为 SC_RESP_MAX 装不下而被截断（不是连接关闭/
+ * 超时正常结束）。目前只有 /connections 的调用方会看这个标志——那是唯一一个
+ * 大小随设备负载（活跃连接数）变化、有可能撑爆 256KB 缓冲区的接口。 */
+static int s_last_truncated;
+
 static char *sc_http(const char *method, const char *path, const char *body)
 {
     static char resp[SC_RESP_MAX];
@@ -217,9 +224,10 @@ static char *sc_http(const char *method, const char *path, const char *body)
                  s_secret[0] ? "Authorization: Bearer " : "", s_secret, s_secret[0] ? "\r\n" : "");
 
     if (write(fd, req, strlen(req)) < 0) { close(fd); return NULL; }
+    s_last_truncated = 0;
     for (;;) {
         ssize_t rd;
-        if (n + 1 >= sizeof resp) break;
+        if (n + 1 >= sizeof resp) { s_last_truncated = 1; break; }
         if (wait_ready(fd, 0, SC_IO_MS) <= 0) break;
         rd = read(fd, resp + n, sizeof resp - 1 - n);
         if (rd <= 0) break;
@@ -459,21 +467,39 @@ static void parse_groups(const char *j)
 static void delay_poll(void);
 static void delay_cancel(void);
 
-void chill_refresh(void)
+/*
+ * 只在调用方判定"这块屏幕当前用得到 CHILL 数据"时才真的发请求——首页卡片
+ * 和 CHILL 面板页都要，别的页面（Wi-Fi 设置、短信……）不需要。之前这里叫
+ * chill_refresh()，从 build_kv() 里无条件调用，等于每次渲染任何页面都会
+ * 触发一轮 /configs+/group+/connections+最多 3 跳 /proxies 请求（靠 2 秒
+ * 内部节流兜底，但节流窗口内只要有任何原因触发渲染——时钟跳字、Wi-Fi 客户端
+ * 变化、测速——就照样打一轮，跟看没看 CHILL 页面无关）。改成跟 tailscale_poll
+ * /esim_poll 一样接收 active，由主循环按 path_is_signal_home()/path_is_chill()
+ * 门控（2026-09-17 设计审查提的"无条件轮询"问题）。
+ *
+ * active=0 时把 s_last_ms 清零而不是什么都不做：这样下次页面变回可见、
+ * active 重新变 1 时会立刻发一轮新请求，而不是要等最多 2 秒的节流窗口才
+ * 刷新——避免"切回 CHILL 页先看一眼旧数据"的观感。
+ *
+ * 返回 1 = 这次真的发了请求（无论各子请求成功与否），调用方据此决定要不要
+ * 强制重绘；返回 0 = 什么都没做（不活跃，或者还在节流窗口内）。
+ */
+int chill_poll(int active)
 {
     char path[512], enc[384], *b;
     long t = now_ms();
 
     load_conf();
     delay_poll();                       /* 每次渲染都收一点，不受下面的节流影响 */
-    if (s_last_ms && t - s_last_ms < SC_TTL_MS) return;
+    if (!active) { s_last_ms = 0; return 0; }
+    if (s_last_ms && t - s_last_ms < SC_TTL_MS) return 0;
     s_last_ms = t;
 
     b = sc_http("GET", "/configs", NULL);
     if (!b) {
         s_online = 0;
         s_core_running = 0;
-        return;
+        return 1;
     }
     s_online = 1;
     s_core_running = 1;
@@ -502,7 +528,11 @@ void chill_refresh(void)
             }
             s_prev_dl = cdl; s_prev_ul = cul; s_prev_t = t;
         }
-        /* connections 是数组，数一下逗号级别的元素起始即可 */
+        /* connections 是数组，数一下逗号级别的元素起始即可。响应大小随设备
+         * 当时的活跃连接数变化，可能超过 sc_http() 的 256KB 静态缓冲区——
+         * 截断时这里数到的只是缓冲区装下的那部分，是下限不是准确值，加个
+         * "+" 提示而不是悄悄显示一个偏小的数字（2026-09-17 设计审查提的
+         * 已知问题）。 */
         {
             const char *p = strstr(b, "\"connections\"");
             int c = 0;
@@ -514,7 +544,8 @@ void chill_refresh(void)
                     else if (*q == ']' && depth == 0) break;
                 }
             }
-            snprintf(s_conns, sizeof s_conns, "%d", c);
+            s_conns_truncated = s_last_truncated;
+            snprintf(s_conns, sizeof s_conns, s_conns_truncated ? "%d+" : "%d", c);
             /* chains 的第一项是实际出口：DIRECT 即直连，其余都算走了代理 */
             s_conn_direct = s_conn_proxy = 0;
             for (const char *q = b; (q = strstr(q, "\"chains\":[")) != NULL; ) {
@@ -571,6 +602,7 @@ void chill_refresh(void)
             }
         }
     }
+    return 1;
 }
 
 const char *chill_core(void)    { return s_core_running ? "\xE8\xBF\x90\xE8\xA1\x8C\xE4\xB8\xAD" : "\xE5\xB7\xB2\xE5\x81\x9C\xE6\xAD\xA2"; }
@@ -594,6 +626,42 @@ const char *chill_mode(void)
     if (!strcmp(s_mode_raw, "global")) return "\xE5\x85\xA8\xE5\xB1\x80";
     if (!strcmp(s_mode_raw, "direct")) return "\xE7\x9B\xB4\xE8\xBF\x9E";
     return "-";
+}
+
+/*
+ * 首页/锁屏卡片，跟 tailscale_card_html() 是同一个模式：纯格式化，不发请求
+ * ——数据是不是新鲜由主循环里门控的 chill_poll() 决定，这里只管拼 HTML。
+ * 复用 .card/.q-good/.q-mid/.q-bad/.q-off/.ts-st/.kv-l/.val 这些已有样式，
+ * 不额外加 CSS。
+ *
+ * 锁屏（locked=1）只露运行状态，模式/节点/速率这些藏起来——跟 Tailscale
+ * 卡片同一个安全考虑：锁屏时是给别人看的，代理细节不该露。
+ */
+#define SC_CARD_APPEND(...) do { \
+        if (o < (int)sizeof s_card) { \
+            int w_ = snprintf(s_card + o, sizeof s_card - (size_t)o, __VA_ARGS__); \
+            if (w_ > 0) o += w_; \
+        } \
+    } while (0)
+
+const char *chill_card_html(int locked)
+{
+    int o = 0;
+    const char *cls = s_online ? "q-good" : "q-off";
+
+    SC_CARD_APPEND("<div class='card'><div class='title'>CHILL");
+    SC_CARD_APPEND("<span class='r ts-st %s'>%s</span></div>", cls, chill_core());
+    if (!s_online) { SC_CARD_APPEND("</div>"); return s_card; }
+    if (!locked) {
+        SC_CARD_APPEND("<table>");
+        SC_CARD_APPEND("<tr><td class='kv-l'>\xE6\xA8\xA1\xE5\xBC\x8F</td><td class='val'>%s</td></tr>", chill_mode());
+        if (s_node[0])
+            SC_CARD_APPEND("<tr><td class='kv-l'>\xE8\x8A\x82\xE7\x82\xB9</td><td class='val'>%s</td></tr>", s_node);
+        SC_CARD_APPEND("<tr><td class='kv-l'>\xE9\x80\x9F\xE7\x8E\x87</td><td class='val'>%s</td></tr>", chill_speed());
+        SC_CARD_APPEND("</table>");
+    }
+    SC_CARD_APPEND("</div>");
+    return s_card;
 }
 
 const char *chill_conn_split(void)

@@ -1151,6 +1151,13 @@ static int path_is_esim(const char *path)
     return !strcmp(base, "esim.html");
 }
 
+static int path_is_chill(const char *path)
+{
+    const char *base = strrchr(path, '/');
+    if (!base) base = path; else base++;
+    return !strcmp(base, "chill.html");
+}
+
 static int path_is_signal_detail(const char *path)
 {
     const char *base = strrchr(path, '/');
@@ -4795,8 +4802,10 @@ static int build_kv(struct kv *t, const char *path)
     t[i++] = (struct kv){ "LOCKCLASS", lock_enabled() ? "on" : "off" };
     t[i++] = (struct kv){ "LOCKSTATE", lock_enabled() ? "已开启" : "已关闭" };
 
-    /* ---- CHILL 面板（ShellCrash/mihomo，直连本机 clash API，见 chill.c）---- */
-    chill_refresh();
+    /* ---- CHILL 面板（ShellCrash/mihomo，直连本机 clash API，见 chill.c）----
+     * 这里只读缓存，请求在主循环的 chill_poll 里发（门控在首页/CHILL 页才
+     * 轮询，见 2026-09-17 设计审查关于"无条件轮询"的记录）。 */
+    t[i++] = (struct kv){ "CHILLCARD", chill_card_html(g_lock_state == 1) };
     t[i++] = (struct kv){ "SC_CORE",    chill_core() };
     t[i++] = (struct kv){ "SC_MODE",    chill_mode() };
     t[i++] = (struct kv){ "SC_GROUP",   chill_group() };
@@ -6685,6 +6694,17 @@ action_done:
         if (!dragging && !scroll_inertia) {
             int es_on = !g_lock_state && !menu && backlight_is_on() && path_is_esim(CUR_PATH);
             if (esim_poll(es_on) && es_on) need_render = 1;
+        }
+
+        /* CHILL 首页卡片 + 面板页：首页（含锁屏预览）或 CHILL 页亮着时才读
+         * clash API（chill_poll 自己节流）。之前是从 build_kv 无条件调用，
+         * 每次渲染任何页面都会打一轮 /configs+/group+/connections+最多 3 跳
+         * /proxies 请求，跟看没看 CHILL 相关页面无关——2026-09-17 设计审查
+         * 发现的问题，改成跟 Tailscale/eSIM 一样的门控写法。 */
+        if (!dragging && !scroll_inertia) {
+            int ch_on = !menu && backlight_is_on() &&
+                        (path_is_signal_home(CUR_PATH) || path_is_chill(CUR_PATH));
+            if (chill_poll(ch_on) && ch_on) need_render = 1;
         }
 
         if (need_render && backlight_is_on()) {
