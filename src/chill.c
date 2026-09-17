@@ -135,6 +135,56 @@ static int sc_connect(void)
     return fd;
 }
 
+/* Case-insensitive substring search — header names are case-insensitive per
+ * RFC 7230 and mihomo's Go http server doesn't normalize casing for us. Not
+ * using strcasestr(): musl has it, but it's a nonstandard extension and the
+ * rest of this file (json.c) already avoids depending on libc parsing help. */
+static const char *ci_find(const char *hay, const char *hay_end, const char *needle)
+{
+    size_t nl = strlen(needle);
+    for (const char *h = hay; h + nl <= hay_end; h++) {
+        size_t i = 0;
+        for (; i < nl; i++) {
+            char a = h[i], b = needle[i];
+            if (a >= 'A' && a <= 'Z') a += 'a' - 'A';
+            if (b >= 'A' && b <= 'Z') b += 'a' - 'A';
+            if (a != b) break;
+        }
+        if (i == nl) return h;
+    }
+    return NULL;
+}
+
+/*
+ * Decode an HTTP/1.1 chunked body IN PLACE — write position never runs ahead
+ * of read position, so overwriting as we go is always safe. Stops at the
+ * terminating 0-size chunk (trailer headers after it, if any, are ignored).
+ * Any malformed chunk just stops decoding where we are rather than looping
+ * or reading out of bounds — a truncated list beats a crash.
+ */
+static size_t dechunk(char *body, size_t len)
+{
+    size_t r = 0, w = 0;
+    for (;;) {
+        char *end;
+        long sz;
+        if (r >= len) break;
+        sz = strtol(body + r, &end, 16);
+        if (end == body + r || sz < 0) break;              /* not a hex size */
+        r = (size_t)(end - body);
+        if (r + 1 >= len || body[r] != '\r' || body[r + 1] != '\n') break;
+        r += 2;
+        if (sz == 0) break;                                 /* last chunk */
+        if (r + (size_t)sz > len) sz = (long)(len - r);     /* short read, use what we have */
+        memmove(body + w, body + r, (size_t)sz);
+        w += (size_t)sz;
+        r += (size_t)sz;
+        if (r + 1 < len && body[r] == '\r' && body[r + 1] == '\n') r += 2;
+    }
+    body[w] = 0;
+    return w;
+}
+
 /*
  * One request. `body` NULL => GET. Returns the response body in a STATIC buffer,
  * or NULL.
@@ -179,7 +229,21 @@ static char *sc_http(const char *method, const char *path, const char *body)
     resp[n] = 0;
     if (strncmp(resp, "HTTP/1.", 7)) return NULL;
     p = strstr(resp, "\r\n\r\n");
-    return p ? p + 4 : NULL;
+    if (!p) return NULL;
+    p += 4;
+    /*
+     * mihomo streams some endpoints (/configs, /group — confirmed via
+     * `curl -i`) as Transfer-Encoding: chunked instead of Content-Length.
+     * Handing that straight to json_get() mixes hex chunk-size/CRLF framing
+     * into the JSON and silently breaks parsing on exactly those endpoints
+     * (2026-09-17, found chasing an empty "查看组" list on-device).
+     */
+    {
+        const char *te = ci_find(resp, p - 4, "transfer-encoding:");
+        if (te && ci_find(te, p - 4, "chunked"))
+            dechunk(p, n - (size_t)(p - resp));
+    }
+    return p;
 }
 
 /* 组名含空格和 emoji，必须百分号编码才能进请求行 */
