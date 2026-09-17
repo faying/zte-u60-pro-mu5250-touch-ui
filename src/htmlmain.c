@@ -6276,8 +6276,9 @@ int main(void)
                                 g_toast[0] = 0;
                             } else {
                                 snprintf(g_toast, sizeof g_toast, "%s",
-                                         r == ESIM_SEL_STARTED ? "开始切换，网络会中断" :
-                                         r == ESIM_SEL_BUSY    ? "有操作正在进行" : "切换失败");
+                                         r == ESIM_SEL_STARTED  ? "开始切换，网络会中断" :
+                                         r == ESIM_SEL_BUSY     ? "有操作正在进行" :
+                                         r == ESIM_SEL_COOLDOWN ? "卡片冷却中，见下方状态" : "切换失败");
                                 g_toast_until = now + 2500;
                             }
                             invalidate_render_html_cache();

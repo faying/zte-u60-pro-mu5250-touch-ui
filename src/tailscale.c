@@ -140,7 +140,7 @@ static void short_name(const char *obj, char *out, size_t cap)
     if (json_get(obj, "DNSName", dns, sizeof dns) && dns[0]) {
         char *dot = strchr(dns, '.');
         if (dot) *dot = 0;
-        snprintf(out, cap, "%s", dns);
+        snprintf(out, cap, "%.*s", (int)cap - 1, dns);
     } else if (!json_get(obj, "HostName", out, cap)) {
         out[0] = 0;
     }
@@ -260,6 +260,25 @@ int tailscale_poll(int active)
     if (h == s_sig) return 0;
     s_sig = h;
     return 1;
+}
+
+void tailscale_get_status(tailscale_status_t *out)
+{
+    out->available = s_sock != NULL;
+    out->ok = s_ok;
+    snprintf(out->state, sizeof out->state, "%s", s_state);
+    out->self_online = s_self_online;
+    snprintf(out->name, sizeof out->name, "%s", s_name);
+    snprintf(out->ip, sizeof out->ip, "%s", s_ip);
+    snprintf(out->relay, sizeof out->relay, "%s", s_relay);
+    snprintf(out->routes, sizeof out->routes, "%s", s_routes);
+    snprintf(out->exit_node, sizeof out->exit_node, "%s", s_exit);
+    out->exit_online = s_exit_online;
+    snprintf(out->health, sizeof out->health, "%s", s_health);
+    out->peers = s_peers;
+    out->peers_online = s_peers_online;
+    out->active = s_active;
+    out->direct = s_direct;
 }
 
 /* ---- 卡片 ---- */

@@ -114,7 +114,7 @@ static void load_conf(void)
             char *nl = strpbrk(line, "\r\n");
             if (nl) *nl = 0;
             if (!strncmp(line, "port=", 5))          s_port = atoi(line + 5);
-            else if (!strncmp(line, "password=", 9)) snprintf(s_pass, sizeof s_pass, "%s", line + 9);
+            else if (!strncmp(line, "password=", 9)) snprintf(s_pass, sizeof s_pass, "%.*s", (int)sizeof s_pass - 1, line + 9);
         }
         fclose(fp);
     }
@@ -541,6 +541,29 @@ const char *esim_list_html(void)
     return s_listhtml;
 }
 
+int esim_profile_count(void) { return s_count; }
+
+int esim_locked(void)
+{
+    return s_busy || s_my_job || s_offline;
+}
+
+void esim_get_profile(int index, esim_profile_t *out)
+{
+    long t = now_ms();
+    int armed_live = s_arm_iccid[0] && t - s_arm_ms <= ES_ARM_MS;
+    const es_prof_t *e;
+
+    memset(out, 0, sizeof *out);
+    if (index < 0 || index >= s_count) return;
+    e = &s_prof[index];
+    snprintf(out->name, sizeof out->name, "%s", e->name);
+    snprintf(out->sub, sizeof out->sub, "%s", e->sub);
+    out->enabled = e->enabled;
+    out->going = s_my_job && !strcmp(s_target_iccid, e->iccid);
+    out->armed = armed_live && !strcmp(s_arm_iccid, e->iccid);
+}
+
 /* ---- 切换 ---- */
 
 int esim_select(int index)
@@ -570,6 +593,29 @@ int esim_select(int index)
     snprintf(js, sizeof js, "{\"iccid\":\"%s\"}", e->iccid);
     code = es_api("POST", "/api/esim/switch", js, &b);
     if (code == 409) { s_busy = 1; return ESIM_SEL_BUSY; }
+    if (code == 429) {
+        /* agent 的冷却保护（catBusy 卡片，見 zte-agent esim.rs switch()）。
+         * 错误文本形如 "...wait 480s and retry"，抠出秒数拼中文提示；
+         * 抠不出来就给个不带数字的通用提示。这个格式跟 agent 耦合，
+         * agent 那边措辞变了这里要跟着改。 */
+        char err[128] = {0};
+        const char *w;
+        int wait = 0;
+        if (b) json_str(b, "error", err, sizeof err);
+        w = strstr(err, "wait ");
+        if (w) wait = atoi(w + 5);
+        if (wait > 0)
+            snprintf(s_msg, sizeof s_msg,
+                     "\xE5\x8D\xA1\xE5\x88\x9A\xE5\x88\x87\xE6\x8D\xA2\xE8\xBF\x87\xEF\xBC\x8C"
+                     "\xE8\xBF\x98\xE8\xA6\x81\xE7\xAD\x89 %d \xE7\xA7\x92\xE5\x86\x8D\xE8\xAF\x95",
+                     wait);   /* 卡刚切换过，还要等 N 秒再试 */
+        else
+            snprintf(s_msg, sizeof s_msg,
+                     "\xE5\x8D\xA1\xE5\x88\x9A\xE5\x88\x87\xE6\x8D\xA2\xE8\xBF\x87\xEF\xBC\x8C"
+                     "\xE7\xA8\x8D\xE5\x90\x8E\xE5\x86\x8D\xE8\xAF\x95");   /* 卡刚切换过，稍后再试 */
+        s_msg_ms = now_ms();
+        return ESIM_SEL_COOLDOWN;
+    }
     if (code != 200 || !b || !json_get(b, "data", data, sizeof data) ||
         (s_my_job = json_get_int(data, "job_id", 0)) <= 0) {
         s_my_job = 0;

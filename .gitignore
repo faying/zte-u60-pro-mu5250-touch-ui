@@ -1,8 +1,11 @@
 # Build artifacts (binaries are published as GitHub Releases, not committed)
 *.o
 *.a
+*.stripped
 /u60pro-devui
 /u60pro-devui.stripped
+/u60pro-devui.*
+/corner-wake
 /u60pro-devui-aarch64
 /u60pro-devui.sse
 /html-poc

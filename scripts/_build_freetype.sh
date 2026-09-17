@@ -30,7 +30,7 @@ FT_USE_MODULE( FT_Renderer_Class, ft_smooth_renderer_class )
 EOF
 
 SRCS="base/ftbase base/ftsystem base/ftinit base/ftdebug base/ftbbox \
-      base/ftbitmap base/ftglyph base/ftmm cache/ftcache autofit/autofit \
+      base/ftbitmap base/ftglyph base/ftmm base/ftstroke cache/ftcache autofit/autofit \
       truetype/truetype cff/cff psaux/psaux psnames/psnames \
       pshinter/pshinter sfnt/sfnt smooth/smooth gzip/ftgzip"
 

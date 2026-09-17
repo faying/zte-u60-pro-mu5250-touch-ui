@@ -1,0 +1,31 @@
+# Cross-compile environment for u60pro-devui (aarch64 musl, no GPU, static binary).
+# 工具链是 x86-64 Linux 二进制，本机若是 arm64 macOS/Docker Desktop 需要跑
+# linux/amd64 平台的模拟层，速度会慢一些但可用：
+#
+#   docker build --platform linux/amd64 -t u60-devui-build -f Dockerfile.build .
+#   docker run --rm --platform linux/amd64 -v "$(pwd)":/src -w /src u60-devui-build bash
+#
+# 工具链版本与来源见 scripts/_setup_toolchain.sh；FreeType 版本先钉在
+# VER-2-13-3（对应设备原厂 /usr/lib/libfreetype.so.6.13.x 系列，未做逐版本
+# 兼容性验证，属于阶段零工具链固化的一部分，后续可调整）。
+FROM --platform=linux/amd64 debian:12-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl ca-certificates xz-utils git make \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /opt
+
+# Bootlin aarch64 musl 工具链（x86-64 Linux host，与本仓库 scripts/_setup_toolchain.sh 同一份）
+RUN curl -fL --retry 30 --retry-all-errors --retry-delay 5 --connect-timeout 20 \
+      -o toolchain.tar.xz \
+      https://toolchains.bootlin.com/downloads/releases/toolchains/aarch64/tarballs/aarch64--musl--stable-2025.08-1.tar.xz \
+    && tar xf toolchain.tar.xz \
+    && rm toolchain.tar.xz
+
+ENV PATH="/opt/aarch64--musl--stable-2025.08-1/bin:${PATH}"
+
+# FreeType 源码（静态编译进最终二进制，见 scripts/_build_freetype.sh）
+RUN git clone --depth 1 --branch VER-2-13-3 https://gitlab.freedesktop.org/freetype/freetype.git /opt/freetype
+
+WORKDIR /src

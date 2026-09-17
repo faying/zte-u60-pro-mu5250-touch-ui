@@ -20,4 +20,24 @@ int tailscale_poll(int active);
 /* 整张卡片的 HTML；没装 tailscaled 时返回 ""。locked = 锁屏预览，只露状态和在线数。 */
 const char *tailscale_card_html(int locked);
 
+/* Raw fields behind the HTML card, for renderers that bind widgets directly
+ * instead of parsing markup (the LVGL path). Mirrors tailscale_poll()'s
+ * internal state 1:1 — call after tailscale_poll() to read the latest data. */
+typedef struct {
+    int  available;      /* tailscaled socket found on this device */
+    int  ok;              /* last poll got a response */
+    char state[24];       /* BackendState: Running/Starting/NeedsLogin/... */
+    int  self_online;
+    char name[64];
+    char ip[48];
+    char relay[32];
+    char routes[160];
+    char exit_node[64];
+    int  exit_online;
+    char health[160];
+    int  peers, peers_online, active, direct;
+} tailscale_status_t;
+
+void tailscale_get_status(tailscale_status_t *out);
+
 #endif /* U60_TAILSCALE_H */

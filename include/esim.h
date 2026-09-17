@@ -33,8 +33,29 @@ const char *esim_list_html(void);   /* 生成的 profile 列表（act:esim:N） 
 #define ESIM_SEL_STARTED  1
 #define ESIM_SEL_CURRENT  2         /* 点的就是正在用的 */
 #define ESIM_SEL_BUSY     3         /* agent 上已有操作在跑 */
+#define ESIM_SEL_COOLDOWN 4         /* 卡片冷却中（agent 429），esim_state() 有具体等待时间 */
 
 /* 点了第 index 个 profile。两段式确认，返回 ESIM_SEL_*。 */
 int esim_select(int index);
+
+/* Raw list access for renderers that build native widgets instead of parsing
+ * esim_list_html()'s markup (the LVGL path). */
+int esim_profile_count(void);
+
+typedef struct {
+    char name[96];
+    char sub[192];
+    int  enabled;   /* this is the currently-active profile */
+    int  armed;     /* first tap landed on this one; a second tap within the
+                      * confirm window switches to it */
+    int  going;     /* a switch to this profile is in flight */
+} esim_profile_t;
+
+void esim_get_profile(int index, esim_profile_t *out);
+
+/* True while the list is display-only (a switch is running on this device or
+ * another client, or the agent isn't responding) — mirrors esim_list_html()'s
+ * "ro" vs clickable distinction. */
+int esim_locked(void);
 
 #endif /* U60_ESIM_H */

@@ -461,6 +461,25 @@ body.dark  .sthint.bad { background: #2a1818; color: #ffb6ae; border: 1px solid 
 body.light .sthint.bad { background: #fff0ee; color: #b6362d; border: 1px solid #f0c0ba; }
 .mono { font-family: monospace; font-size: 11px; }
 
+/* ---- CHILL 状态色（决定 2A / 6A）----
+   深浅主题各配独立色值，不是同一色两档亮度：要同时通过 body.dark(#15161a)/
+   .card深(#23262c) 与 body.light(#eceef1)/.card浅(#ffffff) 四种背景下的
+   WCAG ≥4.5:1，深浅两端对亮度的要求方向相反，同一色相里很难有一个值两头都过——
+   代码库里 .ststat.run/.done/.fail 已经是这个「深浅主题各用一套色值」的写法，这里沿用。
+   下列色值经脚本按 WCAG 相对亮度公式搜索得出，四背景实测（非目测）：
+     .warn 深 #c18215：页5.57:1 卡4.67:1；.warn 浅 #8e5e0b：页4.81:1 卡5.59:1
+     .bad  深 #ed645a：页5.66:1 卡4.74:1；.bad  浅 #d01e11：页4.66:1 卡5.42:1
+   （核对时发现既有 .ok #5ec85e 在浅色主题下只有 1.83–2.12:1，远不达标——
+   这是已存在的问题，不在本次改动范围内，需要另行处理，改它会影响其他已用到
+   .ok 的页面，此处不动。）
+   不用 :before 注入符号：2A 状态表的触屏文案本身已经把符号写进文字内容
+   （如「▲ 已暂停 · 设备过热 51℃」），CSS 再注入一次会变成重复符号。
+   符号是内容的责任，这里只负责颜色。 */
+body.dark  .warn { color: #c18215; }
+body.light .warn { color: #8e5e0b; }
+body.dark  .bad  { color: #ed645a; }
+body.light .bad  { color: #d01e11; }
+
 /* ---- CHILL 面板 ---- */
 .sc-row { margin: 6px 0 2px 0; font-size: 0; }
 .sc-btn { display: inline-block; width: 32%; margin-right: 2%; padding: 10px 0;
