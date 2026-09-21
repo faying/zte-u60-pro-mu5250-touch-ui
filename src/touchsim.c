@@ -123,6 +123,7 @@ int main(int argc, char **argv)
     if (argc < 3) {
         fprintf(stderr, "Usage: touchsim <dev|auto> tap <x> <y>\n");
         fprintf(stderr, "       touchsim <dev|auto> swipe <x1> <y1> <x2> <y2> [dur_ms]\n");
+        fprintf(stderr, "       touchsim /dev/input/event0 key <code> [hold_ms]   (power = 116)\n");
         return 1;
     }
 
@@ -146,6 +147,22 @@ int main(int argc, char **argv)
         int x = atoi(argv[3]), y = atoi(argv[4]);
         printf("tap %d,%d on %s\n", x, y, dev);
         do_tap(fd, x, y);
+    } else if (!strcmp(argv[2], "key") && argc >= 4) {
+        /* Press a key on an evdev node, e.g. power (KEY_POWER 116) on
+         * /dev/input/event0. Needed because the UI only lights the panel
+         * from the power key: with 自动息屏 set to 常亮 the backlight is
+         * never touched by the UI at all, so a UI started while the screen
+         * happens to be dark stays dark — and the Tailscale/eSIM pollers,
+         * which gate on backlight_is_on(), then never run and screenshot
+         * as empty cards. Long-press (>=800ms) opens the power menu. */
+        int code = atoi(argv[3]);
+        int hold = argc > 4 ? atoi(argv[4]) : 60;
+        printf("key %d (%dms) on %s\n", code, hold, dev);
+        send_event(fd, EV_KEY, code, 1);
+        send_event(fd, EV_SYN, SYN_REPORT, 0);
+        usleep(hold * 1000);
+        send_event(fd, EV_KEY, code, 0);
+        send_event(fd, EV_SYN, SYN_REPORT, 0);
     } else if (!strcmp(argv[2], "swipe") && argc >= 7) {
         int x1 = atoi(argv[3]), y1 = atoi(argv[4]);
         int x2 = atoi(argv[5]), y2 = atoi(argv[6]);

@@ -711,6 +711,34 @@ int chill_group_selectable(void)
     return !strcmp(s_grp_type[s_grp_idx], "Selector");
 }
 
+int chill_group_count(void) { return s_grp_count; }
+
+void chill_get_group(int i, chill_group_info_t *out)
+{
+    if (!out) return;
+    out->name[0] = 0;
+    out->selected = 0;
+    out->auto_pick = 0;
+    if (i < 0 || i >= s_grp_count) return;
+    snprintf(out->name, sizeof out->name, "%s", s_grp_disp[i]);
+    out->selected = (i == s_grp_idx);
+    out->auto_pick = strcmp(s_grp_type[i], "Selector") != 0;
+}
+
+int chill_node_count(void) { return s_node_count; }
+
+void chill_get_node(int i, chill_node_info_t *out)
+{
+    if (!out) return;
+    out->name[0] = 0;
+    out->delay = -1;
+    out->selected = 0;
+    if (i < 0 || i >= s_node_count) return;
+    snprintf(out->name, sizeof out->name, "%s", s_nodes[i]);
+    out->delay = s_node_delay[i];
+    out->selected = !strcmp(s_nodes[i], s_node);
+}
+
 const char *chill_nodelist_html(void)
 {
     int o = 0;

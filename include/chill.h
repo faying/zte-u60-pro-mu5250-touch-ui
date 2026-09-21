@@ -46,8 +46,21 @@ const char *chill_grouplist_html(void);  /* 组切换按钮 */
 int         chill_select_group(int index);
 int         chill_group_selectable(void);/* URLTest/Fallback 组不可手选 */
 
+/* Same group list, as data, for the LVGL path — mirrors chill_node_info_t.
+ * auto_pick: 1 = URLTest/Fallback（内核自动挑，不可手选节点，仍可切换查看）。 */
+typedef struct { char name[64]; int selected; int auto_pick; } chill_group_info_t;
+int  chill_group_count(void);
+void chill_get_group(int i, chill_group_info_t *out);
+
 /* Generated <a href="act:scnode:N"> list for the node picker page. */
 const char *chill_nodelist_html(void);
+
+/* Same node list, as data, for renderers that bind widgets instead of parsing
+ * markup (the LVGL path) — mirrors tailscale_get_status()'s pattern.
+ * delay: >0 = milliseconds, 0 = timed out, -1 = not measured yet. */
+typedef struct { char name[64]; int delay; int selected; } chill_node_info_t;
+int  chill_node_count(void);
+void chill_get_node(int i, chill_node_info_t *out);
 
 /* Controls. Each returns 1 on success and forces the next refresh. */
 int chill_set_mode(const char *mode);   /* rule|global|direct */

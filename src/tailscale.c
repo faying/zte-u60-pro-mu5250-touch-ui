@@ -165,6 +165,18 @@ static void join_strings(const char *arr, const char *sep, int max, char *out, s
     }
 }
 
+static tailscale_peer_t s_peer_list[TS_PEER_MAX];
+static int s_peer_list_n;
+
+int tailscale_peer_count(void) { return s_peer_list_n; }
+
+void tailscale_get_peer(int i, tailscale_peer_t *out)
+{
+    if (!out) return;
+    if (i < 0 || i >= s_peer_list_n) { memset(out, 0, sizeof *out); return; }
+    *out = s_peer_list[i];
+}
+
 static void parse_status(char *b)
 {
     static char self[16384], peer[TS_RESP_MAX];
@@ -189,6 +201,7 @@ static void parse_status(char *b)
      * 所以逐个对象临时截断成独立字符串再取字段，否则会取到下一台设备上去。
      */
     s_peers = s_peers_online = s_active = s_direct = 0;
+    s_peer_list_n = 0;
     s_exit[0] = 0;
     s_exit_online = 0;
     if (json_get(b, "Peer", peer, sizeof peer) && peer[0] == '{') {
@@ -199,11 +212,27 @@ static void parse_status(char *b)
             save = e[1];
             e[1] = 0;
             s_peers++;
-            if (json_true(p, "Online")) s_peers_online++;
-            if (json_true(p, "Active")) {
+            int p_online = json_true(p, "Online");
+            int p_active = json_true(p, "Active");
+            int p_direct = 0;
+            if (p_online) s_peers_online++;
+            if (p_active) {
                 s_active++;
                 /* CurAddr 非空 = 打洞直连；空 = 走 DERP 中继 */
-                if (json_get(p, "CurAddr", cur, sizeof cur) && cur[0]) s_direct++;
+                if (json_get(p, "CurAddr", cur, sizeof cur) && cur[0]) { s_direct++; p_direct = 1; }
+            }
+            if (s_peer_list_n < TS_PEER_MAX) {
+                tailscale_peer_t *pe = &s_peer_list[s_peer_list_n];
+                char ips[256];
+                memset(pe, 0, sizeof *pe);
+                short_name(p, pe->name, sizeof pe->name);
+                if (json_get(p, "TailscaleIPs", ips, sizeof ips))
+                    join_strings(ips, "", 1, pe->ip, sizeof pe->ip);
+                pe->online = p_online;
+                pe->active = p_active;
+                pe->direct = p_direct;
+                pe->exit_node = json_true(p, "ExitNode");
+                s_peer_list_n++;
             }
             if (json_true(p, "ExitNode")) {
                 short_name(p, s_exit, sizeof s_exit);

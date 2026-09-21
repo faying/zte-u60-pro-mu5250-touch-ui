@@ -6,6 +6,7 @@
 /u60pro-devui.stripped
 /u60pro-devui.*
 /corner-wake
+/drm-owner
 /u60pro-devui-aarch64
 /u60pro-devui.sse
 /html-poc
@@ -64,3 +65,4 @@ drm_text
 /docs/WORKFLOW-LOCAL.md
 /docs/WORKFLOW-LOCAL-U60.md
 /docs/WORKFLOW-PRIVATE.md
+/.review-shots/

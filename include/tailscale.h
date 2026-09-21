@@ -40,4 +40,17 @@ typedef struct {
 
 void tailscale_get_status(tailscale_status_t *out);
 
+/* Per-peer detail for the Tailscale subpage. The counters above are derived
+ * from the same walk over the LocalAPI "Peer" map; this keeps the first
+ * TS_PEER_MAX entries so a renderer can list them instead of just counting.
+ * direct: Active with a CurAddr (hole-punched) — otherwise it is relayed. */
+#define TS_PEER_MAX 12
+typedef struct {
+    char name[40];
+    char ip[24];
+    int  online, active, direct, exit_node;
+} tailscale_peer_t;
+int  tailscale_peer_count(void);
+void tailscale_get_peer(int i, tailscale_peer_t *out);
+
 #endif /* U60_TAILSCALE_H */

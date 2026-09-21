@@ -4,7 +4,8 @@
 
 这份文档教你从零写一套自己的界面。
 
-> **设计上的唯一基准是工作区根目录的 `DESIGN.md`**（决定 5A，`/plan-design-review` 2026-09-16）。
+> **设计上的唯一基准是 manager 仓库的 `docs/DESIGN.md`**（决定 5A，`/plan-design-review` 2026-09-16；
+> 本地路径 `source/manager/docs/DESIGN.md`，工作区根目录的 `DESIGN.md` 只是指针）。
 > 本文定位为**实现细节**：litehtml 怎么写、有哪些坑、二进制怎么加载页面。
 > 信息层级、状态语义与配色以 `DESIGN.md` 为准，两边冲突时听它的。
 > 不要在这里重复写层级或状态颜色——三份文档各写一套互相漂移，正是 5A 要消除的问题。
