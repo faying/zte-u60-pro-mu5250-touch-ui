@@ -1,8 +1,8 @@
 # Hardware notes (U60Pro screen)
 
-These are interface facts about the device, recorded so the code is
-understandable. They were determined by probing standard Linux interfaces on
-the running device — **no vendor binary or asset is copied into this repo.**
+Interface facts about the device, recorded so the code is understandable.
+Determined by probing standard Linux interfaces on the running device —
+**no vendor binary or asset is copied into this repo.**
 
 ## Display
 - Node: `/dev/dri/card0` (standard DRM/KMS).

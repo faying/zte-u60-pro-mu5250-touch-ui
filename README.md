@@ -1,120 +1,108 @@
 # ZTE U60 Pro (MU5250) Touch UI
 
 > **社区项目，与中兴（ZTE）无关联。** 基于 [33333s/u60pro-devui](https://github.com/33333s/u60pro-devui)（MIT），
-> 加上 Wei REN 后续的 CHILL 面板、eSIM 切换页、Tailscale 卡片。本仓库从清理后的快照开始，不含原始提交历史；
-> 来源和删减内容见 [NOTICE](NOTICE)。高级后台和管理网页在配套仓库 `zte-u60-pro-mu5250-manager`。
+> 加上 Wei REN 后续的 CHILL 面板、eSIM 切换页、Tailscale 卡片和 LVGL 重写。本仓库从清理后的快照开始，
+> 不含原始提交历史；来源和删减内容见 [NOTICE](NOTICE)。管理网页与设备端 API 在配套仓库
+> [zte-u60-pro-mu5250-manager](https://github.com/faying/zte-u60-pro-mu5250-manager)。
 
-这是 ZTE U60 Pro（MU5250）以及类似 SDX 系列 5G MiFi 设备前面板屏幕 UI 的一个 clean-room 开源替代实现。运行在标准 Linux 的 **DRM/KMS** 和 **evdev** 接口之上，目标是：
-
-- 独立于原厂设备 UI 运行
-- 界面用 **HTML/CSS** 描述，**不改程序就能换界面**
-- 编译成单个静态 `aarch64` 二进制，拷到设备上就能运行
-
-> 这是一个基于公开 Linux/OpenWRT 接口的独立重实现。硬件相关说明见 [docs/HARDWARE.md](docs/HARDWARE.md)。
-
-> 上游项目的讨论和更新见 [33333s/u60pro-devui](https://github.com/33333s/u60pro-devui)。
-
-## 核心理念：程序固定，界面是数据
-
-程序本身不内置任何画面。它在运行时去 `/data/plugins/u60pro-devui/ui` 读取你写的 **HTML/CSS** 并渲染到屏幕。想改界面，**完全不用重新编译**——改 HTML、推到设备、约 1 秒内自动生效。
-
-👉 **想自己写界面，看这份教程：[docs/UI-GUIDE.md](docs/UI-GUIDE.md)**
+ZTE U60 Pro（MU5250）及同系 SDX 5G MiFi 设备前面板屏幕 UI 的 clean-room 开源替代实现，跑在标准
+Linux 的 **DRM/KMS** + **evdev** 之上，编译成单个静态 aarch64 二进制，独立于原厂 UI 运行。
 
 ```text
-后端 zwrt-datad ──▶ HTTP /state + SSE /events (127.0.0.1:9460) ──┐
-                                                                  ├─▶ u60pro-devui ──▶ 屏幕（DRM/KMS）
-你写的 /data/plugins/u60pro-devui/ui/*.html + style.css ───────────┘
+后端 zwrt-datad ──▶ HTTP /state + SSE /events (127.0.0.1:9460) ──▶ u60pro-devui ──▶ 屏幕（DRM/KMS）
 ```
 
-- **渲染**：[litehtml](https://github.com/litehtml/litehtml)（HTML/CSS 排版）+ FreeType（含 CJK 字体）→ 直接画进 RGB565 framebuffer。无浏览器、无 JavaScript；状态只经本机 `127.0.0.1` 的 HTTP/SSE 读取。
-- **显示**：[src/drm_disp.c](src/drm_disp.c) 打开 `/dev/dri/card0`，运行时枚举面板/crtc/mode，映射 RGB565 dumb framebuffer，通过 `DIRTYFB` 提交。
-- **触摸**：[src/touch_input.c](src/touch_input.c) 自动探测触摸屏并缩放坐标；电源键短按息屏、长按菜单。
-- **界面**：`/data/plugins/u60pro-devui/ui` 下每个顶层 `NN-名字.html` 一页，`style.css` 共享样式；`ui/subpages/` 提供二级页面，`ui/functions/` 可放用户自定义功能页。HTML 里的 `{{令牌}}` 由程序替换成实时数据，`href="act:xxx"` 触发交互。
-- **外部接口**：内建本地 `DEVUI-IPC`，保留原生状态栏；其他进程可直接把内容投到状态栏下方的内容区，并通过点击事件日志驱动自己的交互逻辑。
-- **后端**：配套 `zwrt-datad`（[github.com/33333s/zwrt-datad](https://github.com/33333s/zwrt-datad)），轮询 `ubus` 后通过 `GET /state` 和 `SSE /events` 提供完整 JSON 快照；UI 只读这个本机接口，自己从不碰 ubus。
+## 两套渲染器
 
-自带的示例界面（[ui/](ui/)）含四个顶层页：信号、更多功能、图表、系统设置。“更多功能”里进入 WiFi、短信、信令读取、锁频和可选测速二级页；系统页包含亮度/息屏/锁屏、USB-C 供电方向、USB 网络共享、速率单位和主题等开关。
+仓库里现在共存两套实现，`src/` 下同一批数据/业务模块（`chill.c`/`esim.c`/`tailscale.c`/`speedtest.c`
+等）分别接到两个前端：
+
+| | litehtml（原版） | LVGL（重写，默认构建） |
+|---|---|---|
+| 入口 | `src/htmlmain.c` + `src/devui_ext.c` | `src/main.c` + `src/ui.c` |
+| 界面来源 | `/data/plugins/u60pro-devui/ui/*.html`，**不用重编译，改 HTML 即生效** | 原生 C 布局，改界面需要重新编译 |
+| 排版 | [litehtml](https://github.com/litehtml/litehtml)（BSD）+ FreeType | [LVGL](https://github.com/lvgl/lvgl) v9.5（MIT）+ FreeType |
+| 构建 | `bash scripts/build.sh`（本机 Bootlin 工具链，见下） | `make`（默认目标，Docker 见下） |
+
+**如果你只想改界面文字/样式**，用 litehtml 版：跳到 [自定义界面](#自定义界面litehtml-版) 一节，改
+HTML 推到设备上就生效，不用编译。**如果你想改交互逻辑、加原生动画或对接新数据**，两边都要碰代码；
+LVGL 版是当前主线开发方向，细节和踩坑记录在 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)。
 
 ## 构建
 
-需要一个 POSIX shell（WSL / Linux）和自带的 aarch64 musl 工具链，不需要 root，也不要求宿主机预装 `make`。
+### LVGL 版（默认，推荐用 Docker）
 
 ```sh
-# 一次性：下载可搬运的 aarch64 musl 工具链到 $HOME
-bash scripts/_setup_toolchain.sh
-
-# 一次性：编译静态 FreeType 和 litehtml
-bash scripts/_build_freetype.sh
-bash scripts/_build_litehtml.sh
-
-# 编译正式 UI 二进制 -> ./u60pro-devui(.stripped)
-bash scripts/build.sh
+docker build --platform linux/amd64 -t u60-devui-build -f Dockerfile.build .
+docker run --rm --platform linux/amd64 -v "$(pwd)":/src -w /src u60-devui-build \
+  bash -c 'git clone --depth 1 --branch v9.5.0 https://github.com/lvgl/lvgl.git third_party/lvgl; make'
 ```
 
-产物是单个**静态 AArch64 ELF**，无动态依赖，直接拷到设备运行。
+产物：`./u60pro-devui`（静态 aarch64 ELF）。本机没有交叉工具链也能跑，Dockerfile 里已经固化了
+Bootlin 工具链和 FreeType 版本。
 
-> 也可以直接到 [Releases](https://github.com/33333s/u60pro-devui/releases) 下载编译好的二进制。
+### litehtml 版（本机工具链）
+
+```sh
+bash scripts/_setup_toolchain.sh   # 一次性：Bootlin aarch64 musl 工具链
+bash scripts/_build_freetype.sh    # 一次性：静态 FreeType
+bash scripts/_build_litehtml.sh    # 一次性：静态 litehtml
+bash scripts/build.sh              # -> ./u60pro-devui(.stripped)
+```
+
+需要 POSIX shell（WSL / Linux / Git-Bash），不需要 root。也可以到
+[Releases](https://github.com/33333s/u60pro-devui/releases) 下载上游编译好的二进制。
 
 ## 在设备上运行
 
 ```sh
-# 推送界面文件
 adb shell 'mkdir -p /data/plugins/u60pro-devui/ui'
-adb push ui/*.html ui/*.css /data/plugins/u60pro-devui/ui/
-
-# 推送并运行（先停原厂 UI 释放面板）
-adb shell 'mkdir -p /data/plugins/u60pro-devui'
+adb push ui/*.html ui/*.css /data/plugins/u60pro-devui/ui/        # 仅 litehtml 版需要
 adb push u60pro-devui.stripped /data/plugins/u60pro-devui/u60pro-devui
 adb shell '/etc/init.d/zte_topsw_devui stop; sleep 1;
            chmod 755 /data/plugins/u60pro-devui/u60pro-devui;
            nohup /data/plugins/u60pro-devui/u60pro-devui >/tmp/devui.log 2>&1 &'
 ```
 
-> Windows 下用 Git-Bash 跑 `adb push /data/...` 可能因路径翻译卡住，建议用 PowerShell 跑 adb。旧版如果还把页面放在 `/data/ui`，新版 `start.sh` 和安装脚本会在首次启动时自动迁到新目录。
+开机自启：把二进制放 `/data/plugins/u60pro-devui/`、后端 `zwrt-datad` 放
+`/data/plugins/zwrt-datad/`，再跑 `scripts/install-autostart.sh` —— 保留原厂 `zte_topsw_devui`
+做早期屏幕/触摸 bring-up，`rc.local -> start.sh legacy` 晚接管。细节见
+[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)。
 
-开机自启：把 `devui` 放到 `/data/plugins/u60pro-devui/`，把后端 `zwrt-datad` 放到 `/data/plugins/zwrt-datad/`，再用 `scripts/install-autostart.sh` 安装当前验证过的稳定链路：保留原厂 `zte_topsw_devui` 做早期屏幕/触摸 bring-up，再由 `rc.local -> /data/plugins/u60pro-devui/start.sh legacy` 晚接管。它也会顺手迁移旧版 `/data/ui` 到 `/data/plugins/u60pro-devui/ui`，并清理旧的 `/data/u60pro` 残留文件、重复钩子和实验性 `procd` 软链接。详见 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)。
+> **新构建先旁路文件名验证，稳定后再换正式位置**——见 manager 仓库 CLAUDE.md 的部署安全说明；
+> 一个启动即崩溃的构建直接覆盖正式位置，会把整机拖进重启循环。
 
-## 版本清单与更新
+## 自定义界面（litehtml 版）
 
-> 本节描述的是上游 [33333s/u60pro-devui](https://github.com/33333s/u60pro-devui) 的发版和更新流程。本仓库目前只发布源码，不发布二进制和 release 资产。
+程序本身不内置画面，运行时读 `/data/plugins/u60pro-devui/ui` 下的 HTML/CSS 渲染到屏幕。改 HTML、
+推到设备，约 1 秒内自动生效，不用重新编译。教程见 [docs/UI-GUIDE.md](docs/UI-GUIDE.md)。
 
-每个 release 附一个 `version.json`，声明各组件版本，供配套的「U60 DevUI 管理插件」检测更新。组件分三块、可各自独立升级：**后端 datad**、**渲染器 devui**（二进制）、**ui**（界面）。
+`ui/` 下每个顶层 `NN-名字.html` 一页，`style.css` 共享样式，`ui/subpages/` 是二级页面，
+`ui/functions/` 放自定义功能页。HTML 里 `{{令牌}}` 由程序替换成实时数据，`href="act:xxx"` 触发交互。
+自带四个顶层页：信号、更多功能、图表、系统设置。
 
-- 本仓库 release 的 `version.json` 含 `devui` 与 `ui` 两项；后端 [zwrt-datad](https://github.com/33333s/zwrt-datad) 的 release 里有它自己的 `version.json`（只含 `datad`）。
+## 功能
 
-```jsonc
-// 本仓库 version.json
-{ "schema": 1,
-  "devui": { "version": "1.2.11", "asset": "u60pro-devui-aarch64" },
-  "ui":    { "version": "0.4.10", "asset": "ui.tar.gz" } }
-```
-
-插件读各项目 **latest release** 的 `version.json`，与本地记录比对，支持**单独更新** datad / devui / ui 或一键更新全部。默认更新源就是 GitHub release；如果你自己在外部做镜像，只要保持 `u60pro-devui-aarch64` / `ui.tar.gz` / `version.json` 这些文件名不变即可，本仓库不再维护单独的网盘同步流程。
-
-**发版**：改 `version.json` 里对应组件的版本号（ui 改动只升 `ui`，二进制改动只升 `devui`，两边都改就两项都升）→ 用 `bash scripts/build.sh` 产出 `u60pro-devui.stripped`，发布时重命名成 `u60pro-devui-aarch64` → 重新打包**顶层平铺**的 `ui.tar.gz`（不要带 `ui/` 目录、`./` 前缀或 macOS `._*`）→ 把 `version.json`、`u60pro-devui-aarch64`、`ui.tar.gz` 一起传到 GitHub release。
-
-可直接照抄这一组命令准备 release 资产：
-
-```sh
-bash scripts/build.sh
-cp u60pro-devui.stripped u60pro-devui-aarch64
-(cd ui && COPYFILE_DISABLE=1 tar -czf ../ui.tar.gz -- *.html *.css)
-```
+- **CHILL**：内建 ShellCrash / mihomo 控制页——内核状态、实时速率、代理组切换、选节点、测延迟、
+  重启内核。命名和原因见 [docs/CHILL.md](docs/CHILL.md)（屏幕上统一叫 CHILL，不叫 RELAX）。
+- **eSIM**：通过 lpac 管理设备内 eUICC 卡的 profile。
+- **Tailscale**：状态卡片和开关。
+- **测速**：可选后端，支持循环测速。
+- **corner-wake**：屏幕熄灭时角落轻触唤醒的辅助进程，识别 `/proc/<pid>/comm` 时对 devui 进程名做前缀匹配（兼容旁路测试文件名）。
 
 ## 文档
 
-- [docs/UI-GUIDE.md](docs/UI-GUIDE.md) — **自定义界面教程**（令牌、动作、限制、示例）
-- [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) — 架构、构建、数据模型、踩坑记录
-- [docs/SIGNAL-CARDS.md](docs/SIGNAL-CARDS.md) — 第一页信号卡片、未激活/高铁专网标签、锁屏预览口径
-- [docs/SPEEDTEST.md](docs/SPEEDTEST.md) — 可选测速后端、二级测速页、循环测速和锁屏隐藏规则
-- [docs/modem.md](docs/modem.md) — 第二页信令页 / 基站信息页的页面行为与字段口径
-- [docs/DEVUI-IPC.md](docs/DEVUI-IPC.md) — DevUI 内建外部画面接口（像素帧、图片、绘图命令、文字）
+- [docs/UI-GUIDE.md](docs/UI-GUIDE.md) — litehtml 版自定义界面教程
+- [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) — 架构、构建、数据模型、两套渲染器的踩坑记录
+- [docs/CHILL.md](docs/CHILL.md) — CHILL 面板设计与命名
+- [docs/SIGNAL-CARDS.md](docs/SIGNAL-CARDS.md) / [docs/modem.md](docs/modem.md) — 信号页与信令页字段口径
+- [docs/SPEEDTEST.md](docs/SPEEDTEST.md) / [docs/ESIM.md](docs/ESIM.md) / [docs/DEVUI-IPC.md](docs/DEVUI-IPC.md)
 - [docs/HARDWARE.md](docs/HARDWARE.md) — 设备硬件接口
-- [docs/REPO_BOUNDARY.md](docs/REPO_BOUNDARY.md) — 公开仓库与本地记录的边界
 - [CHANGELOG.md](CHANGELOG.md) — 更新日志
+
+后端 `zwrt-datad`（轮询 `ubus`，提供 `GET /state` + SSE `/events`）: [33333s/zwrt-datad](https://github.com/33333s/zwrt-datad)。
 
 ## 许可证
 
-本项目采用 [MIT](LICENSE) 许可证。litehtml（BSD）、FreeType（FTL/GPL 双授权）、stb（public domain）按各自许可证引入。
-
-只应添加开源许可证的字体和资源，**不要加入 vendor blobs**；仓库不打包任何 ZTE 字体（运行时从设备加载），`.gitignore` 已拦截常见分析产物。
+[MIT](LICENSE)。litehtml（BSD）、LVGL（MIT）、FreeType（FTL/GPL 双授权）、stb（public domain）按各自
+许可证引入。仓库不打包任何 ZTE 字体（运行时从设备加载），也不包含 vendor blobs。
