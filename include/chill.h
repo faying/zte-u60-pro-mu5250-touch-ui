@@ -62,6 +62,27 @@ typedef struct { char name[64]; int delay; int selected; } chill_node_info_t;
 int  chill_node_count(void);
 void chill_get_node(int i, chill_node_info_t *out);
 
+/*
+ * 流量按"命中的分流组 -> 实际出口节点"这一对关系汇总，取当前 top 6——跟
+ * chill_group()/chill_node()/chill_chain() 不是一回事：那三个只描述"节点
+ * 选择"这一个配置好的组，规则模式下大部分流量根本不走它。这里的数据来自
+ * /connections 里每条连接自带的 chains 数组。
+ *
+ * 分组和节点曾经拆成两张独立 top N 表，各自按总字节数排序——界面上摆在
+ * 一起容易被看成"第 i 条分组对应第 i 条节点"，实际是两个互不相干的排名。
+ * 现在按 (分流组, 节点) 二元组做 key，name 直接是格式化好的
+ * "组名 -> 节点名"，才真的回答得了"这条规则流量去哪了"（2026-09-22 反馈）。
+ *
+ * 持久累计统计，不是"当前还活着的连接"快照——按连接 id 跟踪每轮轮询的
+ * 字节增量再累加，连接关闭不会丢数据，只在 devui 进程重启时清零（跟
+ * mihomo 自己的 downloadTotal/uploadTotal 一个道理）。
+ * traffic 已经格式化成 "↓1.2M ↑45K" 这种字符串；bytes 是上下行之和，
+ * 按它降序排列，画比例条之类的用得上。
+ */
+typedef struct { char name[64]; char traffic[40]; long bytes; } chill_traffic_item_t;
+int  chill_top_pair_count(void);
+void chill_get_top_pair(int i, chill_traffic_item_t *out);
+
 /* Controls. Each returns 1 on success and forces the next refresh. */
 int chill_set_mode(const char *mode);   /* rule|global|direct */
 int chill_select_node(int index);       /* index into the cached node list */

@@ -327,6 +327,10 @@ static int parse_snapshot(devui_data_t *d, const char *buf)
         d->tx_speed = json_get_int(sec, "tx_speed", 0);
         d->rx_bytes = json_get_int(sec, "rx_bytes", 0);
         d->tx_bytes = json_get_int(sec, "tx_bytes", 0);
+        d->day_rx_bytes   = json_get_int(sec, "day_rx_bytes", 0);
+        d->day_tx_bytes   = json_get_int(sec, "day_tx_bytes", 0);
+        d->month_rx_bytes = json_get_int(sec, "month_rx_bytes", 0);
+        d->month_tx_bytes = json_get_int(sec, "month_tx_bytes", 0);
     }
 
     if (json_get(buf, "qos", sec, sizeof sec)) {

@@ -15,6 +15,7 @@
 #include "chill.h"
 #include "tailscale.h"
 #include "esim.h"
+#include "speedtest.h"
 #include "lvgl.h"
 
 #include <signal.h>
@@ -39,6 +40,23 @@ enum { TAB_HOME, TAB_CHART, TAB_FUNC, TAB_SYS };
  * lv_layer_top(), still paint above them). */
 enum { SUB_WIFI, SUB_SMS, SUB_CELL, SUB_LOCK, SUB_SPEED, SUB_CHILL, SUB_ESIM, SUB_PERF,
        SUB_TS,   /* not on the tile wall: opened by tapping the Home Tailscale card */
+       /* Not on the tile wall either: opened by tapping a nav row on the CHILL
+        * page itself (see sub_open_child()/s_sub_parent). Splitting these out
+        * keeps the CHILL page itself light — it used to build a 200-slot node
+        * list, a 12-button group grid, and a 6-row traffic card all on one
+        * scrollable page, which is exactly the "一屏展示了很多的东西，会卡"
+        * complaint from 2026-09-22: heavy even before you scroll into any of
+        * it, because everything is pre-built and stacked on the same page.
+        * 策略组 and 节点 stay ON THE SAME subpage (SUB_CHILL_NODES) — a
+        * first cut split them into two separate subpages, which broke the
+        * one relationship that actually matters: tapping a group is supposed
+        * to load THAT group's member nodes right there, not send you off to
+        * an unrelated page (2026-09-22 follow-up: "策略组下面展开节点啊，
+        * 这两个是紧密关联的" — same shape mihomo's own dashboards use,
+        * yacd/metacubexd/zashboard all show a group's proxies inline under
+        * it). Only 规则→节点流量 is a genuinely separate concept (traffic
+        * accounting, not node selection), so that one keeps its own page. */
+       SUB_CHILL_NODES, SUB_CHILL_PAIRS,
        SUB_N };
 
 /* ---- shared widget handles ---- */
@@ -51,6 +69,7 @@ static lv_obj_t *s_ca_card[CA_SLOTS], *s_ca_title[CA_SLOTS], *s_ca_rsrp[CA_SLOTS
                 *s_ca_sinr[CA_SLOTS], *s_ca_freq[CA_SLOTS], *s_ca_tag[CA_SLOTS];
 static lv_obj_t *s_ca_cap_rsrp[CA_SLOTS], *s_ca_cap_sinr[CA_SLOTS];
 static lv_obj_t *s_cell_card, *s_cc_sum;
+static lv_obj_t *s_cc_traffic;   /* 今日/本月流量，见 fmt_bytes_total() */
 static lv_obj_t *s_ts_card, *s_ts_state, *s_ts_addr, *s_ts_routes, *s_ts_peers, *s_ts_note;
 /* Charts page */
 #define CHART_PTS 40
@@ -59,9 +78,27 @@ static lv_chart_series_t *s_cs_cpu, *s_cs_mem, *s_cs_rx, *s_cs_tx, *s_cs_bat;
 static lv_obj_t *s_ch_cpu_r, *s_ch_mem_r, *s_ch_net_r, *s_ch_bat_r;
 /* Function tile wall */
 static lv_obj_t *s_tile_sub[SUB_N];      /* per-tile status subtitle */
-/* CHILL */
-static lv_obj_t *s_chill_card, *s_chill_state, *s_chill_node, *s_chill_chain,
-                *s_chill_conns, *s_chill_rate;
+/* CHILL — home card shows the real "规则 -> 节点" traffic breakdown directly
+ * (top N pairs), not a one-line "X 等 N 个" summary with the actual numbers
+ * hidden a scroll away on the detail page (2026-09-22 user feedback: the fix
+ * belongs on the card people actually look at). Node and group used to be
+ * two independent top-N lists stacked together, which looks like row i of
+ * one corresponds to row i of the other but doesn't — they're unrelated
+ * rankings (2026-09-22 follow-up: "不同的分流规则到底具体走的哪个节点，
+ * 没有放出来"). Now one list, keyed by (group, node), so each row directly
+ * answers "this rule's traffic went through this node". */
+#define CHILL_HOME_ROWS 5
+/* Each pair gets its own nested sub-card (DESIGN.md §4: "一组同形状的多字段
+ * 条目" — name can run long ("漏网之鱼 → TW 台湾 01｜1x TW"), so it gets the
+ * full sub-card width on its own line instead of sharing one line with the
+ * rate and clipping, which is what the flat-list version did. */
+#define CHILL_PAIR_ROW_H 40
+#define CHILL_PAIR_GAP    6
+static lv_obj_t *s_chill_card, *s_chill_state,
+                *s_chill_split, *s_chill_total,
+                *s_chill_pair_box[CHILL_HOME_ROWS],
+                *s_chill_pair_name[CHILL_HOME_ROWS], *s_chill_pair_val[CHILL_HOME_ROWS],
+                *s_chill_rate;
 /* 2026-09-22：新增的手动选节点组一个就有 168 个节点，8 太小——家宽/NX 节点
  * 排在后面，直接被截没，界面上看起来像是"消失了"。卡片本来就在可滚动的
  * 容器里（build_sub_chill 的 mk_scroll_h），提高上限只是多建几个隐藏行，
@@ -69,11 +106,30 @@ static lv_obj_t *s_chill_card, *s_chill_state, *s_chill_node, *s_chill_chain,
 #define CHILL_MAX_NODES 200
 #define CHILL_MAX_GROUPS 12
 #define CHILL_GRP_COLS 3
-static lv_obj_t *s_cp_core, *s_cp_node, *s_cp_chain, *s_cp_conns, *s_cp_traffic,
+static lv_obj_t *s_cp_core, *s_cp_conns, *s_cp_traffic,
                 *s_cp_mode_btn[3], *s_cp_node_card, *s_cp_node_row[CHILL_MAX_NODES],
                 *s_cp_node_name[CHILL_MAX_NODES], *s_cp_node_dl[CHILL_MAX_NODES],
                 *s_cp_grp_card, *s_cp_grp_btn[CHILL_MAX_GROUPS], *s_cp_grp_lbl[CHILL_MAX_GROUPS],
                 *s_cp_delay_lbl;
+/* 流量分布：一张"规则 -> 节点"卡，跟上面的"节点"卡不是一回事——那张卡是
+ * 节点选择器（点了会切换节点），这张是只读统计，数字来自 chill_top_pair()，
+ * 跟 chill.h 里的大注释对应：反映规则模式下流量实际去哪了，不是"配置了哪个
+ * 节点"。曾经拆成按节点、按分流组两张独立卡，各自的 top N 排名互不相干，
+ * 摆在一起容易被误读成一一对应（2026-09-22 反馈：具体哪条规则走了哪个
+ * 节点，没有放出来）——改成一张卡，一行就是一对真实关系。行数跟 chill.c 的
+ * SC_TOP_SHOW 对齐，改一边要记得改另一边。 */
+#define CHILL_TRAF_ROWS 6
+static lv_obj_t *s_cp_pair_card, *s_cp_pair_name[CHILL_TRAF_ROWS], *s_cp_pair_val[CHILL_TRAF_ROWS];
+/* CHILL page nav rows — 策略组/节点/规则→节点 used to be built inline on the
+ * CHILL page itself (12 group buttons + up to 200 node rows + 6 pair rows,
+ * all pre-built whether you ever scroll to them or not). One screen showing
+ * everything at once was the 2026-09-22 "会卡" complaint, so the heavy
+ * content moved to drill-down subpages and the CHILL page itself only keeps
+ * a one-line summary + chevron per section. 策略组+节点 share ONE row/page
+ * (SUB_CHILL_NODES) — they're the same picker, not two unrelated lists. */
+#define CHILL_NAV_ROWS 2
+enum { CHILL_NAV_NODES, CHILL_NAV_PAIRS };
+static lv_obj_t *s_cp_nav_row[CHILL_NAV_ROWS], *s_cp_nav_val[CHILL_NAV_ROWS];
 /* WiFi page */
 #define WIFI_MAX_CLI 5    /* fixed sub-card slots; backend reports up to 16 */
 static lv_obj_t *s_w_ssid, *s_w_pass, *s_w_enc, *s_w_state;
@@ -91,6 +147,7 @@ static lv_obj_t *s_set_bright, *s_off_btn[3], *s_vendor_btn, *s_vendor_lbl;
 static lv_obj_t *s_set_ver, *s_set_imei, *s_set_usb, *s_set_fw;
 static lv_obj_t *s_sy_bat, *s_sy_chg, *s_sy_cpu, *s_sy_mem, *s_sy_up;
 static lv_obj_t *s_sy_dps_sw, *s_sy_dps_st;
+static lv_obj_t *s_sy_speedunit_sw, *s_sy_speedunit_st;
 /* Tailscale subpage */
 static lv_obj_t *s_tp_self[4], *s_tp_card, *s_tp_row[TS_PEER_MAX],
                 *s_tp_name[TS_PEER_MAX], *s_tp_ip[TS_PEER_MAX], *s_tp_tag[TS_PEER_MAX];
@@ -131,10 +188,22 @@ static const lv_font_t *FCN, *FCN_S, *FCN_L;
 /* Test page */
 static lv_obj_t *s_t_fps, *s_t_touch, *s_t_box;
 static lv_timer_t *s_bench_timer;
+/* Speedtest page */
+static lv_obj_t *s_st_card, *s_st_phase, *s_st_live, *s_st_detail,
+                *s_st_result, *s_st_server, *s_st_btn, *s_st_btn_lbl,
+                *s_st_offline;
+#define ST_SRV_ROWS (ST_MAX_SERVERS + 1)   /* +1 = "自动" 固定占第 0 行 */
+static lv_obj_t *s_st_srv_card;
+static lv_obj_t *s_st_srv_row[ST_SRV_ROWS], *s_st_srv_name[ST_SRV_ROWS];
 static int       s_box_x = 0, s_box_dir = 1;
 static lv_obj_t   *s_tv, *s_tiles[UI_TABS], *s_tabs[UI_TABS];
 static lv_obj_t   *s_sub_layer, *s_sub_title, *s_sub_page[SUB_N];
 static int         s_sub_cur = -1;
+/* -1 = s_sub_cur is a top-level subpage (opened from a tile or the Home
+ * Tailscale card); otherwise the id to return to when 返回 is tapped, set by
+ * sub_open_child() for the CHILL nav-row drill-down pages. One level deep
+ * only — these child pages don't open further children. */
+static int         s_sub_parent = -1;
 static key_input_t s_key;
 static lv_obj_t   *s_power_menu;
 /* Global status banner (backend down) — device-wide state, so it lives in the
@@ -186,6 +255,15 @@ static void fmt_rate(char *out, size_t n, long bps)
     if (bps >= 1024 * 1024) snprintf(out, n, "%.1f MB/s", bps / 1048576.0);
     else if (bps >= 1024)   snprintf(out, n, "%.1f KB/s", bps / 1024.0);
     else                    snprintf(out, n, "%ld B/s", bps);
+}
+/* Total quantity, not a rate — no "/s". Used for the day/month traffic
+ * counters, which run from a few MB up to hundreds of GB. */
+static void fmt_bytes_total(char *out, size_t n, long b)
+{
+    if (b >= 1024L * 1024 * 1024) snprintf(out, n, "%.1fGB", b / (1024.0 * 1024 * 1024));
+    else if (b >= 1024 * 1024)    snprintf(out, n, "%.0fMB", b / (1024.0 * 1024));
+    else if (b >= 1024)           snprintf(out, n, "%.0fKB", b / 1024.0);
+    else                          snprintf(out, n, "%ldB", b);
 }
 /* No unit-space padding — for the status bar, where "↓11.9 MB/s ↑501.7 KB/s"
  * (fmt_rate's verbosity, fine inside a detail card) ran into the battery
@@ -476,8 +554,11 @@ static lv_obj_t *mk_scroll(lv_obj_t *t, int content_h)
  * litehtml UI's subpages keep its status bar. Every subpage is built once at
  * startup and hidden; opening one is a visibility flip, never a build. */
 static void sub_open(int id);
+static void sub_open_child(int id, int parent);
 static void sub_close(void);
+static void sub_back(void);
 static void tile_click_cb(lv_event_t *e);   /* also used by the Home Tailscale card */
+static void chill_nav_cb(lv_event_t *e);    /* CHILL page's 策略组/节点/规则→节点 rows */
 static void bench_gate(void);
 static void update_tabs(void);
 
@@ -499,6 +580,8 @@ static void sub_open(int id)
         "CHILL", "eSIM",
         "\xE6\x80\xA7\xE8\x83\xBD\xE6\xB5\x8B\xE8\xAF\x95" /* 性能测试 */,
         "Tailscale",
+        "\xE8\x8A\x82\xE7\x82\xB9" /* 节点 */,
+        "\xE8\xA7\x84\xE5\x88\x99 \xE2\x86\x92 \xE8\x8A\x82\xE7\x82\xB9" /* 规则 → 节点 */,
     };
     if (id < 0 || id >= SUB_N) return;
     for (int i = 0; i < SUB_N; i++)
@@ -509,6 +592,7 @@ static void sub_open(int id)
     lv_label_set_text(s_sub_title, k_sub_title[id]);
     lv_obj_remove_flag(s_sub_layer, LV_OBJ_FLAG_HIDDEN);
     s_sub_cur = id;
+    s_sub_parent = -1;
     bench_gate();
     update_tabs();
 }
@@ -517,8 +601,27 @@ static void sub_close(void)
 {
     lv_obj_add_flag(s_sub_layer, LV_OBJ_FLAG_HIDDEN);
     s_sub_cur = -1;
+    s_sub_parent = -1;
     bench_gate();
     update_tabs();
+}
+
+/* Open a page one level below a top-level subpage (currently only the CHILL
+ * nav rows). 返回 from here goes back to `parent`, not all the way out —
+ * see sub_back(). */
+static void sub_open_child(int id, int parent)
+{
+    sub_open(id);
+    s_sub_parent = parent;
+}
+
+/* The tab bar's 返回 slot: one step back, not always a full exit — a child
+ * page (opened via sub_open_child()) returns to its parent; anything else
+ * closes the subpage layer entirely, same as before. */
+static void sub_back(void)
+{
+    if (s_sub_parent >= 0) sub_open(s_sub_parent);
+    else                   sub_close();
 }
 
 /* Visibility predicates for the pollers (Tailscale/eSIM/CHILL only talk to
@@ -552,9 +655,14 @@ static int sub_visible(int id)
  * spectrum is currently aggregated, not which band the PCC happens to be. */
 static void build_home(lv_obj_t *t)
 {
-    /* 820 covers the worst case: 5 carrier slots (3 NR + 2 LTE in EN-DC)
-     * push the cellular card to ~490 and the CHILL card below 660. */
-    t = mk_scroll(t, 800);
+    /* 1050 covers the worst case: 5 carrier slots (3 NR + 2 LTE in EN-DC)
+     * push the cellular card to ~490, +10 gap, Tailscale card 126, +10 gap,
+     * then the CHILL card — grown again 2026-09-22 (each rule->node pair is
+     * now its own sub-card instead of a flat text row, plus a new summary
+     * line) to a worst case (5 pairs) of ~336. 490+10+126+10+336 == 972;
+     * 1050 leaves slack without measuring it to the pixel every time either
+     * card's worst case grows again. */
+    t = mk_scroll(t, 1050);
 
     s_cell_card = mk_card(t, 10, 182);
     lv_obj_t *cell = s_cell_card;
@@ -568,6 +676,12 @@ static void build_home(lv_obj_t *t)
     s_cc_ambr = mklabel(cell, UI_CARD_W - UI_PAD - 140, 35, &lv_font_montserrat_12, UI_C_TEXT_3);
     lv_obj_set_width(s_cc_ambr, 140);
     lv_obj_set_style_text_align(s_cc_ambr, LV_TEXT_ALIGN_RIGHT, 0);
+
+    /* 今日/本月流量（2026-09-22 用户要求加到首页）——y 由刷新时的载波堆叠
+     * 结果决定，跟着 s_ca_card[] 一起重排，位置在 build 阶段先随便摆，
+     * 每次刷新都会重新 align，见下面 refresh_cb 里 "y" 累加的那段。 */
+    s_cc_traffic = mklabel(cell, UI_PAD, 58, FCN_S, UI_C_TEXT_2);
+    lv_obj_set_width(s_cc_traffic, UI_CARD_W - 2 * UI_PAD);
 
     /* Carrier slots: fixed count, built once, hidden/shown and re-laid-out
      * per refresh — never created per tick (see [[lvgl-heap-instability]]).
@@ -622,8 +736,16 @@ static void build_home(lv_obj_t *t)
     lv_label_set_long_mode(s_ts_note, LV_LABEL_LONG_CLIP);
     lv_obj_set_width(s_ts_note, UI_CARD_W - 2 * UI_PAD);
 
-    /* CHILL (mihomo) — same treatment: hidden when the API isn't reachable. */
-    s_chill_card = mk_group(t, 328, UI_CARD_W, 116);
+    /* CHILL (mihomo) — same treatment: hidden when the API isn't reachable.
+     * Shows the real per-node / per-policy-group traffic breakdown (top 2
+     * each) directly here, not a one-line "X 等 N 个" summary with the
+     * actual numbers a screen away — that was the first attempt at this and
+     * the user pointed out plainly that the fix belongs on the card people
+     * actually look at, not the detail page. chill_top_node()/
+     * chill_top_group() already degrade correctly outside 规则 mode (all
+     * connections share one chain there, so "top 2" naturally becomes "top
+     * 1"), so there is no mode branch here — same code path always. */
+    s_chill_card = mk_group(t, 328, UI_CARD_W, 340);
     lv_obj_set_style_radius(s_chill_card, UI_CARD_RADIUS, 0);
     lv_obj_set_style_bg_color(s_chill_card, lv_color_hex(UI_C_CARD), 0);
     lv_obj_set_style_bg_opa(s_chill_card, LV_OPA_COVER, 0);
@@ -631,14 +753,45 @@ static void build_home(lv_obj_t *t)
     s_chill_state = mklabel(s_chill_card, UI_CARD_W - UI_PAD - 120, 8, FCN_S, UI_C_OK);
     lv_obj_set_width(s_chill_state, 120);
     lv_obj_set_style_text_align(s_chill_state, LV_TEXT_ALIGN_RIGHT, 0);
-    s_chill_node  = mklabel(s_chill_card, UI_PAD, 28, FCN_S, UI_C_TEXT);
-    s_chill_chain = mklabel(s_chill_card, UI_PAD, 50, FCN_S, UI_C_TEXT_2);
-    s_chill_conns = mklabel(s_chill_card, UI_PAD, 70, FCN_S, UI_C_TEXT_2);
-    s_chill_rate  = mklabel(s_chill_card, UI_PAD, 90, FCN_S, UI_C_TEXT_2);
-    for (lv_obj_t **o = (lv_obj_t *[]){ s_chill_node, s_chill_chain, s_chill_conns, NULL }; *o; o++) {
-        lv_label_set_long_mode(*o, LV_LABEL_LONG_CLIP);
-        lv_obj_set_width(*o, UI_CARD_W - 2 * UI_PAD);
+
+    /* Summary row — connections/proxy-direct split and cumulative traffic.
+     * Neither was on this card before (2026-09-22: "信息可以完整一些");
+     * both were already tracked by chill.c (chill_conn_split()/
+     * chill_traffic()), just never surfaced here. Real-time rate keeps its
+     * own line below the pair list — it ticks every refresh, mixing it into
+     * this static-ish row would make the row's height/position jitter. */
+    s_chill_split = mklabel(s_chill_card, UI_PAD, 30, FCN_S, UI_C_TEXT_2);
+    s_chill_total = mklabel(s_chill_card, UI_CARD_W - UI_PAD - 140, 30, FCN_S, UI_C_TEXT_2);
+    lv_obj_set_width(s_chill_total, 140);
+    lv_obj_set_style_text_align(s_chill_total, LV_TEXT_ALIGN_RIGHT, 0);
+
+    lv_label_set_text(mklabel(s_chill_card, UI_PAD, 52, FCN_S, UI_C_TEXT_3),
+                      "\xE8\xA7\x84\xE5\x88\x99 \xE2\x86\x92 \xE8\x8A\x82\xE7\x82\xB9" /* 规则 → 节点 */);
+    for (int i = 0; i < CHILL_HOME_ROWS; i++) {
+        int ry = 68 + i * (CHILL_PAIR_ROW_H + CHILL_PAIR_GAP);
+        lv_obj_t *box = mk_subcard(s_chill_card, ry, CHILL_PAIR_ROW_H);
+        s_chill_pair_box[i] = box;
+        /* Name on its own line, full sub-card width — this is the field
+         * that runs long ("规则 → 节点丨倍率 地区"); sharing a line with the
+         * rate (the old layout) left it ~110px to work with and clipped
+         * mid-word. Wrap instead of clip as a safety net for the rare
+         * longer-than-usual name; two lines still fits the row height. */
+        s_chill_pair_name[i] = mklabel(box, 10, 4, FCN_S, UI_C_TEXT);
+        lv_obj_set_width(s_chill_pair_name[i], UI_CARD_W - 2 * UI_PAD - 20);
+        lv_label_set_long_mode(s_chill_pair_name[i], LV_LABEL_LONG_WRAP);
+        s_chill_pair_val[i] = mklabel(box, 10, 22, FCN_S, UI_C_TEXT_3);
+        lv_obj_set_width(s_chill_pair_val[i], UI_CARD_W - 2 * UI_PAD - 20);
     }
+
+    /* Bigger + accent-colored (2026-09-22, "好看一点"): this is the one
+     * number on the card that's alive every second, so it earns the
+     * "emphasized value" treatment DESIGN.md §4 calls for (montserrat/FCN
+     * 16-20px for things like this vs. 13px body text) — FCN not montserrat
+     * because the ↓↑ glyphs only exist in the CJK font (font-pairing rule,
+     * same reason the topbar rate uses FCN_S not montserrat). */
+    s_chill_rate = mklabel(s_chill_card, UI_PAD,
+                           68 + CHILL_HOME_ROWS * (CHILL_PAIR_ROW_H + CHILL_PAIR_GAP) + 4,
+                           FCN, UI_C_ACCENT);
     lv_obj_add_flag(s_chill_card, LV_OBJ_FLAG_HIDDEN);
     /* Tap to jump straight to the CHILL subpage (mode switch, node list,
      * delay test) — same pattern as the Tailscale card above. This got
@@ -945,6 +1098,19 @@ static void dps_cb(lv_event_t *e)
     s_aux_dps = on;
 }
 
+/* Same setting the status-bar tap (topbar_speed_unit_cb) flips — this is
+ * just a discoverable, labelled home for it (2026-09-22: tap-to-toggle on
+ * the topbar has no visible affordance beyond the accent color, easy to
+ * never find). Both write the same s_cf_speed_bits + devui.conf, so
+ * whichever one the user touches, the other stays in sync via refresh_cb's
+ * sw_apply() below. */
+static void speedunit_cb(lv_event_t *e)
+{
+    lv_obj_t *sw = (lv_obj_t *)lv_event_get_target(e);
+    s_cf_speed_bits = lv_obj_has_state(sw, LV_STATE_CHECKED);
+    save_devui_conf();
+}
+
 /* Switch to the vendor UI. Two-stage confirm (same pattern v1 used for
  * act:exitstock in htmlmain.c): a misfire here is expensive — the vendor UI
  * has no button back to us, so the only way home is corner-wake's gesture or
@@ -970,7 +1136,7 @@ static void act_switch_vendor(lv_event_t *e)
 
 static void build_system(lv_obj_t *t)
 {
-    t = mk_scroll(t, 672);
+    t = mk_scroll(t, 698);
 
     lv_obj_t *disp = mk_card(t, 10, 134);
     lv_label_set_text(mklabel(disp, UI_PAD, 8, FCN_S, UI_C_TEXT_3), "\xE5\xB1\x8F\xE5\xB9\x95" /* 屏幕 */);
@@ -1032,13 +1198,16 @@ static void build_system(lv_obj_t *t)
     lv_obj_set_width(s_set_fw, UI_CARD_W - 2 * UI_PAD);
     lv_label_set_long_mode(s_set_fw, LV_LABEL_LONG_CLIP);
 
-    lv_obj_t *swc = mk_card(t, 446, 72);
+    lv_obj_t *swc = mk_card(t, 446, 30 + 2 * SW_ROW_H + 8);
     lv_label_set_text(mklabel(swc, UI_PAD, 8, FCN_S, UI_C_TEXT_3), "\xE5\xBC\x80\xE5\x85\xB3" /* 开关 */);
     s_sy_dps_sw = mk_switch_row(swc, 30,
         "\xE7\x94\xB5\xE6\xBA\x90\xE7\x9B\xB4\xE4\xBE\x9B\xE7\x94\xB5" /* 电源直供电 */,
         &s_sy_dps_st, dps_cb, 0);
+    s_sy_speedunit_sw = mk_switch_row(swc, 30 + SW_ROW_H,
+        "\xE7\x8A\xB6\xE6\x80\x81\xE6\xA0\x8F\xE7\xBD\x91\xE9\x80\x9F\xE7\x94\xA8 Mbps" /* 状态栏网速用 Mbps */,
+        &s_sy_speedunit_st, speedunit_cb, 0);
 
-    lv_obj_t *sys = mk_card(t, 528, 104);
+    lv_obj_t *sys = mk_card(t, 446 + 30 + 2 * SW_ROW_H + 8 + 10, 104);
     lv_label_set_text(mklabel(sys, UI_PAD, 8, FCN_S, UI_C_TEXT_3), "\xE7\xB3\xBB\xE7\xBB\x9F" /* 系统 */);
     s_vendor_btn = lv_button_create(sys);
     lv_obj_set_size(s_vendor_btn, UI_CARD_W - 2 * UI_PAD, 36);
@@ -1228,31 +1397,61 @@ static void chill_group_cb(lv_event_t *e)
 static void chill_delay_cb(lv_event_t *e) { LV_UNUSED(e); chill_test_delay(); }
 
 #define CHILL_GRP_ROWS ((CHILL_MAX_GROUPS + CHILL_GRP_COLS - 1) / CHILL_GRP_COLS)
+/* 策略组卡永远按 CHILL_MAX_GROUPS 的满槽位留高度，不跟着实际组数收缩（这张
+ * 卡本来就是这么建的，不是我这次改的）——所以它的高度是个编译期常量，
+ * 一个宏就够，refresh_cb 给流量卡定位时要用同一个数，不能各算各的。 */
+#define CHILL_GRP_H (30 + CHILL_GRP_ROWS * 36 - 6 + 8)
+
+/* 一张"按 X 统计流量"卡：标题 + 最多 CHILL_TRAF_ROWS 行（名字左，流量右），
+ * 固定槽位建好、按实际条目数隐藏/显示——跟节点卡、策略组卡同一个规矩，不
+ * 跟着数据量动态建对象。返回卡片高度，调用方拿去算下一张卡的 y。 */
+static lv_obj_t *build_traffic_card(lv_obj_t *t, int y, const char *title,
+                                    lv_obj_t **card_out,
+                                    lv_obj_t **name_out, lv_obj_t **val_out)
+{
+    int h = 30 + CHILL_TRAF_ROWS * 22 + 8;
+    lv_obj_t *c = mk_card(t, y, h);
+    *card_out = c;
+    lv_label_set_text(mklabel(c, UI_PAD, 8, FCN_S, UI_C_TEXT_3), title);
+    for (int i = 0; i < CHILL_TRAF_ROWS; i++) {
+        name_out[i] = mklabel(c, UI_PAD, 30 + i * 22, FCN_S, UI_C_TEXT_2);
+        lv_obj_set_width(name_out[i], UI_CARD_W - 2 * UI_PAD - 110);
+        lv_label_set_long_mode(name_out[i], LV_LABEL_LONG_CLIP);
+        val_out[i] = mklabel(c, UI_CARD_W - UI_PAD - 100, 30 + i * 22, FCN_S, UI_C_TEXT_2);
+        lv_obj_set_width(val_out[i], 100);
+        lv_obj_set_style_text_align(val_out[i], LV_TEXT_ALIGN_RIGHT, 0);
+        lv_obj_add_flag(name_out[i], LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(val_out[i], LV_OBJ_FLAG_HIDDEN);
+    }
+    return c;
+}
 
 static void build_sub_chill(lv_obj_t *t)
 {
-    int grp_h = 30 + CHILL_GRP_ROWS * 36 - 6 + 8;
-    t = mk_scroll_h(t, UI_SUB_VIEW,
-                    8 + 126 + 10 + 70 + 10 + grp_h + 10 + 30 + CHILL_MAX_NODES * 44 + 16);
+    t = mk_scroll_h(t, UI_SUB_VIEW, 8 + 82 + 10 + 70 + 10 + (30 + CHILL_NAV_ROWS * 44 + 8) + 16);
 
-    lv_obj_t *st = mk_card(t, 8, 126);
+    /* 曾经这里还有"节点"/"链路"两行，取自 chill_node()/chill_chain()——
+     * 只描述 chill.conf 里配置的那一个组，规则模式下大部分流量根本不走它，
+     * 跟按节点/规则的真实流量数据对不上（2026-09-22 用户反馈：进详情页看到
+     * 的节点信息不一致）。首页卡片已经改用真实数据，这里漏改了；直接删掉
+     * 这两行，不留误导性的旧字段。 */
+    lv_obj_t *st = mk_card(t, 8, 82);
     lv_label_set_text(mklabel(st, UI_PAD, 8, FCN_S, UI_C_TEXT_3), "\xE7\x8A\xB6\xE6\x80\x81" /* 状态 */);
     s_cp_core = mklabel(st, UI_CARD_W - UI_PAD - 110, 8, FCN_S, UI_C_OK);
     lv_obj_set_width(s_cp_core, 110);
     lv_obj_set_style_text_align(s_cp_core, LV_TEXT_ALIGN_RIGHT, 0);
-    static const char *const k_cp_cap[4] = {
-        "\xE8\x8A\x82\xE7\x82\xB9" /* 节点 */, "\xE9\x93\xBE\xE8\xB7\xAF" /* 链路 */,
+    static const char *const k_cp_cap[2] = {
         "\xE8\xBF\x9E\xE6\x8E\xA5" /* 连接 */, "\xE6\xB5\x81\xE9\x87\x8F" /* 流量 */,
     };
-    lv_obj_t **cp_val[4] = { &s_cp_node, &s_cp_chain, &s_cp_conns, &s_cp_traffic };
-    for (int i = 0; i < 4; i++) {
+    lv_obj_t **cp_val[2] = { &s_cp_conns, &s_cp_traffic };
+    for (int i = 0; i < 2; i++) {
         lv_label_set_text(mklabel(st, UI_PAD, 30 + i * 22, FCN_S, UI_C_TEXT_3), k_cp_cap[i]);
         *cp_val[i] = mklabel(st, UI_CARD_W - UI_PAD - 200, 30 + i * 22, FCN_S, UI_C_TEXT_2);
         lv_obj_set_width(*cp_val[i], 200);
         lv_obj_set_style_text_align(*cp_val[i], LV_TEXT_ALIGN_RIGHT, 0);
     }
 
-    lv_obj_t *md = mk_card(t, 144, 70);
+    lv_obj_t *md = mk_card(t, 100, 70);
     lv_label_set_text(mklabel(md, UI_PAD, 8, FCN_S, UI_C_TEXT_3), "\xE6\xA8\xA1\xE5\xBC\x8F" /* 模式 */);
     static const char *labels[3] = { "规则", "全局", "直连" };
     int bw = (UI_CARD_W - 2 * UI_PAD - 2 * 6) / 3;
@@ -1268,30 +1467,87 @@ static void build_sub_chill(lv_obj_t *t)
         lv_obj_center(l);
     }
 
-    s_cp_grp_card = mk_card(t, 224, grp_h);
-    lv_label_set_text(mklabel(s_cp_grp_card, UI_PAD, 8, FCN_S, UI_C_TEXT_3),
-                      "\xE7\xAD\x96\xE7\x95\xA5\xE7\xBB\x84" /* 策略组 */);
-    {
-        int gbw = (UI_CARD_W - 2 * UI_PAD - (CHILL_GRP_COLS - 1) * 6) / CHILL_GRP_COLS;
-        for (int i = 0; i < CHILL_MAX_GROUPS; i++) {
-            int row = i / CHILL_GRP_COLS, col = i % CHILL_GRP_COLS;
-            s_cp_grp_btn[i] = lv_button_create(s_cp_grp_card);
-            lv_obj_set_size(s_cp_grp_btn[i], gbw, 30);
-            lv_obj_set_style_radius(s_cp_grp_btn[i], 8, 0);
-            lv_obj_align(s_cp_grp_btn[i], LV_ALIGN_TOP_LEFT,
-                        UI_PAD + col * (gbw + 6), 30 + row * 36);
-            lv_obj_add_event_cb(s_cp_grp_btn[i], chill_group_cb, LV_EVENT_CLICKED,
-                                (void *)(intptr_t)i);
-            s_cp_grp_lbl[i] = lv_label_create(s_cp_grp_btn[i]);
-            lv_obj_set_style_text_font(s_cp_grp_lbl[i], FCN_S, 0);
-            lv_obj_set_width(s_cp_grp_lbl[i], gbw - 8);
-            lv_label_set_long_mode(s_cp_grp_lbl[i], LV_LABEL_LONG_CLIP);
-            lv_obj_center(s_cp_grp_lbl[i]);
-            lv_obj_add_flag(s_cp_grp_btn[i], LV_OBJ_FLAG_HIDDEN);
-        }
+    /* 策略组+节点/规则→节点流量——曾经是这个页面上一直展开的大块
+     * （12 个组按钮 + 最多 200 行节点列表 + 6 行流量表，无论翻不翻到都已经
+     * 建好），一屏塞满，2026-09-22 反馈说这样会卡。现在只留两行摘要+箭头，
+     * 点进去才是那些重的内容所在的独立二级页（跟"专线节点 >"这类设置列表
+     * 一个思路）。策略组和节点共用一行/一个页面（点组切节点，两者是同一个
+     *选择器，不是两件事——2026-09-22 反馈："策略组下面展开节点啊，这两个
+     * 是紧密关联的"）。 */
+    lv_obj_t *nav = mk_card(t, 180, 30 + CHILL_NAV_ROWS * 44 + 8);
+    static const char *const k_nav_cap[CHILL_NAV_ROWS] = {
+        "\xE8\x8A\x82\xE7\x82\xB9" /* 节点 */,
+        "\xE8\xA7\x84\xE5\x88\x99 \xE2\x86\x92 \xE8\x8A\x82\xE7\x82\xB9" /* 规则 → 节点 */,
+    };
+    static const int k_nav_child[CHILL_NAV_ROWS] = { SUB_CHILL_NODES, SUB_CHILL_PAIRS };
+    for (int i = 0; i < CHILL_NAV_ROWS; i++) {
+        lv_obj_t *row = lv_obj_create(nav);
+        lv_obj_remove_style_all(row);
+        lv_obj_set_size(row, UI_CARD_W - 2 * UI_PAD, 40);
+        lv_obj_align(row, LV_ALIGN_TOP_LEFT, UI_PAD, 8 + i * 44);
+        lv_obj_set_style_radius(row, 10, 0);
+        lv_obj_set_style_bg_color(row, lv_color_hex(UI_C_TRACK), 0);
+        lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
+        lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_event_cb(row, chill_nav_cb, LV_EVENT_CLICKED, (void *)(intptr_t)k_nav_child[i]);
+        s_cp_nav_row[i] = row;
+        lv_label_set_text(mklabel(row, 10, 11, FCN_S, UI_C_TEXT), k_nav_cap[i]);
+        s_cp_nav_val[i] = mklabel(row, UI_CARD_W - 2 * UI_PAD - 136, 11, FCN_S, UI_C_TEXT_3);
+        lv_obj_set_width(s_cp_nav_val[i], 110);
+        lv_obj_set_style_text_align(s_cp_nav_val[i], LV_TEXT_ALIGN_RIGHT, 0);
+        /* 纯 ASCII，不用 LV_SYMBOL_RIGHT——那是私有区码位，只能配 montserrat，
+         * 这一行其余文字都在 FCN_S（见 DESIGN.md 字体配对的坑）。 */
+        lv_label_set_text(mklabel(row, UI_CARD_W - 2 * UI_PAD - 20, 11, FCN_S, UI_C_TEXT_3), ">");
     }
 
-    s_cp_node_card = mk_card(t, 224 + grp_h + 10, 30 + CHILL_MAX_NODES * 44 + 8);
+    /* LVGL's lv_slider/lv_button/lv_switch all set LV_OBJ_FLAG_SCROLL_ON_FOCUS
+     * by default (see lv_slider.c/lv_button.c/lv_switch.c), and this project
+     * never disables it (touch-only, no keypad/encoder group where focus-
+     * driven scrolling would matter). Something focuses a widget the first
+     * time a page with one of those is built, so the very first visit can
+     * land scrolled a card or two down instead of at the top (caught on
+     * the 系统 tab: 电池与负载 was the first thing visible, not 屏幕/亮度).
+     * Pin it back to 0 once, right after building — this runs exactly once
+     * per page (inside its build_* function), so it doesn't fight the user's
+     * own scrolling on later visits. */
+    lv_obj_scroll_to_y(t, 0, LV_ANIM_OFF);
+}
+
+/* ---- CHILL / 节点 (drill-down from the CHILL page's nav row) ----
+ * 策略组网格在上，选中组的成员节点列表紧跟在下面，一个页面——mihomo 自己
+ * 的组成员本来就可能是别的策略组（比如按国家分的 🇹🇼台湾/🇯🇵日本，
+ * 2026-09-22 反馈举的 Surge 配置例子同一个思路：上层组把这些地区组当成员
+ * 选），选中一个之后 chill_select_group()/chill_select_node() 直接把成员
+ * 名字发给 mihomo 的 select API，不关心那个名字背后是不是又是一个组——
+ * 所以点组切换下面的节点列表、点节点（哪怕节点本身是个地区组）直接选中，
+ * 都是已经支持的行为，不需要额外的树形递归。 */
+static void build_sub_chill_nodes(lv_obj_t *t)
+{
+    int node_h = 30 + CHILL_MAX_NODES * 44 + 8;
+    t = mk_scroll_h(t, UI_SUB_VIEW, CHILL_GRP_H + 10 + node_h + 16);
+
+    s_cp_grp_card = mk_card(t, 8, CHILL_GRP_H);
+    lv_label_set_text(mklabel(s_cp_grp_card, UI_PAD, 8, FCN_S, UI_C_TEXT_3),
+                      "\xE7\xAD\x96\xE7\x95\xA5\xE7\xBB\x84" /* 策略组 */);
+    int gbw = (UI_CARD_W - 2 * UI_PAD - (CHILL_GRP_COLS - 1) * 6) / CHILL_GRP_COLS;
+    for (int i = 0; i < CHILL_MAX_GROUPS; i++) {
+        int row = i / CHILL_GRP_COLS, col = i % CHILL_GRP_COLS;
+        s_cp_grp_btn[i] = lv_button_create(s_cp_grp_card);
+        lv_obj_set_size(s_cp_grp_btn[i], gbw, 30);
+        lv_obj_set_style_radius(s_cp_grp_btn[i], 8, 0);
+        lv_obj_align(s_cp_grp_btn[i], LV_ALIGN_TOP_LEFT,
+                    UI_PAD + col * (gbw + 6), 30 + row * 36);
+        lv_obj_add_event_cb(s_cp_grp_btn[i], chill_group_cb, LV_EVENT_CLICKED,
+                            (void *)(intptr_t)i);
+        s_cp_grp_lbl[i] = lv_label_create(s_cp_grp_btn[i]);
+        lv_obj_set_style_text_font(s_cp_grp_lbl[i], FCN_S, 0);
+        lv_obj_set_width(s_cp_grp_lbl[i], gbw - 8);
+        lv_label_set_long_mode(s_cp_grp_lbl[i], LV_LABEL_LONG_CLIP);
+        lv_obj_center(s_cp_grp_lbl[i]);
+        lv_obj_add_flag(s_cp_grp_btn[i], LV_OBJ_FLAG_HIDDEN);
+    }
+
+    s_cp_node_card = mk_card(t, CHILL_GRP_H + 10, node_h);
     lv_label_set_text(mklabel(s_cp_node_card, UI_PAD, 8, FCN_S, UI_C_TEXT_3),
                       "\xE8\x8A\x82\xE7\x82\xB9" /* 节点 */);
     s_cp_delay_lbl = mklabel(s_cp_node_card, UI_CARD_W - UI_PAD - 90, 8, FCN_S, UI_C_ACCENT);
@@ -1319,17 +1575,17 @@ static void build_sub_chill(lv_obj_t *t)
         lv_obj_set_style_text_align(s_cp_node_dl[i], LV_TEXT_ALIGN_RIGHT, 0);
         lv_obj_add_flag(row, LV_OBJ_FLAG_HIDDEN);
     }
+    lv_obj_scroll_to_y(t, 0, LV_ANIM_OFF);
+}
 
-    /* LVGL's lv_slider/lv_button/lv_switch all set LV_OBJ_FLAG_SCROLL_ON_FOCUS
-     * by default (see lv_slider.c/lv_button.c/lv_switch.c), and this project
-     * never disables it (touch-only, no keypad/encoder group where focus-
-     * driven scrolling would matter). Something focuses a widget the first
-     * time a page with one of those is built, so the very first visit can
-     * land scrolled a card or two down instead of at the top (caught on
-     * the 系统 tab: 电池与负载 was the first thing visible, not 屏幕/亮度).
-     * Pin it back to 0 once, right after building — this runs exactly once
-     * per page (inside its build_* function), so it doesn't fight the user's
-     * own scrolling on later visits. */
+/* ---- CHILL / 规则 → 节点流量 (drill-down) ---- */
+static void build_sub_chill_pairs(lv_obj_t *t)
+{
+    int traf_h = 30 + CHILL_TRAF_ROWS * 22 + 8;
+    t = mk_scroll_h(t, UI_SUB_VIEW, traf_h + 16);
+    build_traffic_card(t, 8,
+                       "\xE8\xA7\x84\xE5\x88\x99 \xE2\x86\x92 \xE8\x8A\x82\xE7\x82\xB9\xE6\xB5\x81\xE9\x87\x8F" /* 规则 → 节点流量 */,
+                       &s_cp_pair_card, s_cp_pair_name, s_cp_pair_val);
     lv_obj_scroll_to_y(t, 0, LV_ANIM_OFF);
 }
 
@@ -1724,24 +1980,98 @@ static void band_group_sync(int gi, const char *csv)
 }
 
 /* ---- 测速 subpage ----
- * The litehtml UI drives /data/plugins/better-speedtest/better-speedtest,
- * which is not installed on this device (its own page shows an install
- * prompt in that case). Rather than build a gauge with nothing behind it,
- * say what is missing. */
+ * 2026-09-22: rebuilt on top of zte-agent's own speed test engine (see
+ * speedtest.h/.c) instead of the old, never-installed better-speedtest
+ * plugin — this used to be a permanent "not installed" placeholder. */
+static void speedtest_btn_cb(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    if (speedtest_running()) speedtest_stop();
+    else                     speedtest_start();
+}
+
+static void speedtest_srv_cb(lv_event_t *e)
+{
+    int idx = (int)(intptr_t)lv_event_get_user_data(e);
+    speedtest_select_server(idx - 1);   /* row 0 = 自动 = index -1 */
+}
+
 static void build_sub_speed(lv_obj_t *t)
 {
-    lv_obj_t *c = mk_card(t, 8, 130);
-    lv_label_set_text(mklabel(c, UI_PAD, 8, FCN_S, UI_C_TEXT_3),
+    t = mk_scroll_h(t, UI_SUB_VIEW,
+                    8 + 210 + 10 + 30 + ST_SRV_ROWS * 40 + 16);
+
+    s_st_card = mk_card(t, 8, 210);
+    lv_label_set_text(mklabel(s_st_card, UI_PAD, 8, FCN_S, UI_C_TEXT_3),
                       "\xE7\xBD\x91\xE7\xBB\x9C\xE6\xB5\x8B\xE9\x80\x9F" /* 网络测速 */);
-    lv_obj_t *l = mklabel(c, UI_PAD, 32, FCN_S, UI_C_TEXT_2);
-    lv_obj_set_width(l, UI_CARD_W - 2 * UI_PAD);
-    lv_label_set_long_mode(l, LV_LABEL_LONG_WRAP);
-    lv_label_set_text(l, "需要 better-speedtest 插件，本机没有安装。\n"
-                         "装到 /data/plugins/better-speedtest/ 之后这一页才能跑。");
-    lv_obj_t *h = mklabel(c, UI_PAD, 92, FCN_S, UI_C_TEXT_3);
-    lv_obj_set_width(h, UI_CARD_W - 2 * UI_PAD);
-    lv_label_set_long_mode(h, LV_LABEL_LONG_WRAP);
-    lv_label_set_text(h, "顶栏的实时速率和「图表」页的网速曲线不依赖它。");
+    s_st_phase = mklabel(s_st_card, UI_CARD_W - UI_PAD - 120, 8, FCN_S, UI_C_TEXT_2);
+    lv_obj_set_width(s_st_phase, 120);
+    lv_obj_set_style_text_align(s_st_phase, LV_TEXT_ALIGN_RIGHT, 0);
+
+    /* Headline number — this page's one job, so it gets the biggest type on
+     * screen (matches the 性能测试 page's FPS/touch-rate treatment, same
+     * montserrat_20+ scale for "the number you opened this page to see").
+     * Digits + "Mbps" are all ASCII, montserrat is fine here (no ↓↑ glyphs
+     * in this label, so the CJK-only font-pairing rule doesn't apply). */
+    s_st_live = mklabel(s_st_card, UI_PAD, 32, &lv_font_montserrat_28, UI_C_ACCENT);
+    lv_label_set_text(s_st_live, "--");
+
+    s_st_detail = mklabel(s_st_card, UI_PAD, 74, FCN_S, UI_C_TEXT_2);
+    lv_obj_set_width(s_st_detail, UI_CARD_W - 2 * UI_PAD);
+
+    s_st_result = mklabel(s_st_card, UI_PAD, 96, FCN_S, UI_C_TEXT_2);
+    lv_obj_set_width(s_st_result, UI_CARD_W - 2 * UI_PAD);
+
+    s_st_server = mklabel(s_st_card, UI_PAD, 118, FCN_S, UI_C_TEXT_3);
+    lv_obj_set_width(s_st_server, UI_CARD_W - 2 * UI_PAD);
+    lv_label_set_long_mode(s_st_server, LV_LABEL_LONG_CLIP);
+
+    s_st_btn = lv_button_create(s_st_card);
+    lv_obj_set_size(s_st_btn, UI_CARD_W - 2 * UI_PAD, 40);
+    lv_obj_set_style_radius(s_st_btn, 10, 0);
+    lv_obj_align(s_st_btn, LV_ALIGN_TOP_LEFT, UI_PAD, 146);
+    lv_obj_add_event_cb(s_st_btn, speedtest_btn_cb, LV_EVENT_CLICKED, NULL);
+    s_st_btn_lbl = lv_label_create(s_st_btn);
+    lv_obj_set_style_text_font(s_st_btn_lbl, FCN_S, 0);
+    lv_label_set_text(s_st_btn_lbl, "\xE5\xBC\x80\xE5\xA7\x8B\xE6\xB5\x8B\xE9\x80\x9F" /* 开始测速 */);
+    lv_obj_center(s_st_btn_lbl);
+
+    /* zte-agent unreachable / no password on file (agent not running, or
+     * ZTE_AGENT_PASSWORD missing from start_zte_agent.sh) — say so instead
+     * of a card that just sits on "--" forever with a dead button. Same
+     * pattern as eSIM's offline message. */
+    s_st_offline = mklabel(s_st_card, UI_PAD, 190, FCN_S, UI_C_BAD);
+    lv_obj_set_width(s_st_offline, UI_CARD_W - 2 * UI_PAD);
+    lv_label_set_long_mode(s_st_offline, LV_LABEL_LONG_WRAP);
+    lv_obj_add_flag(s_st_offline, LV_OBJ_FLAG_HIDDEN);
+
+    /* Server list — 管理网页那边有下拉选服务器，这版一开始漏了，一律自动
+     * 选最佳（2026-09-22 用户指出）。固定槽位、按实际拿到的数量隐藏/显示，
+     * 同 CHILL 节点列表、eSIM profile 列表一个模式。"自动"固定占第 0 行，
+     * 不算进 speedtest_servers_count()。 */
+    s_st_srv_card = mk_card(t, 8 + 210 + 10, 30 + ST_SRV_ROWS * 40 + 8);
+    lv_label_set_text(mklabel(s_st_srv_card, UI_PAD, 8, FCN_S, UI_C_TEXT_3),
+                      "\xE6\x9C\x8D\xE5\x8A\xA1\xE5\x99\xA8" /* 服务器 */);
+    for (int i = 0; i < ST_SRV_ROWS; i++) {
+        lv_obj_t *row = lv_obj_create(s_st_srv_card);
+        lv_obj_remove_style_all(row);
+        lv_obj_set_size(row, UI_CARD_W - 2 * UI_PAD, 34);
+        lv_obj_align(row, LV_ALIGN_TOP_LEFT, UI_PAD, 30 + i * 40);
+        lv_obj_set_style_radius(row, 8, 0);
+        lv_obj_set_style_bg_color(row, lv_color_hex(UI_C_TRACK), 0);
+        lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
+        lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_event_cb(row, speedtest_srv_cb, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+        s_st_srv_row[i] = row;
+        s_st_srv_name[i] = mklabel(row, 10, 9, FCN_S, UI_C_TEXT);
+        lv_obj_set_width(s_st_srv_name[i], UI_CARD_W - 2 * UI_PAD - 20);
+        lv_label_set_long_mode(s_st_srv_name[i], LV_LABEL_LONG_CLIP);
+        if (i > 0) lv_obj_add_flag(row, LV_OBJ_FLAG_HIDDEN);   /* 等列表拉回来再显示 */
+    }
+    lv_label_set_text(s_st_srv_name[0],
+                      "\xE8\x87\xAA\xE5\x8A\xA8\xEF\xBC\x88\xE6\x9C\x80\xE4\xBD\xB3\xE6\x9C\x8D\xE5\x8A\xA1\xE5\x99\xA8\xEF\xBC\x89" /* 自动（最佳服务器） */);
+
+    lv_obj_scroll_to_y(t, 0, LV_ANIM_OFF);
 }
 
 /* Every tile now has a real page, so the "not built yet" placeholder body
@@ -1755,6 +2085,11 @@ static void tile_click_cb(lv_event_t *e)
     sub_open((int)(intptr_t)lv_event_get_user_data(e));
 }
 
+static void chill_nav_cb(lv_event_t *e)
+{
+    sub_open_child((int)(intptr_t)lv_event_get_user_data(e), SUB_CHILL);
+}
+
 static void build_func(lv_obj_t *t)
 {
     static const char *const k_tile_name[SUB_N] = {
@@ -1763,15 +2098,20 @@ static void build_func(lv_obj_t *t)
         "\xE9\x94\x81\xE9\xA2\x91" /* 锁频 */, "\xE6\xB5\x8B\xE9\x80\x9F" /* 测速 */,
         "CHILL", "eSIM", "\xE6\x80\xA7\xE8\x83\xBD\xE6\xB5\x8B\xE8\xAF\x95" /* 性能测试 */,
         "Tailscale",
+        "\xE8\x8A\x82\xE7\x82\xB9" /* 节点 */,
+        "\xE8\xA7\x84\xE5\x88\x99 \xE2\x86\x92 \xE8\x8A\x82\xE7\x82\xB9" /* 规则 → 节点 */,
     };
     static const char *const k_tile_static[SUB_N] = {
         NULL, NULL,
         "\xE5\xB0\x8F\xE5\x8C\xBA/\xE9\x82\xBB\xE5\x8C\xBA/\xE6\x94\xAF\xE6\x8C\x81\xE9\xA2\x91\xE6\xAE\xB5", /* 小区/邻区/支持频段 */
         NULL,   /* 锁频: refresh_cb writes the live 选网方式 */
-        "\xE6\x8F\x92\xE4\xBB\xB6\xE6\x9C\xAA\xE5\xAE\x89\xE8\xA3\x85", /* 插件未安装 */
+        /* 2026-09-22: this used to be a hardcoded "插件未安装" — stale as
+         * soon as speedtest.c stopped depending on that plugin. Now NULL,
+         * refresh_cb writes a live status same as the other dynamic tiles. */
+        NULL,
         NULL, NULL,
         "\xE8\xB0\x83\xE8\xAF\x95\xE9\xA1\xB5", /* 调试页 */
-        NULL,
+        NULL, NULL, NULL,   /* SUB_TS/NODES/PAIRS: 不在磁贴墙上 */
     };
     /* Explicit list, not 0..SUB_N: SUB_TS has a subpage but no tile (it is
      * opened from the Tailscale card on Home). */
@@ -2096,6 +2436,22 @@ static void refresh_cb(lv_timer_t *t)
             lv_obj_align(s_ca_card[i], LV_ALIGN_TOP_LEFT, UI_PAD, y);
             y += (act ? 78 : 50) + 8;
         }
+
+        /* 今日/本月流量：firmware（zwrt_data ubus）自己按日历日/月累计好的
+         * 计数器，不是拿 rx_bytes/tx_bytes（本次开机会话流量）自己再按
+         * 时间窗口加总——那两个字段开机就清零，answer 不了"这个月用了多少"。 */
+        {
+            char c_day[32], c_month[32];
+            fmt_bytes_total(c_day, sizeof c_day, d.day_rx_bytes + d.day_tx_bytes);
+            fmt_bytes_total(c_month, sizeof c_month, d.month_rx_bytes + d.month_tx_bytes);
+            static char c_traf[80] = "";
+            set_label_fmt(s_cc_traffic, c_traf, sizeof c_traf,
+                          "\xE4\xBB\x8A\xE6\x97\xA5 %s \xC2\xB7 \xE6\x9C\xAC\xE6\x9C\x88 %s" /* 今日 X · 本月 Y */,
+                          c_day, c_month);
+            lv_obj_align(s_cc_traffic, LV_ALIGN_TOP_LEFT, UI_PAD, y);
+            y += 22;
+        }
+
         /* Reflow the card stack: the cellular card shrinks to the rows it
          * actually shows, and the cards under it follow. Property updates on
          * existing objects only — nothing is allocated here. */
@@ -2193,9 +2549,10 @@ static void refresh_cb(lv_timer_t *t)
     /* ---- CHILL (Home card + subpage) ---- */
     {
         int on_home = tab_visible(TAB_HOME);
-        int on_page = sub_visible(SUB_CHILL);
+        int on_page = sub_visible(SUB_CHILL) || sub_visible(SUB_CHILL_NODES) ||
+                      sub_visible(SUB_CHILL_PAIRS);
         if (chill_poll(on_home || on_page)) {
-            static char c_cs[32] = "", c_cn[64] = "", c_cc[64] = "", c_cx[48] = "", c_cr[48] = "";
+            static char c_cs[32] = "", c_cr[48] = "", c_csp[32] = "", c_ctt[40] = "";
             int online = chill_online();
             if (!online) {
                 lv_obj_add_flag(s_chill_card, LV_OBJ_FLAG_HIDDEN);
@@ -2203,20 +2560,77 @@ static void refresh_cb(lv_timer_t *t)
                 lv_obj_remove_flag(s_chill_card, LV_OBJ_FLAG_HIDDEN);
                 set_label_fmt(s_chill_state, c_cs, sizeof c_cs, "%s \xC2\xB7 %s",
                               chill_core(), chill_mode());
-                set_label_fmt(s_chill_node, c_cn, sizeof c_cn, "%s \xE2\x86\x92 %s",
-                              chill_group(), chill_node());
-                set_label_fmt(s_chill_chain, c_cc, sizeof c_cc, "\xE9\x93\xBE\xE8\xB7\xAF %s",
-                              chill_chain());
-                set_label_fmt(s_chill_conns, c_cx, sizeof c_cx, "%s", chill_conn_split());
+                /* 2026-09-22: connections/direct-vs-proxy split and
+                 * cumulative traffic were only ever shown on the detail
+                 * page, a swipe away — chill.c already tracked both
+                 * (chill_conn_split()/chill_traffic()), this just surfaces
+                 * them on the card people actually look at. */
+                set_label_fmt(s_chill_split, c_csp, sizeof c_csp, "%s", chill_conn_split());
+                set_label_fmt(s_chill_total, c_ctt, sizeof c_ctt, "%s", chill_traffic());
+                /*
+                 * chill_group()/chill_node()/chill_chain() only ever describe
+                 * ONE configured group (chill.conf's "节点选择") — that read
+                 * as "current node: X" even in 规则 mode, where most traffic
+                 * never goes through that group at all (it's split across
+                 * whichever group each connection's domain/rule matched:
+                 * Apple/VoWiFi/漏网之鱼/...). Flagged as actively wrong
+                 * (2026-09-22). Show the real top (rule -> node) pairs
+                 * instead, straight from chill_top_pair() (built off live
+                 * /connections data) — directly on this card, not as a
+                 * one-line summary pointing at the detail page (that was the
+                 * first attempt; the numbers need to be where people
+                 * actually look). Node and group used to be two independent
+                 * top-N lists side by side, which look paired but aren't —
+                 * this is one list keyed by (group, node) so each row is a
+                 * real answer to "this rule's traffic went through this
+                 * node" (2026-09-22 follow-up feedback). No mode branch
+                 * needed: outside 规则 mode every connection shares one
+                 * chain, so "top N" naturally collapses to "top 1".
+                 *
+                 * Each pair is its own sub-card now (2026-09-22, "太丑" +
+                 * name clipping fix) instead of a flat name/value text row,
+                 * so the card also has to reflow: hidden rows collapse away
+                 * — same pattern as the Home signal card's carrier slots
+                 * (mk_subcard boxes, accumulate y, resize the parent). */
+                static char c_tpn[CHILL_HOME_ROWS][96], c_tpv[CHILL_HOME_ROWS][40];
+                int tpn = chill_top_pair_count();
+                int y = 68;
+                for (int i = 0; i < CHILL_HOME_ROWS; i++) {
+                    if (i > 0 && i >= tpn) {
+                        lv_obj_add_flag(s_chill_pair_box[i], LV_OBJ_FLAG_HIDDEN);
+                        continue;
+                    }
+                    lv_obj_remove_flag(s_chill_pair_box[i], LV_OBJ_FLAG_HIDDEN);
+                    if (i >= tpn) {
+                        /* tpn == 0: keep slot 0 visible with a placeholder
+                         * instead of hiding every row, so the card doesn't
+                         * collapse to just the header when CHILL is up but
+                         * idle. */
+                        set_label_fmt(s_chill_pair_name[i], c_tpn[i], sizeof c_tpn[i], "%s",
+                                      "\xE6\x9A\x82\xE6\x97\xA0\xE6\xB4\xBB\xE8\xB7\x83\xE8\xBF\x9E\xE6\x8E\xA5" /* 暂无活跃连接 */);
+                        set_label_fmt(s_chill_pair_val[i], c_tpv[i], sizeof c_tpv[i], "%s", "");
+                    } else {
+                        chill_traffic_item_t it;
+                        chill_get_top_pair(i, &it);
+                        set_label_fmt(s_chill_pair_name[i], c_tpn[i], sizeof c_tpn[i], "%s", it.name);
+                        set_label_fmt(s_chill_pair_val[i], c_tpv[i], sizeof c_tpv[i], "%s", it.traffic);
+                    }
+                    lv_obj_align(s_chill_pair_box[i], LV_ALIGN_TOP_LEFT, UI_PAD, y);
+                    y += CHILL_PAIR_ROW_H + CHILL_PAIR_GAP;
+                }
+                lv_obj_align(s_chill_rate, LV_ALIGN_TOP_LEFT, UI_PAD, y + 4);
+                /* +22 not +18: s_chill_rate moved from FCN_S (13px) to FCN
+                 * (16px) for "bigger" (2026-09-22), needs a bit more row
+                 * height so its descenders don't sit on the card's bottom
+                 * edge. */
+                lv_obj_set_height(s_chill_card, y + 4 + 22 + 10);
                 set_label_fmt(s_chill_rate, c_cr, sizeof c_cr, "%s", chill_speed());
             }
             /* Subpage mirrors the same values plus the node list. */
-            static char c_pc[24] = "", c_pn[64] = "", c_px[64] = "", c_pv[48] = "", c_pt[48] = "";
+            static char c_pc[24] = "", c_pv[48] = "", c_pt[48] = "";
             set_label_fmt(s_cp_core, c_pc, sizeof c_pc, "%s", chill_core());
             lv_obj_set_style_text_color(s_cp_core,
                 lv_color_hex(online ? UI_C_OK : UI_C_TEXT_3), 0);
-            set_label_fmt(s_cp_node, c_pn, sizeof c_pn, "%s", chill_node());
-            set_label_fmt(s_cp_chain, c_px, sizeof c_px, "%s", chill_chain());
             set_label_fmt(s_cp_conns, c_pv, sizeof c_pv, "%s", chill_conn_split());
             set_label_fmt(s_cp_traffic, c_pt, sizeof c_pt, "%s", chill_traffic());
             const char *mraw = chill_mode_raw();
@@ -2270,6 +2684,40 @@ static void refresh_cb(lv_timer_t *t)
                     lv_color_hex(ni.selected ? 0x1e3a2e : UI_C_TRACK), 0);
             }
             lv_obj_set_height(s_cp_node_card, 30 + (nn ? nn : 1) * 44 + 8);
+
+            /* 流量分布——数据来自这次已经拉过的 /connections，chill_poll()
+             * 内部顺带算好了，这里不额外发请求。行数固定建好，按实际条目数
+             * 隐藏/显示；卡片高度按实际行数收缩。一行是一个 (规则, 节点)
+             * 组合，不是两张各自独立排名、容易被误读成一一对应的卡
+             * （2026-09-22 反馈）。现在自己单独一个二级页，不用再跟着节点卡
+             * 的高度重新定位。 */
+            int tpn = chill_top_pair_count();
+            static char c_tpname[CHILL_TRAF_ROWS][96], c_tpval[CHILL_TRAF_ROWS][40];
+            for (int i = 0; i < CHILL_TRAF_ROWS; i++) {
+                if (i >= tpn) {
+                    lv_obj_add_flag(s_cp_pair_name[i], LV_OBJ_FLAG_HIDDEN);
+                    lv_obj_add_flag(s_cp_pair_val[i], LV_OBJ_FLAG_HIDDEN);
+                    continue;
+                }
+                chill_traffic_item_t it;
+                chill_get_top_pair(i, &it);
+                lv_obj_remove_flag(s_cp_pair_name[i], LV_OBJ_FLAG_HIDDEN);
+                lv_obj_remove_flag(s_cp_pair_val[i], LV_OBJ_FLAG_HIDDEN);
+                set_label_fmt(s_cp_pair_name[i], c_tpname[i], sizeof c_tpname[i], "%s", it.name);
+                set_label_fmt(s_cp_pair_val[i], c_tpval[i], sizeof c_tpval[i], "%s", it.traffic);
+            }
+            lv_obj_set_height(s_cp_pair_card, 30 + (tpn ? tpn : 1) * 22 + 8);
+
+            /* CHILL 页两行摘要——纯计数，不复用 chill_group()/chill_node()
+             * 那套"当前配置的节点选择"语义，避免又把"点进去能改什么"和
+             * "流量实际去哪了"这两件事混到一起（就是这轮反馈本身在说的
+             * 问题）。节点行顺带带上组数，因为这一行现在是策略组+节点
+             * 合并页的入口。 */
+            static char c_ngc[CHILL_NAV_ROWS][24];
+            set_label_fmt(s_cp_nav_val[CHILL_NAV_NODES], c_ngc[CHILL_NAV_NODES],
+                          sizeof c_ngc[CHILL_NAV_NODES], "%d \xE7\xBB\x84 \xC2\xB7 %d \xE4\xB8\xAA" /* 组 · 个 */, ng, nn);
+            set_label_fmt(s_cp_nav_val[CHILL_NAV_PAIRS], c_ngc[CHILL_NAV_PAIRS],
+                          sizeof c_ngc[CHILL_NAV_PAIRS], "%d \xE6\x9D\xA1" /* 条 */, tpn);
         }
     }
 
@@ -2299,6 +2747,106 @@ static void refresh_cb(lv_timer_t *t)
                                  p.enabled ? UI_C_OK : UI_C_TRACK), 0);
             }
             lv_obj_set_height(s_es_list_card, 30 + (n ? n : 1) * 52 + 8);
+        }
+    }
+
+    /* ---- Speedtest subpage ---- */
+    {
+        /* Also polled while just the 功能 tile wall is up (not only the
+         * subpage itself) — the tile's own subtitle (功能 tile subtitles,
+         * below) needs live data to replace the old hardcoded "插件未安装"
+         * text, same as WiFi/SMS/CHILL/eSIM/锁频 already do. */
+        if (speedtest_poll(sub_visible(SUB_SPEED) || tab_visible(TAB_FUNC))) {
+            int online = speedtest_agent_reachable();
+            if (!online) {
+                lv_obj_add_flag(s_st_live, LV_OBJ_FLAG_HIDDEN);
+                lv_obj_add_flag(s_st_detail, LV_OBJ_FLAG_HIDDEN);
+                lv_obj_add_flag(s_st_result, LV_OBJ_FLAG_HIDDEN);
+                lv_obj_add_flag(s_st_server, LV_OBJ_FLAG_HIDDEN);
+                lv_obj_add_flag(s_st_btn, LV_OBJ_FLAG_HIDDEN);
+                lv_obj_remove_flag(s_st_offline, LV_OBJ_FLAG_HIDDEN);
+                lv_obj_set_pos(s_st_offline, UI_PAD, 32);
+                lv_label_set_text(s_st_phase, "");
+                lv_label_set_text(s_st_offline,
+                    "连不上测速服务（zte-agent）。\n"
+                    "检查 zte-agent 有没有在跑，以及 start_zte_agent.sh 里\n"
+                    "有没有 ZTE_AGENT_PASSWORD。");
+            } else {
+                lv_obj_remove_flag(s_st_live, LV_OBJ_FLAG_HIDDEN);
+                lv_obj_remove_flag(s_st_detail, LV_OBJ_FLAG_HIDDEN);
+                lv_obj_remove_flag(s_st_result, LV_OBJ_FLAG_HIDDEN);
+                lv_obj_remove_flag(s_st_server, LV_OBJ_FLAG_HIDDEN);
+                lv_obj_remove_flag(s_st_btn, LV_OBJ_FLAG_HIDDEN);
+
+                static char c_ph[24] = "", c_live[32] = "", c_detail[64] = "",
+                            c_result[64] = "", c_srv[96] = "";
+                speedtest_phase_t ph = speedtest_phase();
+                double dl = speedtest_download_mbps(), ul = speedtest_upload_mbps();
+                double ping = speedtest_ping_ms(), jitter = speedtest_jitter_ms();
+
+                set_label_fmt(s_st_phase, c_ph, sizeof c_ph, "%s", speedtest_phase_label());
+
+                if (ph == ST_DOWNLOAD || ph == ST_UPLOAD)
+                    set_label_fmt(s_st_live, c_live, sizeof c_live, "%.1f", speedtest_live_mbps());
+                else if (ph == ST_COMPLETE)
+                    set_label_fmt(s_st_live, c_live, sizeof c_live, "%.1f", dl >= 0 ? dl : 0.0);
+                else
+                    set_label_fmt(s_st_live, c_live, sizeof c_live, "%s", "--");
+
+                if (ping >= 0)
+                    set_label_fmt(s_st_detail, c_detail, sizeof c_detail,
+                                  "延迟 %.0fms · 抖动 %.0fms", ping, jitter >= 0 ? jitter : 0.0);
+                else
+                    set_label_fmt(s_st_detail, c_detail, sizeof c_detail, "%s", "");
+
+                if (dl >= 0 || ul >= 0)
+                    set_label_fmt(s_st_result, c_result, sizeof c_result,
+                                  "\xE2\x86\x93 %.1f Mbps  \xE2\x86\x91 %.1f Mbps",
+                                  dl >= 0 ? dl : 0.0, ul >= 0 ? ul : 0.0);
+                else
+                    set_label_fmt(s_st_result, c_result, sizeof c_result, "%s", "");
+
+                set_label_fmt(s_st_server, c_srv, sizeof c_srv, "%s", speedtest_server());
+
+                int running = speedtest_running();
+                lv_label_set_text(s_st_btn_lbl,
+                    running ? "停止" : ph == ST_COMPLETE ? "重新测速" : "开始测速");
+                lv_obj_set_style_bg_color(s_st_btn,
+                    lv_color_hex(running ? UI_C_BAD : UI_C_ACCENT), 0);
+
+                if (ph == ST_ERROR && speedtest_error()[0]) {
+                    lv_obj_remove_flag(s_st_offline, LV_OBJ_FLAG_HIDDEN);
+                    lv_obj_set_pos(s_st_offline, UI_PAD, 190);
+                    lv_label_set_text(s_st_offline, speedtest_error());
+                } else {
+                    lv_obj_add_flag(s_st_offline, LV_OBJ_FLAG_HIDDEN);
+                }
+            }
+        }
+
+        /* 服务器列表：只在二级页真正打开时拉（不像 progress 那样功能磁贴墙
+         * 打开也拉——列表要不了那么勤，磁贴副标题不需要它）。 */
+        if (speedtest_servers_poll(sub_visible(SUB_SPEED))) {
+            int n = speedtest_servers_count();
+            static char c_sn[ST_SRV_ROWS][112];
+            for (int i = 1; i < ST_SRV_ROWS; i++) {
+                if (i > n) { lv_obj_add_flag(s_st_srv_row[i], LV_OBJ_FLAG_HIDDEN); continue; }
+                speedtest_server_t s;
+                speedtest_get_server(i - 1, &s);
+                lv_obj_remove_flag(s_st_srv_row[i], LV_OBJ_FLAG_HIDDEN);
+                set_label_fmt(s_st_srv_name[i], c_sn[i], sizeof c_sn[i], "%s \xC2\xB7 %s, %s",
+                              s.sponsor, s.name, s.country);
+            }
+            lv_obj_set_height(s_st_srv_card, 30 + ((n > 0 ? n : 0) + 1) * 40 + 8);
+        }
+        {
+            int sel = speedtest_selected_index();
+            for (int i = 0; i < ST_SRV_ROWS; i++) {
+                if (!s_st_srv_row[i]) continue;
+                int is_sel = (sel < 0 && i == 0) || (sel >= 0 && i == sel + 1);
+                lv_obj_set_style_bg_color(s_st_srv_row[i],
+                    lv_color_hex(is_sel ? 0x1e3a2e : UI_C_TRACK), 0);
+            }
         }
     }
 
@@ -2451,6 +2999,21 @@ static void refresh_cb(lv_timer_t *t)
         static char c_t3[40] = "";
         set_label_fmt(s_tile_sub[SUB_LOCK], c_t3, sizeof c_t3, "%s",
                       d.net_select[0] ? d.net_select : "-");
+        static char c_t4[40] = "";
+        if (!speedtest_agent_reachable())
+            set_label_fmt(s_tile_sub[SUB_SPEED], c_t4, sizeof c_t4, "%s",
+                          "\xE6\x9C\x8D\xE5\x8A\xA1\xE4\xB8\x8D\xE5\x8F\xAF\xE7\x94\xA8" /* 服务不可用 */);
+        else if (speedtest_running())
+            set_label_fmt(s_tile_sub[SUB_SPEED], c_t4, sizeof c_t4, "%s",
+                          speedtest_phase_label());
+        else if (speedtest_phase() == ST_COMPLETE)
+            set_label_fmt(s_tile_sub[SUB_SPEED], c_t4, sizeof c_t4,
+                          "\xE2\x86\x93 %.0f \xC2\xB7 \xE2\x86\x91 %.0f Mbps",
+                          speedtest_download_mbps() >= 0 ? speedtest_download_mbps() : 0.0,
+                          speedtest_upload_mbps() >= 0 ? speedtest_upload_mbps() : 0.0);
+        else
+            set_label_fmt(s_tile_sub[SUB_SPEED], c_t4, sizeof c_t4, "%s",
+                          "\xE7\x82\xB9\xE5\x87\xBB\xE6\xB5\x8B\xE9\x80\x9F" /* 点击测速 */);
     }
 
     /* ---- WiFi subpage ---- */
@@ -2475,6 +3038,10 @@ static void refresh_cb(lv_timer_t *t)
                       s_aux_dps < 0 ? "—"
                       : s_aux_dps   ? "\xE5\xB7\xB2\xE5\xBC\x80\xE5\x90\xAF"
                                     : "\xE5\xB7\xB2\xE5\x85\xB3\xE9\x97\xAD");
+        /* Reflects whichever of {this switch, the topbar tap} was touched
+         * last — both just write s_cf_speed_bits, this only redraws it. */
+        sw_apply(s_sy_speedunit_sw, s_cf_speed_bits);
+        lv_label_set_text(s_sy_speedunit_st, s_cf_speed_bits ? "Mbps" : "MB/s");
     }
 }
 
@@ -2606,7 +3173,7 @@ static void tab_click_cb(lv_event_t *e)
     int idx = (int)(intptr_t)lv_event_get_user_data(e);
     /* Slot 0 is 返回 while a subpage is open: close it and stay where the
      * user was, rather than also jumping to 首页. */
-    if (idx == 0 && s_sub_cur >= 0) { sub_close(); return; }
+    if (idx == 0 && s_sub_cur >= 0) { sub_back(); return; }
     /* Any other tab tap always lands on that top-level page, even from
      * inside a subpage — otherwise the tab bar would look broken there. */
     sub_close();
@@ -2658,13 +3225,12 @@ static void build_statusbar(void)
      * arrow characters out of the same device font, so the two renderers
      * now match each other and the approved mockup.
      *
-     * x=180, width 95: htmlmain.c's own native status bar (draw_native_
-     * statusbar(), src/htmlmain.c:2094) puts its battery icon at x=279
-     * w=35 — matching that (below) leaves this column up to 279-4=275 to
-     * work with. x moved 160->180 (2026-09-21, user: push it right) by
-     * trimming the width rather than the right edge, so it still clears
-     * the battery icon by the same 4px. */
-    s_top_updown = mklabel(bar, 180, 6, FCN_S, UI_C_TEXT_2);
+     * x=165, width 95: battery icon (below) sits at x=279 w=35, net_type
+     * (above) ends at 116+40=156. 180 (2026-09-21, pushed right off
+     * net_type) turned out too close to the battery on real hardware
+     * (2026-09-22 user report) — 165 splits the gap, 9px clear of net_type,
+     * 19px clear of the battery instead of 4px. */
+    s_top_updown = mklabel(bar, 165, 6, FCN_S, UI_C_TEXT_2);
     lv_obj_set_width(s_top_updown, 95);
     lv_label_set_long_mode(s_top_updown, LV_LABEL_LONG_CLIP);
     /* Tap to flip Mbps <-> MB/s (htmlmain.c's "spunit" action, no separate
@@ -2929,6 +3495,8 @@ void ui_create(void)
     build_sub_speed(s_sub_page[SUB_SPEED]);
     build_sub_ts(s_sub_page[SUB_TS]);
     build_sub_chill(s_sub_page[SUB_CHILL]);
+    build_sub_chill_nodes(s_sub_page[SUB_CHILL_NODES]);
+    build_sub_chill_pairs(s_sub_page[SUB_CHILL_PAIRS]);
     build_sub_esim(s_sub_page[SUB_ESIM]);
     build_sub_perf(s_sub_page[SUB_PERF]);
     sub_close();

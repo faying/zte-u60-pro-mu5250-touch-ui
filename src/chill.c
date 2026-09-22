@@ -58,6 +58,47 @@ static char s_nodes_raw[SC_MAX_NODE][SC_NAME_MAX];  /* 原名，调 API 时用 *
 static int  s_node_delay[SC_MAX_NODE];   /* -1 = 未测 */
 static int  s_node_count;
 
+/*
+ * 按"命中的分流组 -> 实际出口节点"这一对关系汇总流量——不是靠
+ * chill_group()/chill_chain() 那一路（只追一个配置好的组，规则模式下大部分
+ * 流量根本不走那个组，2026-09-22 的反馈：那两个字段只代表"如果用节点选择
+ * 这个组会怎样"，不代表流量实际去哪了）。数据来自 /connections 里每条连接
+ * 自带的 chains 数组：chains[0] 是真正落地的节点，chains 最后一项是决定
+ * 路由的那个策略组（比如 Apple/VoWiFi/漏网之鱼）。
+ *
+ * 分组和节点分两张独立 top N 表统计过一版——每张表各自按总字节数排序，
+ * 界面上摆在一起容易被看成"第 i 条分组对应第 i 条节点"，实际是两个互相
+ * 独立的排名，根本不是同一条流量（2026-09-22 反馈：具体哪条规则走了哪个
+ * 节点，没有放出来）。改成直接按 (分流组, 节点) 这一对二元组做 key 累加，
+ * 界面上显示"组 -> 节点"，才是真的能回答"这条规则流量去哪了"。
+ *
+ * 这是持久累计统计，不是"轮询这一刻还活着的连接"快照（后者试过，问题是
+ * 连接一关闭它的流量就凭空消失了，用户明确反馈过这不是他们要的"流量统计"）。
+ * 做法：每条连接的 upload/download 是它自己的单调递增总量，不是速率；每轮
+ * 轮询按连接 id 跟上一轮的值做差，差值才是这段时间真实发生的流量，累加进
+ * 下面这张永久表——跟 mihomo 自己的 downloadTotal/uploadTotal 一个道理，
+ * 只在进程重启时清零，连接开关不影响。
+ */
+#define SC_TOP_SHOW    6   /* 界面上只显示 top N，卡片空间有限 */
+
+/* 持久统计表：一行是一个 (分流组, 节点) 组合。容量对齐 SC_MAX_NODE ——
+ * 理论上出现的不同组合不会比不同节点数多太多（同一节点常年只挂在一两个
+ * 组下面）。 */
+#define SC_MAX_STAT_PAIR 200
+typedef struct { char grp_raw[SC_NAME_MAX]; char node_raw[SC_NAME_MAX]; long up, down; } sc_pair_t;
+static sc_pair_t s_stat_pair[SC_MAX_STAT_PAIR];
+static int       s_stat_pair_n;
+
+/* 每条连接按 id 记住上次轮询时的累计字节数，用于求增量；id 在某一轮消失
+ * 说明连接关了，摘出表即可——它最后一次的增量在上一轮已经记过账了。 */
+#define SC_MAX_TRACK 256
+typedef struct { char id[40]; long up, down; unsigned char seen; } sc_track_t;
+static sc_track_t s_track[SC_MAX_TRACK];
+static int        s_track_n;
+
+static chill_traffic_item_t s_top_pair[SC_TOP_SHOW];
+static int                  s_top_pair_n;
+
 static char s_listhtml[24576];
 static char s_grphtml[4096];
 static char s_card[1024];       /* 首页/锁屏 CHILL 卡片，见 chill_card_html() */
@@ -303,6 +344,7 @@ static void human(long v, char *out, size_t cap)
     else snprintf(out, cap, "%ldB", v);
 }
 
+
 /*
  * 设备上的 CJK 字体没有 emoji 字形，节点名里的 🇯🇵/🚀 会渲染成豆腐块。
  * 国旗由两个「区域指示符」(U+1F1E6..U+1F1FF) 组成，正好一一对应 A..Z，
@@ -358,6 +400,7 @@ static void sanitize_name(const char *in, char *out, size_t cap)
             o += (size_t)len;
             prev_space = 0;
         }
+
         p += len;
     }
     while (o > 0 && out[o - 1] == ' ') o--;             /* 去掉尾部空格 */
@@ -379,6 +422,122 @@ static void sanitize_name(const char *in, char *out, size_t cap)
     }
 
     if (!o) snprintf(out, cap, "-");                    /* 全是 emoji 的名字 */
+}
+
+static void pair_add(const char *grp, const char *node, long up, long down)
+{
+    if (!grp || !grp[0] || !node || !node[0]) return;
+    for (int i = 0; i < s_stat_pair_n; i++) {
+        if (!strcmp(s_stat_pair[i].grp_raw, grp) && !strcmp(s_stat_pair[i].node_raw, node)) {
+            s_stat_pair[i].up += up;
+            s_stat_pair[i].down += down;
+            return;
+        }
+    }
+    if (s_stat_pair_n >= SC_MAX_STAT_PAIR) return;   /* 长尾丢掉，top N 排序不受影响 */
+    snprintf(s_stat_pair[s_stat_pair_n].grp_raw, SC_NAME_MAX, "%s", grp);
+    snprintf(s_stat_pair[s_stat_pair_n].node_raw, SC_NAME_MAX, "%s", node);
+    s_stat_pair[s_stat_pair_n].up = up;
+    s_stat_pair[s_stat_pair_n].down = down;
+    s_stat_pair_n++;
+}
+
+/* 按连接 id 求这一轮相对上一轮的增量（新连接则增量就是当前值本身）。 */
+static void track_update(const char *id, long up, long down, long *dup, long *ddown)
+{
+    for (int i = 0; i < s_track_n; i++) {
+        if (!strcmp(s_track[i].id, id)) {
+            long u = up - s_track[i].up, d = down - s_track[i].down;
+            *dup = u > 0 ? u : 0;
+            *ddown = d > 0 ? d : 0;
+            s_track[i].up = up; s_track[i].down = down; s_track[i].seen = 1;
+            return;
+        }
+    }
+    *dup = up; *ddown = down;
+    if (s_track_n < SC_MAX_TRACK) {
+        snprintf(s_track[s_track_n].id, sizeof s_track[s_track_n].id, "%s", id);
+        s_track[s_track_n].up = up; s_track[s_track_n].down = down; s_track[s_track_n].seen = 1;
+        s_track_n++;
+    }
+}
+
+/* 轮询结束后调用：这一轮没见到的连接已经关了，摘出追踪表防止它一直占着
+ * 位置——它关闭前最后一次的增量在上一轮已经记过账，这里只是清理。 */
+static void track_prune(void)
+{
+    int w = 0;
+    for (int i = 0; i < s_track_n; i++) {
+        if (s_track[i].seen) {
+            if (w != i) s_track[w] = s_track[i];
+            s_track[w].seen = 0;
+            w++;
+        }
+    }
+    s_track_n = w;
+}
+
+/* 取数组里第一个/最后一个带引号的字符串（用于 "chains":["a","b","c"] 这种，
+ * 不需要真正的 JSON 解析——parse_all_array() 已经证明这个套路在这个项目里
+ * 对 mihomo 的输出够用，字段里不会出现转义引号）。last=0 取第一个（真实出口
+ * 节点），last=1 取数组里最后一个逗号之后的那个（命中的分流组）。*/
+static void chains_pick(const char *arr, int last, char *out, size_t cap)
+{
+    const char *q = arr;
+    out[0] = 0;
+    /* 正向扫描，不用 memrchr——这个项目连标准库里 musl 有的非标准扩展
+     * （strcasestr）都特意不用，理由写在上面 ci_find() 那段注释里，这里
+     * 跟着同一个规矩。last=0 拿到第一个就回；last=1 每找到一个就覆盖
+     * out，扫完剩的就是最后一个——单元素数组两种取法结果一样，不用
+     * 特判。 */
+    for (;;) {
+        const char *e;
+        size_t l;
+        q = strchr(q, '"');
+        if (!q) break;
+        e = strchr(q + 1, '"');
+        if (!e) break;
+        l = (size_t)(e - q - 1);
+        if (l >= cap) l = cap - 1;
+        memcpy(out, q + 1, l);
+        out[l] = 0;
+        if (!last) return;
+        q = e + 1;
+    }
+}
+
+static int pair_cmp(const void *a, const void *b)
+{
+    const sc_pair_t *x = a, *y = b;
+    long sx = x->up + x->down, sy = y->up + y->down;
+    return sy > sx ? 1 : (sy < sx ? -1 : 0);
+}
+
+static void pair_finish(void)
+{
+    qsort(s_stat_pair, (size_t)s_stat_pair_n, sizeof s_stat_pair[0], pair_cmp);
+    s_top_pair_n = s_stat_pair_n < SC_TOP_SHOW ? s_stat_pair_n : SC_TOP_SHOW;
+    for (int i = 0; i < s_top_pair_n; i++) {
+        char gd[SC_NAME_MAX], nd[SC_NAME_MAX], ds[24], us[24];
+        sanitize_name(s_stat_pair[i].grp_raw, gd, sizeof gd);
+        sanitize_name(s_stat_pair[i].node_raw, nd, sizeof nd);
+        snprintf(s_top_pair[i].name, sizeof s_top_pair[i].name,
+                 "%s \xE2\x86\x92 %s", gd, nd);
+        human(s_stat_pair[i].down, ds, sizeof ds);
+        human(s_stat_pair[i].up, us, sizeof us);
+        snprintf(s_top_pair[i].traffic, sizeof s_top_pair[i].traffic,
+                 "\xE2\x86\x93%s \xE2\x86\x91%s", ds, us);
+        s_top_pair[i].bytes = s_stat_pair[i].up + s_stat_pair[i].down;
+    }
+}
+
+int chill_top_pair_count(void) { return s_top_pair_n; }
+void chill_get_top_pair(int i, chill_traffic_item_t *out)
+{
+    if (!out) return;
+    memset(out, 0, sizeof *out);
+    if (i < 0 || i >= s_top_pair_n) return;
+    *out = s_top_pair[i];
 }
 
 /* "a","b","c" -> s_nodes[]. Keeps the order the API returned. */
@@ -563,24 +722,53 @@ int chill_poll(int active)
         {
             const char *p = strstr(b, "\"connections\"");
             int c = 0;
+            static char objbuf[2048];   /* 单条连接记录一般几百字节，2K 留够余量 */
+            s_conn_direct = s_conn_proxy = 0;
             if (p && (p = strchr(p, '[')) ) {
                 int depth = 0;
+                const char *obj_start = NULL;
                 for (const char *q = p; *q; q++) {
-                    if (*q == '{' ) { if (depth == 0) c++; depth++; }
-                    else if (*q == '}') depth--;
-                    else if (*q == ']' && depth == 0) break;
+                    if (*q == '{') {
+                        if (depth == 0) { c++; obj_start = q; }
+                        depth++;
+                    } else if (*q == '}') {
+                        depth--;
+                        if (depth == 0 && obj_start) {
+                            size_t olen = (size_t)(q - obj_start) + 1;
+                            /* 按节点、按分流组汇总当前连接的流量——数据就是
+                             * 这一条记录自带的 chains/upload/download，不用
+                             * 额外发请求，见上面那段大注释。 */
+                            if (olen < sizeof objbuf) {
+                                char chains_arr[768], node[SC_NAME_MAX], grp[SC_NAME_MAX], id[40];
+                                memcpy(objbuf, obj_start, olen);
+                                objbuf[olen] = 0;
+                                if (json_get(objbuf, "chains", chains_arr, sizeof chains_arr) &&
+                                    json_get(objbuf, "id", id, sizeof id)) {
+                                    chains_pick(chains_arr, 0, node, sizeof node);
+                                    chains_pick(chains_arr, 1, grp, sizeof grp);
+                                    if (node[0] && id[0]) {
+                                        long up = json_get_int(objbuf, "upload", 0);
+                                        long down = json_get_int(objbuf, "download", 0);
+                                        long dup, ddown;
+                                        track_update(id, up, down, &dup, &ddown);
+                                        if (dup || ddown) pair_add(grp, node, dup, ddown);
+                                        /* chains 的第一项是实际出口：DIRECT 即直连，其余都算走了代理 */
+                                        if (!strcmp(node, "DIRECT")) s_conn_direct++;
+                                        else s_conn_proxy++;
+                                    }
+                                }
+                            }
+                            obj_start = NULL;
+                        }
+                    } else if (*q == ']' && depth == 0) {
+                        break;
+                    }
                 }
             }
             s_conns_truncated = s_last_truncated;
             snprintf(s_conns, sizeof s_conns, s_conns_truncated ? "%d+" : "%d", c);
-            /* chains 的第一项是实际出口：DIRECT 即直连，其余都算走了代理 */
-            s_conn_direct = s_conn_proxy = 0;
-            for (const char *q = b; (q = strstr(q, "\"chains\":[")) != NULL; ) {
-                q += 10;
-                while (*q == ' ') q++;
-                if (!strncmp(q, "\"DIRECT\"", 8)) s_conn_direct++;
-                else if (*q == '"') s_conn_proxy++;
-            }
+            track_prune();
+            pair_finish();
         }
     }
 

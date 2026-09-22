@@ -61,8 +61,13 @@ typedef struct {
     /* dhcp / lan */
     char dhcp_ip[24], dhcp_start[24], dhcp_limit[8], dhcp_leasetime[12];
 
-    /* traffic (bytes, bytes/s) */
+    /* traffic (bytes, bytes/s). day_ and month_ fields are the firmware's
+     * own zwrt_data ubus counters (already aggregated by calendar day/
+     * month, persisted across reboots in UCI) — not derived from
+     * rx_bytes/tx_bytes, which is this boot's session total and resets
+     * on restart. */
     long rx_speed, tx_speed, rx_bytes, tx_bytes;
+    long day_rx_bytes, day_tx_bytes, month_rx_bytes, month_tx_bytes;
 
     /* qos (parsed from modem key.log by the backend) */
     int    qci;
