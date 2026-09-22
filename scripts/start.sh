@@ -11,6 +11,7 @@ DATAD_DIR=/data/plugins/zwrt-datad
 UI_DIR=$DEVUI_DIR/ui
 LEGACY_UI_DIR=/data/ui
 DEVUI_BIN=$DEVUI_DIR/u60pro-devui
+CORNER_BIN=$DEVUI_DIR/corner-wake
 DATAD_BIN=$DATAD_DIR/zwrt-datad
 DATAD_LAN_PORT=${DATAD_LAN_PORT:-9461}
 DATAD_LAN_BIND=${DATAD_LAN_BIND:-0.0.0.0}
@@ -86,6 +87,21 @@ stop_vendor_ui() {
     [ "$had_vendor" -eq 1 ] && sleep 1
 }
 
+# corner-wake is the ONLY way back from the vendor UI once act:switchvendor
+# hands the screen over (the vendor UI has no button that knows we exist).
+# It self-gates on devui_running() — safe to leave running all the time,
+# under either UI — so it belongs here next to the UI launch, not behind a
+# vendor-only conditional. This was never actually wired into any boot path
+# (not rc.local, not here) until 2026-09-22: it only ever ran when someone
+# happened to start it by hand, so a device restart — or just that manual
+# process dying — silently took away the switch-back gesture with no error
+# anywhere, discovered only when a user got stuck in the vendor UI.
+start_corner_wake() {
+    [ -x "$CORNER_BIN" ] || return 0
+    pidof corner-wake >/dev/null 2>&1 && return 0
+    nohup "$CORNER_BIN" >/tmp/corner-wake.log 2>&1 </dev/null &
+}
+
 start_datad_legacy() {
     [ "$BOOTMODE" = normal ] || return 0
     [ -x "$DATAD_BIN" ] || return 0
@@ -145,6 +161,7 @@ migrate_legacy_ui
 case "$MODE" in
     procd)
         stop_vendor_ui
+        start_corner_wake
         [ -x "$DEVUI_BIN" ] || exit 1
         exec "$DEVUI_BIN"
         ;;
@@ -154,7 +171,26 @@ case "$MODE" in
         # For charge-only boots the full-screen charging UI can fall back to
         # sysfs, so there is no need to wake extra polling daemons.
         start_datad_legacy
-        [ -x "$DEVUI_BIN" ] && nohup "$DEVUI_BIN" >/tmp/u60pro-devui.log 2>&1 </dev/null &
+        start_corner_wake
+        if [ -x "$DEVUI_BIN" ]; then
+            nohup "$DEVUI_BIN" >/tmp/u60pro-devui.log 2>&1 </dev/null &
+            # Startup guard, added 2026-09-21 while the LVGL UI is on trial.
+            # If the UI is gone 15s after boot, put the fallback binary back
+            # and start that instead: a UI that dies on every boot otherwise
+            # gets escalated by the vendor watchdog into a whole-device reboot
+            # loop, which is very hard to recover from without a console.
+            # Deleting u60pro-devui.fallback disables this entirely.
+            if [ -x "$DEVUI_DIR/u60pro-devui.fallback" ]; then
+                ( sleep 15
+                  pidof u60pro-devui >/dev/null 2>&1 && exit 0
+                  cp -f "$DEVUI_DIR/u60pro-devui.fallback" "$DEVUI_BIN.tmp" \
+                      && mv -f "$DEVUI_BIN.tmp" "$DEVUI_BIN"
+                  nohup "$DEVUI_BIN" >/tmp/u60pro-devui.log 2>&1 </dev/null &
+                  echo "$(date '+%Y-%m-%d %H:%M:%S') startup-guard: UI died, restored fallback" \
+                      >> "$DEVUI_DIR/boot-trace.log"
+                ) >/dev/null 2>&1 &
+            fi
+        fi
         ;;
     *)
         echo "usage: $0 [procd|legacy]" >&2

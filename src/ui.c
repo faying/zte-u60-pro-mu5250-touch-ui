@@ -62,7 +62,11 @@ static lv_obj_t *s_tile_sub[SUB_N];      /* per-tile status subtitle */
 /* CHILL */
 static lv_obj_t *s_chill_card, *s_chill_state, *s_chill_node, *s_chill_chain,
                 *s_chill_conns, *s_chill_rate;
-#define CHILL_MAX_NODES 8
+/* 2026-09-22：新增的手动选节点组一个就有 168 个节点，8 太小——家宽/NX 节点
+ * 排在后面，直接被截没，界面上看起来像是"消失了"。卡片本来就在可滚动的
+ * 容器里（build_sub_chill 的 mk_scroll_h），提高上限只是多建几个隐藏行，
+ * 没有别的副作用；配 chill.c 的 SC_MAX_NODE=200。 */
+#define CHILL_MAX_NODES 200
 #define CHILL_MAX_GROUPS 12
 #define CHILL_GRP_COLS 3
 static lv_obj_t *s_cp_core, *s_cp_node, *s_cp_chain, *s_cp_conns, *s_cp_traffic,
@@ -1143,6 +1147,23 @@ static void build_sub_perf(lv_obj_t *t)
     lv_obj_set_style_bg_opa(s_t_box, LV_OPA_COVER, 0);
 }
 
+/*
+ * 点一下 = 已读，长按 = 举手删除（防抖窗口过后再点一下同一行才真删）。
+ * 长按松手时 LVGL 在同一次手势上还会补发一次 CLICKED——sms_delete_tap()
+ * 里的防抖窗口就是用来吃掉那次，不然长按一放手就等于自动确认删除了。
+ */
+static void sms_row_click_cb(lv_event_t *e)
+{
+    int idx = (int)(intptr_t)lv_event_get_user_data(e);
+    if (!sms_delete_tap(idx)) sms_mark_read(idx);
+}
+
+static void sms_row_longpress_cb(lv_event_t *e)
+{
+    int idx = (int)(intptr_t)lv_event_get_user_data(e);
+    sms_delete_arm(idx);
+}
+
 /* ---- SMS subpage ---- */
 static void build_sub_sms(lv_obj_t *t)
 {
@@ -1151,6 +1172,9 @@ static void build_sub_sms(lv_obj_t *t)
     for (int i = 0; i < SMS_MAX_ROWS; i++) {
         lv_obj_t *c = mk_card(t, 8 + i * 86, 76);
         s_sms_row[i]  = c;
+        lv_obj_add_flag(c, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_event_cb(c, sms_row_click_cb, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+        lv_obj_add_event_cb(c, sms_row_longpress_cb, LV_EVENT_LONG_PRESSED, (void *)(intptr_t)i);
         s_sms_dot[i]  = lv_obj_create(c);
         lv_obj_remove_style_all(s_sms_dot[i]);
         lv_obj_set_size(s_sms_dot[i], 6, 6);
@@ -2356,6 +2380,8 @@ static void refresh_cb(lv_timer_t *t)
             set_label_fmt(s_sms_body[i], c_body[i], sizeof c_body[i], "%s", d.sms[i].text);
             if (d.sms[i].unread) lv_obj_remove_flag(s_sms_dot[i], LV_OBJ_FLAG_HIDDEN);
             else                 lv_obj_add_flag(s_sms_dot[i], LV_OBJ_FLAG_HIDDEN);
+            lv_obj_set_style_bg_color(s_sms_row[i],
+                lv_color_hex(sms_delete_armed(i) ? UI_C_BAD : UI_C_CARD), 0);
         }
     }
 

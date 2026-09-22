@@ -92,4 +92,19 @@ int data_refresh(devui_data_t *d);
 /* Copy the latest live snapshot even if UI-visible refresh is paused. */
 int data_refresh_live(devui_data_t *d);
 
+/*
+ * SMS actions — fire-and-forget POST to zwrt-datad's /control (mirrors
+ * chill.c's sc_send_async: waiting for the ubus round-trip here would
+ * freeze the UI thread the same way chill_select_node() used to before
+ * that was fixed). Results show up on the next /state refresh, not as a
+ * return value.
+ *
+ * `index` is into the UI-visible snapshot (the one data_refresh() fills),
+ * so callers pass the same index used to render the row.
+ */
+int sms_mark_read(int index);        /* no-op if the row is already read */
+int sms_delete_arm(int index);       /* long-press: arms the row, doesn't delete yet */
+int sms_delete_armed(int index);     /* is this row currently armed? (for the UI to paint) */
+int sms_delete_tap(int index);       /* tap while armed (past a short debounce): deletes */
+
 #endif /* U60PRO_DATA_H */

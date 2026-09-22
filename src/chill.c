@@ -25,7 +25,10 @@
 #define SC_CONF     "/data/plugins/u60pro-devui/chill.conf"
 #define SC_IO_MS    1500
 #define SC_TTL_MS   2000
-#define SC_MAX_NODE 64
+/* 2026-09-22 真机核对：新增的"手动节点"组一个就有 168 个节点（四个 provider
+ * 地区并集），64 装不下——家宽/NX（nexi）节点排在 oix/shouhou 后面，正好被
+ * 截掉的就是它们，界面上看起来像是"消失了"。留够余量到 200。 */
+#define SC_MAX_NODE 200
 #define SC_NAME_MAX 96
 #define SC_RESP_MAX 262144
 
@@ -199,6 +202,43 @@ static size_t dechunk(char *body, size_t len)
  * 大小随设备负载（活跃连接数）变化、有可能撑爆 256KB 缓冲区的接口。 */
 static int s_last_truncated;
 
+static void sc_build_req(char *req, size_t cap, const char *method,
+                          const char *path, const char *body)
+{
+    if (body)
+        snprintf(req, cap,
+                 "%s %s HTTP/1.1\r\nHost: %s:%d\r\n%s%s%s"
+                 "Content-Type: application/json\r\nContent-Length: %d\r\n"
+                 "Connection: close\r\n\r\n%s",
+                 method, path, s_host, s_port,
+                 s_secret[0] ? "Authorization: Bearer " : "", s_secret, s_secret[0] ? "\r\n" : "",
+                 (int)strlen(body), body);
+    else
+        snprintf(req, cap,
+                 "%s %s HTTP/1.1\r\nHost: %s:%d\r\n%s%s%s"
+                 "Connection: close\r\n\r\n",
+                 method, path, s_host, s_port,
+                 s_secret[0] ? "Authorization: Bearer " : "", s_secret, s_secret[0] ? "\r\n" : "");
+}
+
+/*
+ * 控制类请求（选节点/切模式）只关心"发出去了没有"，不需要等回包——mihomo
+ * 收到请求就会执行，结果反正靠下一轮 chill_poll() 刷新体现在界面上。等回包
+ * 的话就是 chill_select_node() 这种在 LVGL 触摸回调里同步调用的函数会占住
+ * 主线程最多 SC_IO_MS=1.5 秒，界面在这段时间里完全不响应触摸——2026-09-21
+ * 真机反馈"选节点不跟手"就是这个。写完请求立刻关连接，不读、不等。
+ */
+static int sc_send_async(const char *method, const char *path, const char *body)
+{
+    char req[1024];
+    int fd = sc_connect();
+    if (fd < 0) return 0;
+    sc_build_req(req, sizeof req, method, path, body);
+    if (write(fd, req, strlen(req)) < 0) { close(fd); return 0; }
+    close(fd);
+    return 1;
+}
+
 static char *sc_http(const char *method, const char *path, const char *body)
 {
     static char resp[SC_RESP_MAX];
@@ -208,20 +248,7 @@ static char *sc_http(const char *method, const char *path, const char *body)
     int fd = sc_connect();
 
     if (fd < 0) return NULL;
-    if (body)
-        snprintf(req, sizeof req,
-                 "%s %s HTTP/1.1\r\nHost: %s:%d\r\n%s%s%s"
-                 "Content-Type: application/json\r\nContent-Length: %d\r\n"
-                 "Connection: close\r\n\r\n%s",
-                 method, path, s_host, s_port,
-                 s_secret[0] ? "Authorization: Bearer " : "", s_secret, s_secret[0] ? "\r\n" : "",
-                 (int)strlen(body), body);
-    else
-        snprintf(req, sizeof req,
-                 "%s %s HTTP/1.1\r\nHost: %s:%d\r\n%s%s%s"
-                 "Connection: close\r\n\r\n",
-                 method, path, s_host, s_port,
-                 s_secret[0] ? "Authorization: Bearer " : "", s_secret, s_secret[0] ? "\r\n" : "");
+    sc_build_req(req, sizeof req, method, path, body);
 
     if (write(fd, req, strlen(req)) < 0) { close(fd); return NULL; }
     s_last_truncated = 0;
@@ -786,25 +813,25 @@ const char *chill_nodelist_html(void)
 int chill_set_mode(const char *mode)
 {
     char body[64];
-    char *b;
+    int ok;
     if (!mode || !*mode) return 0;
     snprintf(body, sizeof body, "{\"mode\":\"%s\"}", mode);
-    b = sc_http("PATCH", "/configs", body);
+    ok = sc_send_async("PATCH", "/configs", body);
     s_last_ms = 0;              /* 强制下次刷新 */
-    return b != NULL;
+    return ok;
 }
 
 int chill_select_node(int index)
 {
     char enc[384], path[512], body[256];
-    char *b;
+    int ok;
     if (index < 0 || index >= s_node_count) return 0;
     urlenc(s_group, enc, sizeof enc);
     snprintf(path, sizeof path, "/proxies/%s", enc);
     snprintf(body, sizeof body, "{\"name\":\"%s\"}", s_nodes_raw[index]);
-    b = sc_http("PUT", path, body);
+    ok = sc_send_async("PUT", path, body);
     s_last_ms = 0;
-    return b != NULL;
+    return ok;
 }
 
 /*

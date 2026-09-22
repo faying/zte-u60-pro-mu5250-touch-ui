@@ -825,3 +825,77 @@ int data_refresh_live(devui_data_t *d)
     if (force_hsr_enabled()) d->hsr = 1;
     return 1;
 }
+
+/*
+ * ---- SMS actions ----
+ * Fire-and-forget: connect, write the /control request, close without
+ * reading the response. See data.h — waiting here would block the same
+ * single thread that also drives touch/render (this is exactly the bug
+ * chill_select_node() had before it was made async).
+ */
+static void sms_control_send(const char *action, const char *params_json)
+{
+    char body[160], req[512];
+    int fd = connect_tcp(DEVUI_BACKEND_HOST, DEVUI_BACKEND_PORT, 800);
+    if (fd < 0) return;
+    snprintf(body, sizeof body, "{\"action\":\"%s\",\"params\":%s}", action, params_json);
+    snprintf(req, sizeof req,
+             "POST /control HTTP/1.1\r\nHost: %s:%d\r\n"
+             "Content-Type: application/json\r\nContent-Length: %d\r\n"
+             "Connection: close\r\n\r\n%s",
+             DEVUI_BACKEND_HOST, DEVUI_BACKEND_PORT, (int)strlen(body), body);
+    send_all(fd, req, strlen(req), 800);
+    close(fd);
+}
+
+int sms_mark_read(int index)
+{
+    char params[48];
+    if (index < 0 || index >= g_backend.current_data.sms_n) return 0;
+    if (!g_backend.current_data.sms[index].unread) return 1;  /* already read */
+    snprintf(params, sizeof params, "{\"ids\":\"%ld;\",\"tag\":0}",
+             g_backend.current_data.sms[index].id);
+    sms_control_send("sms.mark_read", params);
+    return 1;
+}
+
+/* 删除误触代价大（不可撤销），照搬 CHILL 重启内核和 eSIM 切换卡那套两段式
+ * 确认：长按只是"举手"，隔一小段防抖再点一下同一行才真的删。按短信 id 记
+ * 谁被举手了，列表在两次操作之间重读过也不会点错行。 */
+#define SMS_ARM_MS          4000
+#define SMS_ARM_DEBOUNCE_MS 400
+static long     s_sms_arm_id = -1;
+static uint32_t s_sms_arm_ms;
+
+int sms_delete_arm(int index)
+{
+    if (index < 0 || index >= g_backend.current_data.sms_n) return 0;
+    s_sms_arm_id = g_backend.current_data.sms[index].id;
+    s_sms_arm_ms = mono_ms();
+    return 1;
+}
+
+int sms_delete_armed(int index)
+{
+    if (index < 0 || index >= g_backend.current_data.sms_n) return 0;
+    return s_sms_arm_id == g_backend.current_data.sms[index].id &&
+           mono_ms() - s_sms_arm_ms <= SMS_ARM_MS;
+}
+
+int sms_delete_tap(int index)
+{
+    char params[32];
+    long id;
+    uint32_t elapsed;
+    if (index < 0 || index >= g_backend.current_data.sms_n) return 0;
+    id = g_backend.current_data.sms[index].id;
+    if (s_sms_arm_id != id) return 0;
+    /* 防抖窗口内的这次点击，多半是长按松手自己带出来的那次 CLICKED，
+     * 不是用户专门又点了一下——不算确认。 */
+    elapsed = mono_ms() - s_sms_arm_ms;
+    if (elapsed <= SMS_ARM_DEBOUNCE_MS || elapsed > SMS_ARM_MS) return 0;
+    s_sms_arm_id = -1;
+    snprintf(params, sizeof params, "{\"ids\":\"%ld;\"}", id);
+    sms_control_send("sms.delete", params);
+    return 1;
+}
