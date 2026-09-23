@@ -17,6 +17,7 @@
 #include "scenario.h"
 #include "esim.h"
 #include "speedtest.h"
+#include "alerts.h"
 #include "lvgl.h"
 
 #include <fcntl.h>
@@ -63,6 +64,9 @@ enum { SUB_WIFI, SUB_SMS, SUB_CELL, SUB_LOCK, SUB_SPEED, SUB_CHILL, SUB_ESIM, SU
        /* Not on the tile wall: one message in full, opened from the SMS list
         * (sub_open_child, so 返回 goes back to the list). */
        SUB_SMS_DETAIL,
+       /* Not on the tile wall: opened from the status bar's alert dot or the
+        * 系统 page's 健康 row. */
+       SUB_ALERTS,
        SUB_N };
 
 /* ---- shared widget handles ---- */
@@ -232,6 +236,11 @@ static lv_obj_t   *s_banner, *s_banner_txt;
 static lv_obj_t   *s_top_time, *s_top_net, *s_top_updown, *s_top_bat, *s_top_sig[5];
 static lv_obj_t   *s_top_bat_icon, *s_top_bat_fill, *s_top_bat2;
 static lv_obj_t   *s_top_alert;   /* red: admin backend lost; amber: unread alerts */
+static lv_obj_t   *s_top_alert_hit;  /* the dot's tap target (a 7px dot is not tappable) */
+/* Alerts subpage */
+static lv_obj_t   *s_al_count, *s_al_allread_btn, *s_al_empty;
+static lv_obj_t   *s_al_row[ALERTS_MAX], *s_al_label[ALERTS_MAX], *s_al_time[ALERTS_MAX],
+                  *s_al_text[ALERTS_MAX], *s_al_mark[ALERTS_MAX];
 
 /* ================= design system =================
  * Every layout number and semantic colour lives here. Pages compose cards and
@@ -591,6 +600,7 @@ static void sub_close(void);
 static void sub_back(void);
 static void tile_click_cb(lv_event_t *e);   /* also used by the Home Tailscale card */
 static void chill_nav_cb(lv_event_t *e);    /* CHILL page's 策略组/节点/规则→节点 rows */
+static void open_alerts_cb(lv_event_t *e);  /* status-bar alert dot, 系统 page's 健康 row */
 static void bench_gate(void);
 static void update_tabs(void);
 
@@ -615,6 +625,7 @@ static void sub_open(int id)
         "\xE8\x8A\x82\xE7\x82\xB9" /* 节点 */,
         "\xE8\xA7\x84\xE5\x88\x99 \xE2\x86\x92 \xE8\x8A\x82\xE7\x82\xB9" /* 规则 → 节点 */,
         "短信详情",
+        "告警",
     };
     if (id < 0 || id >= SUB_N) return;
     for (int i = 0; i < SUB_N; i++)
@@ -1263,6 +1274,16 @@ static void build_system(lv_obj_t *t)
         lv_obj_set_width(*dev_val[i], 200);
         lv_obj_set_style_text_align(*dev_val[i], LV_TEXT_ALIGN_RIGHT, 0);
     }
+    /* 健康 row → the alerts page (the whole row, not just the words). */
+    {
+        lv_obj_t *hit = lv_obj_create(dev);
+        lv_obj_remove_style_all(hit);
+        lv_obj_set_size(hit, UI_CARD_W - 2 * UI_PAD, 22);
+        lv_obj_align(hit, LV_ALIGN_TOP_LEFT, UI_PAD, 30 + 3 * 22);
+        lv_obj_set_ext_click_area(hit, 10);
+        lv_obj_add_flag(hit, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_event_cb(hit, open_alerts_cb, LV_EVENT_CLICKED, NULL);
+    }
     s_set_fw = mklabel(dev, UI_PAD, 120, &lv_font_montserrat_14, UI_C_TEXT_3);
     lv_obj_set_width(s_set_fw, UI_CARD_W - 2 * UI_PAD);
     lv_label_set_long_mode(s_set_fw, LV_LABEL_LONG_CLIP);
@@ -1496,6 +1517,52 @@ static void build_sub_sms(lv_obj_t *t)
      * Pin it back to 0 once, right after building — this runs exactly once
      * per page (inside its build_* function), so it doesn't fight the user's
      * own scrolling on later visits. */
+    lv_obj_scroll_to_y(t, 0, LV_ANIM_OFF);
+}
+
+/* ---- Alerts subpage ----
+ * What went wrong while nobody was looking (crashes, Wi-Fi rescues, SMS
+ * failures), newest first: one plain Chinese line per alert, its time, and
+ * the technical text small underneath. Same data as the admin web's
+ * 系统 → 告警 page; details need a login, so alerts.c signs in like esim.c. */
+#define AL_ROW_PITCH 76
+static void al_allread_cb(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    alerts_mark_all_read();
+}
+
+static void open_alerts_cb(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    sub_open(SUB_ALERTS);
+}
+
+static void build_sub_alerts(lv_obj_t *t)
+{
+    t = mk_scroll_h(t, UI_SUB_VIEW, 8 + SMS_TOOLBAR_H + ALERTS_MAX * AL_ROW_PITCH + 8);
+    s_al_count = mklabel(t, UI_INSET + 4, 16, FCN_S, UI_C_TEXT_2);
+    s_al_allread_btn = mk_small_btn(t, "全部已读", al_allread_cb, NULL);
+    lv_obj_align(s_al_allread_btn, LV_ALIGN_TOP_RIGHT, -UI_INSET, 8);
+    s_al_empty = mklabel(t, UI_INSET + 4, 8 + SMS_TOOLBAR_H, FCN_S, UI_C_TEXT_3);
+    lv_obj_set_width(s_al_empty, UI_CARD_W - 8);
+    lv_label_set_long_mode(s_al_empty, LV_LABEL_LONG_WRAP);
+    for (int i = 0; i < ALERTS_MAX; i++) {
+        lv_obj_t *c = mk_card(t, 8 + SMS_TOOLBAR_H + i * AL_ROW_PITCH, 66);
+        s_al_row[i] = c;
+        s_al_mark[i] = mklabel(c, UI_PAD, 8, FCN_S, UI_C_WARN);
+        lv_label_set_text(s_al_mark[i], "▲");
+        s_al_label[i] = mklabel(c, UI_PAD + 18, 8, FCN_S, UI_C_TEXT);
+        lv_obj_set_width(s_al_label[i], UI_CARD_W - 2 * UI_PAD - 18 - 84);
+        lv_label_set_long_mode(s_al_label[i], LV_LABEL_LONG_DOT);
+        s_al_time[i] = mklabel(c, UI_CARD_W - UI_PAD - 84, 10, &lv_font_montserrat_12, UI_C_TEXT_3);
+        lv_obj_set_width(s_al_time[i], 84);
+        lv_obj_set_style_text_align(s_al_time[i], LV_TEXT_ALIGN_RIGHT, 0);
+        s_al_text[i] = mklabel(c, UI_PAD, 36, &lv_font_montserrat_12, UI_C_TEXT_3);
+        lv_obj_set_width(s_al_text[i], UI_CARD_W - 2 * UI_PAD);
+        lv_label_set_long_mode(s_al_text[i], LV_LABEL_LONG_DOT);
+        lv_obj_add_flag(c, LV_OBJ_FLAG_HIDDEN);
+    }
     lv_obj_scroll_to_y(t, 0, LV_ANIM_OFF);
 }
 
@@ -2283,6 +2350,7 @@ static void build_func(lv_obj_t *t)
         "\xE8\xB0\x83\xE8\xAF\x95\xE9\xA1\xB5", /* 调试页 */
         NULL, NULL, NULL,   /* SUB_TS/NODES/PAIRS: 不在磁贴墙上 */
         NULL,               /* SUB_SMS_DETAIL: 从短信列表点进去 */
+        NULL,               /* SUB_ALERTS: 顶栏圆点 / 系统页「健康」 */
     };
     /* Explicit list, not 0..SUB_N: SUB_TS has a subpage but no tile (it is
      * opened from the Tailscale card on Home). */
@@ -2442,9 +2510,11 @@ static void refresh_cb(lv_timer_t *t)
             c_alert = st;
             if (st == 0) {
                 lv_obj_add_flag(s_top_alert, LV_OBJ_FLAG_HIDDEN);
+                lv_obj_add_flag(s_top_alert_hit, LV_OBJ_FLAG_HIDDEN);
             } else {
                 lv_obj_set_style_bg_color(s_top_alert, lv_color_hex(st == 2 ? UI_C_BAD : UI_C_WARN), 0);
                 lv_obj_remove_flag(s_top_alert, LV_OBJ_FLAG_HIDDEN);
+                lv_obj_remove_flag(s_top_alert_hit, LV_OBJ_FLAG_HIDDEN);
             }
         }
     }
@@ -2457,13 +2527,13 @@ static void refresh_cb(lv_timer_t *t)
             set_label_fmt(s_set_health, c_h, sizeof c_h, "%s", "—");
         } else if (ah.bad) {
             col = UI_C_BAD;
-            set_label_fmt(s_set_health, c_h, sizeof c_h, "■ %d 项异常", ah.bad);
+            set_label_fmt(s_set_health, c_h, sizeof c_h, "■ %d 项异常 ›", ah.bad);
         } else if (ah.warn) {
             col = UI_C_WARN;
-            set_label_fmt(s_set_health, c_h, sizeof c_h, "▲ %d 项注意", ah.warn);
+            set_label_fmt(s_set_health, c_h, sizeof c_h, "▲ %d 项注意 ›", ah.warn);
         } else {
             col = UI_C_OK;
-            set_label_fmt(s_set_health, c_h, sizeof c_h, "%s", "● 一切正常");
+            set_label_fmt(s_set_health, c_h, sizeof c_h, "%s", "● 一切正常 ›");
         }
         if (col != c_hcol) {
             c_hcol = col;
@@ -3238,6 +3308,47 @@ static void refresh_cb(lv_timer_t *t)
         }
     }
 
+    /* ---- Alerts subpage ---- */
+    if (alerts_poll(sub_visible(SUB_ALERTS))) {
+        static char c_ac[48], c_al[ALERTS_MAX][96], c_at[ALERTS_MAX][24], c_ax[ALERTS_MAX][128];
+        int n = alerts_count(), un = alerts_unread();
+        const char *err = alerts_error();
+        if (err[0]) set_label_fmt(s_al_count, c_ac, sizeof c_ac, "%s", err);
+        else if (!n) set_label_fmt(s_al_count, c_ac, sizeof c_ac, "%s", "");
+        else if (un) set_label_fmt(s_al_count, c_ac, sizeof c_ac, "%d 条未读", un);
+        else set_label_fmt(s_al_count, c_ac, sizeof c_ac, "%s", "都已读");
+        if (un && !err[0]) lv_obj_remove_flag(s_al_allread_btn, LV_OBJ_FLAG_HIDDEN);
+        else               lv_obj_add_flag(s_al_allread_btn, LV_OBJ_FLAG_HIDDEN);
+        if (!n && !err[0]) {
+            lv_label_set_text(s_al_empty, "● 一切正常，没有告警。程序崩溃、Wi-Fi 被看门狗打开这类事会记在这里。");
+            lv_obj_remove_flag(s_al_empty, LV_OBJ_FLAG_HIDDEN);
+        } else {
+            lv_obj_add_flag(s_al_empty, LV_OBJ_FLAG_HIDDEN);
+        }
+        for (int i = 0; i < ALERTS_MAX; i++) {
+            alert_item_t a;
+            char when[40];
+            if (i >= n) { lv_obj_add_flag(s_al_row[i], LV_OBJ_FLAG_HIDDEN); continue; }
+            alerts_get(i, &a);
+            lv_obj_remove_flag(s_al_row[i], LV_OBJ_FLAG_HIDDEN);
+            if (a.time > 0) {
+                /* Device clock = local wall time under TZ=UTC: localtime gives the right digits. */
+                time_t tt = (time_t)a.time;
+                struct tm tm;
+                localtime_r(&tt, &tm);
+                strftime(when, sizeof when, "%m-%d %H:%M", &tm);
+            } else {
+                snprintf(when, sizeof when, "开机后%ld分", a.uptime / 60);
+            }
+            set_label_fmt(s_al_label[i], c_al[i], sizeof c_al[i], "%s", a.label);
+            set_label_fmt(s_al_time[i], c_at[i], sizeof c_at[i], "%s", when);
+            set_label_fmt(s_al_text[i], c_ax[i], sizeof c_ax[i], "%s", a.text);
+            if (a.unread) lv_obj_remove_flag(s_al_mark[i], LV_OBJ_FLAG_HIDDEN);
+            else          lv_obj_add_flag(s_al_mark[i], LV_OBJ_FLAG_HIDDEN);
+            lv_obj_set_style_text_color(s_al_label[i], lv_color_hex(a.unread ? UI_C_TEXT : UI_C_TEXT_2), 0);
+        }
+    }
+
     /* ---- 信令读取 subpage ---- */
     {
         static char c_sg[6][64], c_sgl[80], c_sgn[4][48], c_nrb[160], c_lteb[200];
@@ -3580,6 +3691,17 @@ static void build_statusbar(void)
     lv_obj_set_style_bg_opa(s_top_alert, LV_OPA_COVER, 0);
     lv_obj_align(s_top_alert, LV_ALIGN_LEFT_MID, 266, 0);
     lv_obj_add_flag(s_top_alert, LV_OBJ_FLAG_HIDDEN);
+    /* Tap target around the dot: opens the alerts page. Transparent and as
+     * tall as the bar; the gap is only 19px wide, so it reaches a little
+     * further with ext_click_area instead of growing over its neighbours. */
+    s_top_alert_hit = lv_obj_create(bar);
+    lv_obj_remove_style_all(s_top_alert_hit);
+    lv_obj_set_size(s_top_alert_hit, 19, UI_TOPBAR_H);
+    lv_obj_align(s_top_alert_hit, LV_ALIGN_LEFT_MID, 260, 0);
+    lv_obj_set_ext_click_area(s_top_alert_hit, 8);
+    lv_obj_add_flag(s_top_alert_hit, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(s_top_alert_hit, open_alerts_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_flag(s_top_alert_hit, LV_OBJ_FLAG_HIDDEN);
 
     s_top_bat_icon = lv_obj_create(bar);
     lv_obj_remove_style_all(s_top_bat_icon);
@@ -3833,6 +3955,7 @@ void ui_create(void)
     build_sub_esim(s_sub_page[SUB_ESIM]);
     build_sub_perf(s_sub_page[SUB_PERF]);
     build_sub_sms_detail(s_sub_page[SUB_SMS_DETAIL]);
+    build_sub_alerts(s_sub_page[SUB_ALERTS]);
     sub_close();
 
     /* Seed the tileview's "active tile" pointer. lv_tileview_add_tile()

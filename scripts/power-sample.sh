@@ -60,6 +60,8 @@ cores=$(grep -c '^processor' /proc/cpuinfo)
 hz=100
 
 mkdir -p "$OUT_DIR"
+# Keep the newest 20 reports.
+ls -t "$OUT_DIR"/*.txt 2>/dev/null | tail -n +20 | while read -r old; do rm -f "$old"; done
 report="$OUT_DIR/$(date +%Y%m%d-%H%M%S).txt"
 {
     echo "U60 power sample — $(date '+%Y-%m-%d %H:%M') device local, $MIN min, every ${STEP}s"
