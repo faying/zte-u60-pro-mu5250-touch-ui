@@ -38,8 +38,19 @@ typedef struct {
     int  wifi_off;       /* 当前情景把 AP 关了 */
     char pin[48];        /* 被手动固定到的情景 id，"" = 自动 */
     long last_switch;    /* 墙钟秒，0 = 从未切换 */
+    int  abroad;         /* 当前情景是「国外」（引擎开着时才算） */
+    int  chill_on;       /* CHILL 总开关：1 开 / 0 关 / -1 还不知道 */
+    int  chill_back;     /* 在国外关掉的 CHILL，回国会被自动打开 */
+    int  auto_direct;    /* 国外情景会自动把「🚀 节点选择」切直连（AI 不动） */
 } scenario_status_t;
 
 void scenario_get_status(scenario_status_t *out);
+
+/*
+ * 开 / 关 CHILL 总开关：走 zte-agent（带登录，和 eSIM 页同一套），agent 在
+ * 国外关掉时会记下「回国自动打开」。返回 1 = agent 接受了。本地状态先按
+ * 请求改掉（下一轮 scenario_poll 返回 1 重绘），几秒后再读一次真实状态。
+ */
+int scenario_chill_set(int on);
 
 #endif /* U60_SCENARIO_H */

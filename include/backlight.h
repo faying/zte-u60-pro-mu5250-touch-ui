@@ -12,6 +12,7 @@
 void backlight_init(void);
 void backlight_on(void);      /* restore the remembered on-level (instant) */
 void backlight_off(void);
+int  backlight_panel_lit(void); /* sysfs brightness > 0, without resyncing our own flag */
 void backlight_toggle(void);
 int  backlight_is_on(void);
 int  backlight_is_lit(void);   /* reads sysfs; use before deciding on/off */

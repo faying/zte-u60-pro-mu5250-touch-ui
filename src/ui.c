@@ -83,6 +83,14 @@ static lv_obj_t *s_cc_traffic;   /* 今日/本月流量，见 fmt_bytes_total() 
 /* 情景 — zte-agent 情景引擎的当前判定，只读。 */
 #define SC_CARD_H 56
 static lv_obj_t *s_sc_card, *s_sc_state, *s_sc_note;
+static int s_sc_force;          /* 情景卡片要按新状态重画 */
+/* 国外时点情景卡片弹出的「CHILL 出口」面板（见 build_exit_menu） */
+enum { XM_PROXY, XM_GLOBAL, XM_KEEP_AI, XM_ALL, XM_OFF, XM_N };
+static lv_obj_t *s_xm, *s_xm_btn[XM_N], *s_xm_lbl[XM_N], *s_xm_foot;
+static uint32_t s_xm_off_arm;   /* 「关闭」点了第一下的时刻，0 = 没准备 */
+#define XM_ARM_MS 4000
+static lv_obj_t *s_cp_sw;       /* CHILL 页的总开关 */
+static lv_obj_t *s_cp_exit_note;  /* CHILL 页「出口」行右边的说明 */
 static lv_obj_t *s_ts_card, *s_ts_state, *s_ts_addr, *s_ts_routes, *s_ts_peers, *s_ts_note;
 /* Charts page */
 #define CHART_PTS 40
@@ -120,7 +128,7 @@ static lv_obj_t *s_chill_card, *s_chill_state,
 #define CHILL_MAX_GROUPS 12
 #define CHILL_GRP_COLS 3
 static lv_obj_t *s_cp_core, *s_cp_conns, *s_cp_traffic,
-                *s_cp_mode_btn[3], *s_cp_node_card, *s_cp_node_row[CHILL_MAX_NODES],
+                *s_cp_mode_btn[4], *s_cp_node_card, *s_cp_node_row[CHILL_MAX_NODES],
                 *s_cp_node_name[CHILL_MAX_NODES], *s_cp_node_dl[CHILL_MAX_NODES],
                 *s_cp_grp_card, *s_cp_grp_btn[CHILL_MAX_GROUPS], *s_cp_grp_lbl[CHILL_MAX_GROUPS],
                 *s_cp_delay_lbl;
@@ -601,6 +609,7 @@ static void sub_back(void);
 static void tile_click_cb(lv_event_t *e);   /* also used by the Home Tailscale card */
 static void chill_nav_cb(lv_event_t *e);    /* CHILL page's 策略组/节点/规则→节点 rows */
 static void open_alerts_cb(lv_event_t *e);  /* status-bar alert dot, 系统 page's 健康 row */
+static void sc_card_cb(lv_event_t *e);      /* Home 情景 card: abroad, opens the CHILL exit menu */
 static void bench_gate(void);
 static void update_tabs(void);
 
@@ -756,8 +765,9 @@ static void build_home(lv_obj_t *t)
     /* 情景 — between signal and Tailscale: it answers "why is Wi-Fi off?",
      * which is the first thing to wonder when the U-Chill SSID vanishes.
      * Hidden until the engine is configured and the agent answers. One row
-     * of state, one row of context; no tap target (nothing to do here — the
-     * settings live in the admin web page). */
+     * of state, one row of context. Abroad, a tap opens the CHILL exit menu
+     * (sc_card_cb → build_exit_menu); otherwise the settings live in the
+     * admin web page. */
     s_sc_card = mk_group(t, 202, UI_CARD_W, SC_CARD_H);
     lv_obj_set_style_radius(s_sc_card, UI_CARD_RADIUS, 0);
     lv_obj_set_style_bg_color(s_sc_card, lv_color_hex(UI_C_CARD), 0);
@@ -770,6 +780,8 @@ static void build_home(lv_obj_t *t)
     lv_label_set_long_mode(s_sc_note, LV_LABEL_LONG_CLIP);
     lv_obj_set_width(s_sc_note, UI_CARD_W - 2 * UI_PAD);
     lv_obj_add_flag(s_sc_card, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(s_sc_card, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(s_sc_card, sc_card_cb, LV_EVENT_CLICKED, NULL);
 
     /* Tailscale — hidden entirely when the device has no tailscaled, matching
      * the old UI's "card doesn't exist" behaviour rather than an empty box. */
@@ -1612,11 +1624,11 @@ static void build_sub_sms_detail(lv_obj_t *t)
 }
 
 /* ---- CHILL subpage ---- */
+static const char *const k_exit_state[4] = { "proxy", "global", "direct_keep_ai", "direct_all" };
 static void chill_mode_cb(lv_event_t *e)
 {
-    static const char *const k_mode[3] = { "rule", "global", "direct" };
     int idx = (int)(intptr_t)lv_event_get_user_data(e);
-    chill_set_mode(k_mode[idx]);
+    chill_set_exit(k_exit_state[idx]);
 }
 
 static void chill_node_cb(lv_event_t *e)
@@ -1663,9 +1675,150 @@ static lv_obj_t *build_traffic_card(lv_obj_t *t, int y, const char *title,
     return c;
 }
 
+/* ---- 国外时的 CHILL 出口面板 ----
+ * 在国外换了当地卡：大部分流量直连就好，但 🤖 AI（按地区限制、IP 突变会触发风控）
+ * 和 📞 VoWiFi（运营商的 Wi-Fi 通话通常只认本国 IP）要固定走原来的节点。四个选项就是用户实际会用的
+ * 四种状态；「关闭」会让 AI 和 VoWiFi 也直连，所以要点两下并写明代价。
+ * 回国（换回国内卡）后 agent 自动回到「代理」、打开在国外关掉的 CHILL。 */
+static void exit_menu_refresh(void)
+{
+    static const char *const k_lbl[XM_N] = {
+        "代理（和在国内一样）", "全局", "直连 · AI 不动", "全部直连（AI 也直连）", "关闭 CHILL（最省电）",
+    };
+    scenario_status_t sc;
+    scenario_get_status(&sc);
+    const char *x = chill_exit_raw();
+    int on = sc.chill_on != 0;
+    for (int i = 0; i < XM_N; i++) {
+        int cur = on && ((i == XM_PROXY && !strcmp(x, "proxy")) ||
+                         (i == XM_GLOBAL && !strcmp(x, "global")) ||
+                         (i == XM_KEEP_AI && !strcmp(x, "direct_keep_ai")) ||
+                         (i == XM_ALL && !strcmp(x, "direct_all")));
+        uint32_t col = cur ? UI_C_ACCENT : 0x394049;
+        const char *t = k_lbl[i];
+        if (i == XM_OFF) {
+            if (!on) { t = "打开 CHILL"; col = 0x2b6e4a; }
+            else if (s_xm_off_arm) { t = "再点一下：关闭（AI、VoWiFi 也直连）"; col = 0xb23b3b; }
+            else col = 0x6b2f2f;
+        } else if (!on) {
+            col = 0x262c33;             /* CHILL 关着时这三项没意义 */
+        }
+        lv_label_set_text(s_xm_lbl[i], t);
+        lv_obj_set_style_bg_color(s_xm_btn[i], lv_color_hex(col), 0);
+    }
+    lv_label_set_text(s_xm_foot, sc.auto_direct
+        ? "换国外卡时已自动切到「直连 · AI 不动」\n换回国内卡后自动回到「代理」"
+        : "换回国内卡后自动回到「代理」");
+    lv_obj_set_style_text_color(s_xm_foot, lv_color_hex(0x9aa4ae), 0);
+}
+
+static void exit_menu_set(int v)
+{
+    s_xm_off_arm = 0;
+    if (v) { exit_menu_refresh(); lv_obj_remove_flag(s_xm, LV_OBJ_FLAG_HIDDEN); }
+    else   lv_obj_add_flag(s_xm, LV_OBJ_FLAG_HIDDEN);
+}
+
+static void exit_menu_fail(void)
+{
+    lv_label_set_text(s_xm_foot, "没成功（后台没回应或 CHILL 没在运行），稍后再试");
+    lv_obj_set_style_text_color(s_xm_foot, lv_color_hex(UI_C_WARN), 0);
+}
+
+static void exit_pick_cb(lv_event_t *e)
+{
+    static const char *const k_state[4] = { "proxy", "global", "direct_keep_ai", "direct_all" };
+    int i = (int)(intptr_t)lv_event_get_user_data(e);
+    scenario_status_t sc;
+    scenario_get_status(&sc);
+    if (i == XM_OFF) {
+        if (sc.chill_on == 0) {                     /* 打开 */
+            if (scenario_chill_set(1)) exit_menu_set(0); else exit_menu_fail();
+            s_sc_force = 1;
+            return;
+        }
+        uint32_t now = lv_tick_get();
+        if (s_xm_off_arm && now - s_xm_off_arm < XM_ARM_MS) {
+            if (scenario_chill_set(0)) exit_menu_set(0); else exit_menu_fail();
+            s_sc_force = 1;
+        } else {
+            s_xm_off_arm = now ? now : 1;
+            exit_menu_refresh();
+        }
+        return;
+    }
+    if (sc.chill_on == 0) return;
+    if (chill_set_exit(k_state[i])) exit_menu_set(0); else exit_menu_fail();
+    s_sc_force = 1;
+}
+
+static void exit_cancel_cb(lv_event_t *e) { LV_UNUSED(e); exit_menu_set(0); }
+
+static void build_exit_menu(void)
+{
+    s_xm = lv_obj_create(lv_layer_top());
+    lv_obj_set_size(s_xm, 296, 452);
+    lv_obj_center(s_xm);
+    lv_obj_set_style_bg_color(s_xm, lv_color_hex(0x161b21), 0);
+    lv_obj_set_style_border_color(s_xm, lv_color_hex(0x4ea1ff), 0);
+    lv_obj_set_style_border_width(s_xm, 2, 0);
+    lv_obj_set_style_radius(s_xm, 12, 0);
+    lv_obj_set_flex_flow(s_xm, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(s_xm, LV_FLEX_ALIGN_SPACE_EVENLY, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_remove_flag(s_xm, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *title = lv_label_create(s_xm);
+    lv_label_set_text(title, "在国外 · CHILL 怎么走");
+    lv_obj_set_style_text_font(title, FCN, 0);
+    lv_obj_set_style_text_color(title, lv_color_hex(0x9aa4ae), 0);
+
+    for (int i = 0; i < XM_N; i++) {
+        s_xm_btn[i] = lv_button_create(s_xm);
+        lv_obj_set_width(s_xm_btn[i], lv_pct(94));
+        lv_obj_set_height(s_xm_btn[i], 44);
+        lv_obj_add_event_cb(s_xm_btn[i], exit_pick_cb, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+        s_xm_lbl[i] = lv_label_create(s_xm_btn[i]);
+        lv_obj_set_style_text_font(s_xm_lbl[i], FCN_S, 0);
+        lv_obj_center(s_xm_lbl[i]);
+    }
+    s_xm_foot = lv_label_create(s_xm);
+    lv_obj_set_style_text_font(s_xm_foot, FCN_S, 0);
+    lv_obj_set_style_text_align(s_xm_foot, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_width(s_xm_foot, lv_pct(94));
+    lv_label_set_long_mode(s_xm_foot, LV_LABEL_LONG_WRAP);
+
+    lv_obj_t *c = lv_button_create(s_xm);
+    lv_obj_set_width(c, lv_pct(94));
+    lv_obj_set_height(c, 40);
+    lv_obj_set_style_bg_color(c, lv_color_hex(0x262c33), 0);
+    lv_obj_add_event_cb(c, exit_cancel_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *cl = lv_label_create(c);
+    lv_label_set_text(cl, "取消");
+    lv_obj_set_style_text_font(cl, FCN_S, 0);
+    lv_obj_center(cl);
+    lv_obj_add_flag(s_xm, LV_OBJ_FLAG_HIDDEN);
+}
+
+/* 首页情景卡片：在国外时点开出口面板，其他时候点了什么都不做。 */
+static void sc_card_cb(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    scenario_status_t sc;
+    scenario_get_status(&sc);
+    if (sc.abroad && sc.chill_on >= 0) exit_menu_set(1);
+}
+
+/* CHILL 页总开关。agent 拒绝或连不上就把开关拨回去。 */
+static void chill_master_cb(lv_event_t *e)
+{
+    lv_obj_t *sw = lv_event_get_target(e);
+    int on = lv_obj_has_state(sw, LV_STATE_CHECKED);
+    if (!scenario_chill_set(on)) sw_apply(sw, !on);
+}
+
 static void build_sub_chill(lv_obj_t *t)
 {
-    t = mk_scroll_h(t, UI_SUB_VIEW, 8 + 82 + 10 + 70 + 10 + (30 + CHILL_NAV_ROWS * 44 + 8) + 16);
+    t = mk_scroll_h(t, UI_SUB_VIEW, 8 + 82 + 10 + 106 + 10 + (30 + CHILL_NAV_ROWS * 44 + 8) + 16);
 
     /* 曾经这里还有"节点"/"链路"两行，取自 chill_node()/chill_chain()——
      * 只描述 chill.conf 里配置的那一个组，规则模式下大部分流量根本不走它，
@@ -1674,7 +1827,14 @@ static void build_sub_chill(lv_obj_t *t)
      * 这两行，不留误导性的旧字段。 */
     lv_obj_t *st = mk_card(t, 8, 82);
     lv_label_set_text(mklabel(st, UI_PAD, 8, FCN_S, UI_C_TEXT_3), "\xE7\x8A\xB6\xE6\x80\x81" /* 状态 */);
-    s_cp_core = mklabel(st, UI_CARD_W - UI_PAD - 110, 8, FCN_S, UI_C_OK);
+    /* 总开关在「状态」行最右，核心状态文字挪到它左边。 */
+    s_cp_sw = lv_switch_create(st);
+    lv_obj_set_size(s_cp_sw, 44, 24);
+    lv_obj_align(s_cp_sw, LV_ALIGN_TOP_LEFT, UI_CARD_W - UI_PAD - 44, 5);
+    lv_obj_add_event_cb(s_cp_sw, chill_master_cb, LV_EVENT_VALUE_CHANGED, NULL);
+    lv_obj_add_flag(s_cp_sw, LV_OBJ_FLAG_HIDDEN);   /* 知道开关状态后才显示 */
+    s_sc_force = 1;                                  /* 下一轮按已知状态同步 */
+    s_cp_core = mklabel(st, UI_CARD_W - UI_PAD - 44 - 8 - 110, 8, FCN_S, UI_C_OK);
     lv_obj_set_width(s_cp_core, 110);
     lv_obj_set_style_text_align(s_cp_core, LV_TEXT_ALIGN_RIGHT, 0);
     static const char *const k_cp_cap[2] = {
@@ -1688,15 +1848,23 @@ static void build_sub_chill(lv_obj_t *t)
         lv_obj_set_style_text_align(*cp_val[i], LV_TEXT_ALIGN_RIGHT, 0);
     }
 
-    lv_obj_t *md = mk_card(t, 100, 70);
-    lv_label_set_text(mklabel(md, UI_PAD, 8, FCN_S, UI_C_TEXT_3), "\xE6\xA8\xA1\xE5\xBC\x8F" /* 模式 */);
-    static const char *labels[3] = { "规则", "全局", "直连" };
-    int bw = (UI_CARD_W - 2 * UI_PAD - 2 * 6) / 3;
-    for (int i = 0; i < 3; i++) {
+    lv_obj_t *md = mk_card(t, 100, 106);
+    /* 出口：用户关心的是「流量怎么走」，不是 mihomo 的模式名。「代理」= 规则模式；
+     * 「全局」= 全局模式（跟原来的全局按钮一样，只切模式）；「直连·AI 不动」=
+     * 规则模式 + 🚀 节点选择切 DIRECT（AI、VoWiFi 是独立的组，照旧走节点）；
+     * 「全部直连」= 直连模式，AI 也直连。四个一行放不下，两行两列。
+     * 全局曾被收进网页又加了回来：屏幕上已有的操作不要拿掉。 */
+    lv_label_set_text(mklabel(md, UI_PAD, 8, FCN_S, UI_C_TEXT_3), "出口");
+    s_cp_exit_note = mklabel(md, UI_CARD_W - UI_PAD - 200, 8, FCN_S, UI_C_TEXT_3);
+    lv_obj_set_width(s_cp_exit_note, 200);
+    lv_obj_set_style_text_align(s_cp_exit_note, LV_TEXT_ALIGN_RIGHT, 0);
+    static const char *labels[4] = { "代理", "全局", "直连·AI 不动", "全部直连" };
+    int bw = (UI_CARD_W - 2 * UI_PAD - 6) / 2;
+    for (int i = 0; i < 4; i++) {
         s_cp_mode_btn[i] = lv_button_create(md);
         lv_obj_set_size(s_cp_mode_btn[i], bw, 30);
         lv_obj_set_style_radius(s_cp_mode_btn[i], 8, 0);
-        lv_obj_align(s_cp_mode_btn[i], LV_ALIGN_TOP_LEFT, UI_PAD + i * (bw + 6), 28);
+        lv_obj_align(s_cp_mode_btn[i], LV_ALIGN_TOP_LEFT, UI_PAD + (i % 2) * (bw + 6), 28 + (i / 2) * 36);
         lv_obj_add_event_cb(s_cp_mode_btn[i], chill_mode_cb, LV_EVENT_CLICKED, (void *)(intptr_t)i);
         lv_obj_t *l = lv_label_create(s_cp_mode_btn[i]);
         lv_obj_set_style_text_font(l, FCN_S, 0);
@@ -1711,7 +1879,7 @@ static void build_sub_chill(lv_obj_t *t)
      * 一个思路）。策略组和节点共用一行/一个页面（点组切节点，两者是同一个
      *选择器，不是两件事——2026-09-22 反馈："策略组下面展开节点啊，这两个
      * 是紧密关联的"）。 */
-    lv_obj_t *nav = mk_card(t, 180, 30 + CHILL_NAV_ROWS * 44 + 8);
+    lv_obj_t *nav = mk_card(t, 216, 30 + CHILL_NAV_ROWS * 44 + 8);
     static const char *const k_nav_cap[CHILL_NAV_ROWS] = {
         "\xE8\x8A\x82\xE7\x82\xB9" /* 节点 */,
         "\xE8\xA7\x84\xE5\x88\x99 \xE2\x86\x92 \xE8\x8A\x82\xE7\x82\xB9" /* 规则 → 节点 */,
@@ -2500,7 +2668,18 @@ static void refresh_cb(lv_timer_t *t)
     /* Polled here, before the datad early-return below: agent_health() is
      * "time since the last successful read", so skipping the read whenever
      * datad is down would turn a datad outage into a false "agent lost". */
+    data_set_pace(backlight_panel_lit());
     int sc_changed = scenario_poll(tab_visible(TAB_HOME));
+    if (s_xm_off_arm && lv_tick_get() - s_xm_off_arm >= XM_ARM_MS) { s_xm_off_arm = 0; exit_menu_refresh(); }
+    {
+        /* 情景卡片上写着 CHILL 的出口，出口变了也要重画 */
+        static char last_exit[20];
+        if (strcmp(last_exit, chill_exit_raw())) {
+            snprintf(last_exit, sizeof last_exit, "%s", chill_exit_raw());
+            s_sc_force = 1;
+        }
+    }
+    if (s_sc_force) { s_sc_force = 0; sc_changed = 1; }
     agent_health_t ah;
     agent_health(&ah);
     {
@@ -2786,12 +2965,30 @@ static void refresh_cb(lv_timer_t *t)
                 }
                 /* 在家：解释 Wi-Fi 为什么没了；判定中：为什么还没结论；
                  * 其他：上次什么时候切过来的 */
+                uint32_t note_col = UI_C_TEXT_2;
                 if (sc.enabled && !sc.name[0])
                     set_label_fmt(s_sc_note, c_sn, sizeof c_sn, "开机后要连续两次扫描确认位置");
-                else
+                else if (sc.abroad && sc.chill_on == 1) {
+                    /* 在国外：直接写 CHILL 现在怎么走，点卡片改 */
+                    note_col = UI_C_ACCENT;
+                    set_label_fmt(s_sc_note, c_sn, sizeof c_sn, "CHILL：%s · 点这里改", chill_mode());
+                } else if (sc.abroad && sc.chill_on == 0) {
+                    note_col = UI_C_ACCENT;
+                    set_label_fmt(s_sc_note, c_sn, sizeof c_sn, "%s",
+                                  sc.chill_back ? "CHILL 已关 · 回国自动打开 · 点这里改" : "CHILL 已关 · 点这里改");
+                } else
                     set_label_fmt(s_sc_note, c_sn, sizeof c_sn, "%s%s%s",
                                   sc.wifi_off ? "Wi-Fi 已关 · " : (when[0] ? "上次切换 " : ""),
                                   when, sc.wifi_off && !when[0] ? "手机走家里网络" : "");
+                lv_obj_set_style_text_color(s_sc_note, lv_color_hex(note_col), 0);
+            }
+            /* CHILL 页的总开关跟着 agent 报的状态走（旧 agent 不报 → 不显示） */
+            if (s_cp_sw) {
+                if (sc.chill_on < 0) lv_obj_add_flag(s_cp_sw, LV_OBJ_FLAG_HIDDEN);
+                else {
+                    lv_obj_remove_flag(s_cp_sw, LV_OBJ_FLAG_HIDDEN);
+                    sw_apply(s_cp_sw, sc.chill_on);
+                }
             }
         }
     }
@@ -2966,11 +3163,14 @@ static void refresh_cb(lv_timer_t *t)
                 lv_color_hex(online ? UI_C_OK : UI_C_TEXT_3), 0);
             set_label_fmt(s_cp_conns, c_pv, sizeof c_pv, "%s", chill_conn_split());
             set_label_fmt(s_cp_traffic, c_pt, sizeof c_pt, "%s", chill_traffic());
-            const char *mraw = chill_mode_raw();
-            for (int i = 0; i < 3; i++) {
-                static const char *const k_mode[3] = { "rule", "global", "direct" };
+            const char *xraw = chill_exit_raw();
+            for (int i = 0; i < 4; i++)
                 lv_obj_set_style_bg_color(s_cp_mode_btn[i],
-                    lv_color_hex(!strcmp(mraw, k_mode[i]) ? UI_C_ACCENT : 0x394049), 0);
+                    lv_color_hex(!strcmp(xraw, k_exit_state[i]) ? UI_C_ACCENT : 0x394049), 0);
+            {
+                static char c_xn[48] = "";
+                set_label_fmt(s_cp_exit_note, c_xn, sizeof c_xn, "%s",
+                              !strcmp(xraw, "direct_all") ? "AI、VoWiFi 也直连" : "");
             }
             int ng = chill_group_count();
             if (ng > CHILL_MAX_GROUPS) ng = CHILL_MAX_GROUPS;
@@ -3998,6 +4198,7 @@ void ui_create(void)
     fflush(stderr);
 
     build_power_menu();
+    build_exit_menu();
     backlight_init();
     key_input_init(&s_key);
     lv_timer_create(key_poll_cb, 50, NULL);

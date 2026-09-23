@@ -161,6 +161,7 @@ int main(void)
         usleep((useconds_t)idle * 1000);
     }
 
+    data_set_pace(1);   /* don't leave datad slow behind a stopped UI */
     drm_disp_close(&g_disp);
     touch_input_close(&g_touch);
     return 0;

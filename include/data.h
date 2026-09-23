@@ -117,4 +117,14 @@ int sms_mark_read_id(long id);       /* no-op if already read or gone */
 int sms_mark_all_read(void);         /* returns how many were unread */
 int sms_delete_id(long id);
 
+/*
+ * zwrt-datad's polling pace: 1 s while the panel is lit, 5 s while it is dark
+ * (state.set_interval). Nothing else on the device reads datad, so a dark
+ * screen needs no 1 s data. Sends only on a change, plus once after start and
+ * after every SSE reconnect (a restarted datad is back at its -i 1000). Never
+ * on a timer: each call makes datad drop its slow-data cache. Measured
+ * 2026-09-23: datad ~6% → ~2% of a core with the screen off.
+ */
+void data_set_pace(int panel_lit);
+
 #endif /* U60PRO_DATA_H */

@@ -30,7 +30,10 @@ const char *chill_card_html(int locked);
 
 /* Display values. All return a stable pointer valid until the next refresh. */
 const char *chill_core(void);      /* 运行中 / 已停止 */
-const char *chill_mode(void);      /* 规则 / 全局 / 直连 / - */
+const char *chill_mode(void);      /* 出口：代理 / 直连·AI 不动 / 全部直连 / 全局 / - */
+const char *chill_exit_raw(void);  /* proxy / direct_keep_ai / direct_all / global / "" */
+/* 切出口（走 zte-agent PUT /api/services/chill/exit，带登录）。1 = 成功。会阻塞到 agent 回应。 */
+int         chill_set_exit(const char *state);
 const char *chill_mode_raw(void);  /* rule / global / direct / "" */
 const char *chill_group(void);     /* 主选择器组名 */
 const char *chill_node(void);      /* 该组当前选中的节点 */

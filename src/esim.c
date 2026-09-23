@@ -228,6 +228,15 @@ static int es_api(const char *method, const char *path, const char *json, char *
     return code;
 }
 
+int agent_request(const char *method, const char *path, const char *json)
+{
+    char *b;
+    load_conf();
+    return es_api(method, path, json, &b);
+}
+
+int agent_post(const char *path) { return agent_request("POST", path, NULL); }
+
 /* ---- 数据 ---- */
 
 /* 字符串字段；JSON 的 null 当空串 */

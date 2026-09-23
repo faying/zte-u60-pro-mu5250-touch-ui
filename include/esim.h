@@ -38,6 +38,12 @@ const char *esim_list_html(void);   /* 生成的 profile 列表（act:esim:N） 
 /* 点了第 index 个 profile。两段式确认，返回 ESIM_SEL_*。 */
 int esim_select(int index);
 
+/* 带登录的 POST（无正文）到本机 zte-agent，给别的页面用。
+ * 返回 HTTP 状态码，0 = 连不上。会阻塞，最多几秒（agent 卡住时）。 */
+int agent_post(const char *path);
+/* 同上，可带方法和 JSON 正文（json 可为 NULL）。 */
+int agent_request(const char *method, const char *path, const char *json);
+
 /* Raw list access for renderers that build native widgets instead of parsing
  * esim_list_html()'s markup (the LVGL path). */
 int esim_profile_count(void);

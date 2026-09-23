@@ -8,6 +8,7 @@
  * SPDX-License-Identifier: MIT
  */
 #include "scenario.h"
+#include "esim.h"
 #include "json.h"
 
 #include <arpa/inet.h>
@@ -32,6 +33,8 @@
 static int  s_ok, s_configured, s_enabled, s_wifi_off;
 static char s_name[48], s_pin[48];
 static long s_last_switch;
+static int  s_abroad, s_chill_on = -1, s_chill_back, s_auto_direct;
+static int  s_dirty;            /* 本地改过状态（开关 CHILL），下一轮要重绘 */
 
 static int      s_was_active;
 static long     s_poll_ms;
@@ -134,7 +137,12 @@ int scenario_poll(int active)
     s_was_active = active;
     /* 不在首页也按 30 秒读：顶栏的失联提示每一页都要准。刚切到首页时抢先读
      * 一次，但 agent 正读不到时不抢（卡住的 agent 会让每次切页顿 0.8 秒）。 */
-    if (s_poll_ms && t - s_poll_ms < SC_TTL_MS && !(just_shown && s_ok)) return 0;
+    if (s_poll_ms && t - s_poll_ms < SC_TTL_MS && !(just_shown && s_ok)) {
+        if (!s_dirty) return 0;
+        s_dirty = 0;
+        return 1;
+    }
+    s_dirty = 0;
     s_poll_ms = t;
 
     s_ok = 0;
@@ -151,6 +159,14 @@ int scenario_poll(int active)
         } else {
             s_h_checked = 0;
         }
+        /* services.chill.on：总开关（/data/chill/disabled 不存在）。旧 agent 没有这个键 → -1 */
+        {
+            char svc[1024], ch[256], v[8];
+            s_chill_on = -1;
+            if (json_get(data, "services", svc, sizeof svc) && json_get(svc, "chill", ch, sizeof ch) &&
+                json_get(ch, "on", v, sizeof v))
+                s_chill_on = !strcmp(v, "true");
+        }
     } else {
         data[0] = 0;
     }
@@ -162,10 +178,13 @@ int scenario_poll(int active)
         str_field(sc, "name", s_name, sizeof s_name);
         str_field(sc, "pin", s_pin, sizeof s_pin);
         s_last_switch = json_get_int(sc, "last_switch", 0);
+        s_abroad = bool_field(sc, "abroad");
+        s_chill_back = bool_field(sc, "chill_on_when_home");
+        s_auto_direct = bool_field(sc, "auto_direct");
     }
 
-    snprintf(nums, sizeof nums, "%d/%d/%d/%d/%ld/%d", s_ok, s_configured, s_enabled,
-             s_wifi_off, s_last_switch, s_unread);
+    snprintf(nums, sizeof nums, "%d/%d/%d/%d/%ld/%d/%d%d%d", s_ok, s_configured, s_enabled,
+             s_wifi_off, s_last_switch, s_unread, s_abroad, s_chill_on, s_chill_back);
     h = fnv(h, nums);
     h = fnv(h, s_name);
     h = fnv(h, s_pin);
@@ -182,6 +201,24 @@ void scenario_get_status(scenario_status_t *out)
     out->wifi_off = s_wifi_off;
     snprintf(out->pin, sizeof out->pin, "%s", s_pin);
     out->last_switch = s_last_switch;
+    out->abroad = s_abroad;
+    out->chill_on = s_chill_on;
+    out->chill_back = s_chill_back;
+    out->auto_direct = s_auto_direct;
+}
+
+int scenario_chill_set(int on)
+{
+    int code = agent_post(on ? "/api/services/chill/enable" : "/api/services/chill/disable");
+    if (code < 200 || code >= 300) return 0;
+    /* 先按请求显示；agent 那边 chill.sh 要跑几秒，4 秒后再读真实状态 */
+    s_chill_on = on;
+    if (on) s_chill_back = 0;
+    else if (s_abroad) s_chill_back = 1;
+    s_dirty = 1;
+    s_sig = 0;
+    s_poll_ms = now_ms() - SC_TTL_MS + 4000;
+    return 1;
 }
 
 void agent_health(agent_health_t *out)

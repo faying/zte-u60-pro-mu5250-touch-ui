@@ -66,6 +66,9 @@ void backlight_toggle(void)
 }
 
 int backlight_is_on(void) { return s_is_on; }
+/* For watchers (data_set_pace) that must not change the key/auto-off logic's
+ * idea of the state, which backlight_is_lit() does. */
+int backlight_panel_lit(void) { return read_int(BL_BRIGHTNESS, 0) > 0; }
 /* What the panel is actually doing right now (sysfs), and resync our flag. */
 int backlight_is_lit(void)
 {

@@ -7,6 +7,7 @@
  * SPDX-License-Identifier: MIT
  */
 #include "chill.h"
+#include "esim.h"
 #include "json.h"
 
 #include <arpa/inet.h>
@@ -43,6 +44,9 @@ static int  s_conf_loaded;
 static int  s_online;
 static char s_mode_raw[16];
 static char s_node[SC_NAME_MAX];
+/* 「🚀 节点选择」当前选中的原始名字：出口状态（代理 / 直连·AI 不动）看它是不是 DIRECT */
+static char s_main_now[SC_NAME_MAX];
+#define SC_MAIN_GROUP "\xF0\x9F\x9A\x80 \xE8\x8A\x82\xE7\x82\xB9\xE9\x80\x89\xE6\x8B\xA9" /* 🚀 节点选择 */
 static char s_traffic[48];
 static char s_speed[48];        /* 实时上下行 */
 static char s_chain[160];       /* 真实出口链路：组 -> 组 -> 节点 */
@@ -691,6 +695,14 @@ int chill_poll(int active)
     s_core_running = 1;
     json_get(b, "mode", s_mode_raw, sizeof s_mode_raw);
 
+    {
+        char menc[128], mpath[160];
+        urlenc(SC_MAIN_GROUP, menc, sizeof menc);
+        snprintf(mpath, sizeof mpath, "/proxies/%s", menc);
+        b = sc_http("GET", mpath, NULL);
+        if (!b || !json_get(b, "now", s_main_now, sizeof s_main_now)) s_main_now[0] = 0;
+    }
+
     b = sc_http("GET", "/group", NULL);
     if (b) parse_groups(b);
 
@@ -835,12 +847,45 @@ const char *chill_chain(void)   { return s_chain[0] ? s_chain : "-"; }
 const char *chill_conns(void)   { return s_conns[0] ? s_conns : "0"; }
 int         chill_online(void)  { return s_online; }
 
+/* 出口状态，跟 zte-agent chill.rs 的 exit_state() 同一套判定：先看模式，
+ * 规则模式下再看「🚀 节点选择」是不是 DIRECT。🤖 AI 和 📞 VoWiFi 是独立的组，
+ * 不挂在它下面，所以「直连·AI 不动」时它们照旧走各自的节点。 */
+const char *chill_exit_raw(void)
+{
+    if (!strcmp(s_mode_raw, "direct")) return "direct_all";
+    if (!strcmp(s_mode_raw, "global")) return "global";
+    if (!strcmp(s_mode_raw, "rule"))   return !strcmp(s_main_now, "DIRECT") ? "direct_keep_ai" : "proxy";
+    return "";
+}
+
+/* 给人看的出口名（以前是 规则/全局/直连 模式名，出口状态才是用户关心的） */
 const char *chill_mode(void)
 {
-    if (!strcmp(s_mode_raw, "rule"))   return "\xE8\xA7\x84\xE5\x88\x99";
-    if (!strcmp(s_mode_raw, "global")) return "\xE5\x85\xA8\xE5\xB1\x80";
-    if (!strcmp(s_mode_raw, "direct")) return "\xE7\x9B\xB4\xE8\xBF\x9E";
+    const char *x = chill_exit_raw();
+    if (!strcmp(x, "proxy"))          return "代理";
+    if (!strcmp(x, "direct_keep_ai")) return "直连·AI 不动";
+    if (!strcmp(x, "direct_all"))     return "全部直连";
+    if (!strcmp(x, "global"))         return "全局";
     return "-";
+}
+
+int chill_set_exit(const char *state)
+{
+    char body[48];
+    int code;
+    if (!state || !*state) return 0;
+    snprintf(body, sizeof body, "{\"state\":\"%s\"}", state);
+    code = agent_request("PUT", "/api/services/chill/exit", body);
+    if (code < 200 || code >= 300) return 0;
+    /* 先按请求显示，下一轮 chill_poll 读真实值 */
+    if (!strcmp(state, "direct_all")) snprintf(s_mode_raw, sizeof s_mode_raw, "direct");
+    else {
+        snprintf(s_mode_raw, sizeof s_mode_raw, "rule");
+        if (!strcmp(state, "direct_keep_ai")) snprintf(s_main_now, sizeof s_main_now, "DIRECT");
+        else if (!strcmp(s_main_now, "DIRECT")) s_main_now[0] = 0;
+    }
+    s_last_ms = 0;
+    return 1;
 }
 
 /*

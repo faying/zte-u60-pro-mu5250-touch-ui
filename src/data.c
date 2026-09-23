@@ -628,6 +628,9 @@ static int process_sse_buffer(void)
     return changed;
 }
 
+static int s_pace_sent = -1;    /* interval last asked for; -1 = unknown */
+static void control_reap(uint32_t now);   /* parked /control sockets, see sms_control_send */
+
 static int open_sse_stream(void)
 {
     char req[256];
@@ -691,6 +694,7 @@ static int open_sse_stream(void)
             }
             memcpy(g_backend.sse_buf, body, g_backend.sse_len);
             g_backend.next_retry_ms = 0;
+            s_pace_sent = -1;   /* maybe a restarted datad: tell it the pace again */
             return 0;
         }
     }
@@ -755,6 +759,7 @@ int data_backend_init(void)
 
 int data_backend_poll(uint32_t now_ms)
 {
+    control_reap(now_ms);
     int changed = 0;
 
     backend_init_once();
@@ -832,11 +837,47 @@ int data_refresh_live(devui_data_t *d)
 
 /*
  * ---- SMS actions ----
- * Fire-and-forget: connect, write the /control request, close without
- * reading the response. See data.h — waiting here would block the same
- * single thread that also drives touch/render (this is exactly the bug
- * chill_select_node() had before it was made async).
+ * Fire-and-forget: connect, write the /control request, don't wait for the
+ * response. See data.h — waiting here would block the same single thread
+ * that also drives touch/render (this is exactly the bug chill_select_node()
+ * had before it was made async).
+ *
+ * But don't close at once either: datad's HTTP server drops a request whose
+ * client has already hung up before the handler runs. Measured 2026-09-23
+ * with state.set_interval: closed right after the write, lost every time;
+ * closed 300 ms later, never. The SMS actions went through the same path.
+ * So the socket is parked here and control_reap() — run from
+ * data_backend_poll() every loop — closes it once the answer is readable
+ * or after CONTROL_LINGER_MS.
  */
+#define CONTROL_SLOTS     8
+#define CONTROL_LINGER_MS 5000
+static struct { int fd1; uint32_t t; } s_ctl[CONTROL_SLOTS];   /* fd1 = fd + 1, 0 = free */
+
+static void control_reap(uint32_t now)
+{
+    for (int i = 0; i < CONTROL_SLOTS; i++) {
+        int fd = s_ctl[i].fd1 - 1;
+        if (fd < 0) continue;
+        if (wait_fd_ready(fd, 0, 0) > 0 || now - s_ctl[i].t >= CONTROL_LINGER_MS) {
+            close(fd);
+            s_ctl[i].fd1 = 0;
+        }
+    }
+}
+
+static void control_park(int fd)
+{
+    int oldest = 0;
+    for (int i = 0; i < CONTROL_SLOTS; i++) {
+        if (!s_ctl[i].fd1) { oldest = i; break; }
+        if ((int32_t)(s_ctl[i].t - s_ctl[oldest].t) < 0) oldest = i;
+    }
+    if (s_ctl[oldest].fd1) close(s_ctl[oldest].fd1 - 1);   /* all busy: the oldest has had its chance */
+    s_ctl[oldest].fd1 = fd + 1;
+    s_ctl[oldest].t = mono_ms();
+}
+
 static void sms_control_send(const char *action, const char *params_json)
 {
     /* Room for "mark all read": up to DEVUI_SMS_MAX ids in one request. */
@@ -849,8 +890,21 @@ static void sms_control_send(const char *action, const char *params_json)
              "Content-Type: application/json\r\nContent-Length: %d\r\n"
              "Connection: close\r\n\r\n%s",
              DEVUI_BACKEND_HOST, DEVUI_BACKEND_PORT, (int)strlen(body), body);
-    send_all(fd, req, strlen(req), 800);
-    close(fd);
+    if (send_all(fd, req, strlen(req), 800)) control_park(fd);
+    else close(fd);
+}
+
+#define DEVUI_PACE_LIT_MS  1000   /* = start.sh's -i 1000 */
+#define DEVUI_PACE_DARK_MS 5000   /* datad's upper limit */
+
+void data_set_pace(int panel_lit)
+{
+    char params[40];
+    int want = panel_lit ? DEVUI_PACE_LIT_MS : DEVUI_PACE_DARK_MS;
+    if (want == s_pace_sent) return;
+    snprintf(params, sizeof params, "{\"milliseconds\":%d}", want);
+    sms_control_send("state.set_interval", params);
+    s_pace_sent = want;
 }
 
 int sms_mark_read(int index)
