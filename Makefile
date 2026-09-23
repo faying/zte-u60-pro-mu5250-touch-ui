@@ -23,7 +23,7 @@ LVGL_DIR := third_party/lvgl
 # 和二级页，直接用 chill.c 的 getter，不走 HTML）。
 APP_SRCS  := src/main.c src/ui.c src/drm_disp.c src/touch_input.c \
              src/backlight.c src/data.c src/key_input.c src/json.c \
-             src/tailscale.c src/esim.c src/chill.c src/speedtest.c
+             src/tailscale.c src/esim.c src/chill.c src/speedtest.c src/scenario.c
 LVGL_SRCS := $(shell find $(LVGL_DIR)/src -name '*.c' 2>/dev/null)
 OBJS      := $(APP_SRCS:.c=.o) $(LVGL_SRCS:.c=.o)
 

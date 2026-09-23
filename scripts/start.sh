@@ -133,8 +133,16 @@ start_datad_legacy() {
     # The token protects the LAN listener; keep new and existing credentials
     # private even when provisioning used a loose umask.
     chmod 600 "$DATAD_TOKEN_FILE" || return 1
+    # ZWRT_DATAD_OTA_DISABLE_AUTO: belt and braces. Upstream's Rust datad
+    # fetched and INSTALLED updates on its own from a netdisk share and GitHub;
+    # our fork (faying/zte-u60-pro-mu5250-data-service, 107b2f6) has no
+    # built-in servers and defaults to off, so the device depends on nothing
+    # outside itself. Updates go through the side-by-side procedure like every
+    # other binary. /data/zwrt-datad/ota.json says enabled=false as well. The
+    # C datad ignores all of this.
     nohup env DATAD_MODEM_REMOTE_STREAM="$DATAD_MODEM_REMOTE_STREAM" \
         DATAD_MODEM_REMOTE_STALE_SEC="$DATAD_MODEM_REMOTE_STALE_SEC" \
+        ZWRT_DATAD_OTA_DISABLE_AUTO=1 \
         "$DATAD_BIN" -i 1000 \
         --lan-bind "$DATAD_LAN_BIND" --lan-port "$DATAD_LAN_PORT" \
         --auth-token-file "$DATAD_TOKEN_FILE" >/tmp/zwrt-datad.log 2>&1 </dev/null &

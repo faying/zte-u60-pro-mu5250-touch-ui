@@ -14,6 +14,7 @@
 #include "backlight.h"
 #include "chill.h"
 #include "tailscale.h"
+#include "scenario.h"
 #include "esim.h"
 #include "speedtest.h"
 #include "lvgl.h"
@@ -70,6 +71,9 @@ static lv_obj_t *s_ca_card[CA_SLOTS], *s_ca_title[CA_SLOTS], *s_ca_rsrp[CA_SLOTS
 static lv_obj_t *s_ca_cap_rsrp[CA_SLOTS], *s_ca_cap_sinr[CA_SLOTS];
 static lv_obj_t *s_cell_card, *s_cc_sum;
 static lv_obj_t *s_cc_traffic;   /* 今日/本月流量，见 fmt_bytes_total() */
+/* 情景 — zte-agent 情景引擎的当前判定，只读。 */
+#define SC_CARD_H 56
+static lv_obj_t *s_sc_card, *s_sc_state, *s_sc_note;
 static lv_obj_t *s_ts_card, *s_ts_state, *s_ts_addr, *s_ts_routes, *s_ts_peers, *s_ts_note;
 /* Charts page */
 #define CHART_PTS 40
@@ -662,7 +666,7 @@ static void build_home(lv_obj_t *t)
      * line) to a worst case (5 pairs) of ~336. 490+10+126+10+336 == 972;
      * 1050 leaves slack without measuring it to the pixel every time either
      * card's worst case grows again. */
-    t = mk_scroll(t, 1050);
+    t = mk_scroll(t, 1050 + SC_CARD_H + 10);
 
     s_cell_card = mk_card(t, 10, 182);
     lv_obj_t *cell = s_cell_card;
@@ -708,6 +712,24 @@ static void build_home(lv_obj_t *t)
         s_ca_sinr[i]     = mklabel(c, 144, 33, &lv_font_montserrat_14, UI_C_OK);
         lv_obj_add_flag(c, LV_OBJ_FLAG_HIDDEN);
     }
+
+    /* 情景 — between signal and Tailscale: it answers "why is Wi-Fi off?",
+     * which is the first thing to wonder when the U-Chill SSID vanishes.
+     * Hidden until the engine is configured and the agent answers. One row
+     * of state, one row of context; no tap target (nothing to do here — the
+     * settings live in the admin web page). */
+    s_sc_card = mk_group(t, 202, UI_CARD_W, SC_CARD_H);
+    lv_obj_set_style_radius(s_sc_card, UI_CARD_RADIUS, 0);
+    lv_obj_set_style_bg_color(s_sc_card, lv_color_hex(UI_C_CARD), 0);
+    lv_obj_set_style_bg_opa(s_sc_card, LV_OPA_COVER, 0);
+    lv_label_set_text(mklabel(s_sc_card, UI_PAD, 8, FCN_S, UI_C_TEXT_3), "情景");
+    s_sc_state = mklabel(s_sc_card, UI_CARD_W - UI_PAD - 160, 8, FCN_S, UI_C_TEXT);
+    lv_obj_set_width(s_sc_state, 160);
+    lv_obj_set_style_text_align(s_sc_state, LV_TEXT_ALIGN_RIGHT, 0);
+    s_sc_note = mklabel(s_sc_card, UI_PAD, 30, FCN_S, UI_C_TEXT_2);
+    lv_label_set_long_mode(s_sc_note, LV_LABEL_LONG_CLIP);
+    lv_obj_set_width(s_sc_note, UI_CARD_W - 2 * UI_PAD);
+    lv_obj_add_flag(s_sc_card, LV_OBJ_FLAG_HIDDEN);
 
     /* Tailscale — hidden entirely when the device has no tailscaled, matching
      * the old UI's "card doesn't exist" behaviour rather than an empty box. */
@@ -2457,10 +2479,49 @@ static void refresh_cb(lv_timer_t *t)
          * existing objects only — nothing is allocated here. */
         int cell_h = y + 4;
         lv_obj_set_height(s_cell_card, cell_h);
-        int ts_y = 10 + cell_h + 10;
+        int sc_y = 10 + cell_h + 10;
+        lv_obj_align(s_sc_card, LV_ALIGN_TOP_LEFT, UI_INSET, sc_y);
+        int ts_y = sc_y + (lv_obj_has_flag(s_sc_card, LV_OBJ_FLAG_HIDDEN) ? 0 : SC_CARD_H + 10);
         lv_obj_align(s_ts_card, LV_ALIGN_TOP_LEFT, UI_INSET, ts_y);
         lv_obj_align(s_chill_card, LV_ALIGN_TOP_LEFT, UI_INSET,
                      ts_y + (lv_obj_has_flag(s_ts_card, LV_OBJ_FLAG_HIDDEN) ? 0 : 126));
+    }
+
+    /* ---- 情景 (Home) ---- */
+    {
+        if (scenario_poll(tab_visible(TAB_HOME))) {
+            static char c_ss[64] = "", c_sn[96] = "";
+            scenario_status_t sc;
+            scenario_get_status(&sc);
+            if (!sc.available) {
+                lv_obj_add_flag(s_sc_card, LV_OBJ_FLAG_HIDDEN);
+            } else {
+                char when[24] = "";
+                lv_obj_remove_flag(s_sc_card, LV_OBJ_FLAG_HIDDEN);
+                if (!sc.enabled)
+                    set_label_fmt(s_sc_state, c_ss, sizeof c_ss, "已停用");
+                else
+                    set_label_fmt(s_sc_state, c_ss, sizeof c_ss, "%s%s",
+                                  sc.name[0] ? sc.name : "判定中",
+                                  sc.pin[0] ? " · 已固定" : "");
+                lv_obj_set_style_text_color(s_sc_state,
+                    lv_color_hex(sc.enabled ? UI_C_TEXT : UI_C_TEXT_3), 0);
+                if (sc.last_switch > 0) {
+                    time_t tt = (time_t)sc.last_switch;
+                    struct tm tm;
+                    localtime_r(&tt, &tm);
+                    strftime(when, sizeof when, "%m-%d %H:%M", &tm);
+                }
+                /* 在家：解释 Wi-Fi 为什么没了；判定中：为什么还没结论；
+                 * 其他：上次什么时候切过来的 */
+                if (sc.enabled && !sc.name[0])
+                    set_label_fmt(s_sc_note, c_sn, sizeof c_sn, "开机后要连续两次扫描确认位置");
+                else
+                    set_label_fmt(s_sc_note, c_sn, sizeof c_sn, "%s%s%s",
+                                  sc.wifi_off ? "Wi-Fi 已关 · " : (when[0] ? "上次切换 " : ""),
+                                  when, sc.wifi_off && !when[0] ? "手机走家里网络" : "");
+            }
+        }
     }
 
     /* ---- Tailscale (Home) ---- */
