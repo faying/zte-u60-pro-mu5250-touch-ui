@@ -60,18 +60,22 @@ remove_legacy_rc_hook
 install_rc_hook
 
 /etc/init.d/u60pro-devui disable 2>/dev/null
-/etc/init.d/zwrt-datad disable 2>/dev/null
+# /etc/init.d/zwrt-datad may now be the procd service from the install kit
+# (zwrt-datad.init: it runs datad through supervise.sh). That one is not a
+# leftover — leave it alone, or this script stops the data service it relies on.
+datad_is_kit_service() { grep -q supervise.sh /etc/init.d/zwrt-datad 2>/dev/null; }
+datad_is_kit_service || /etc/init.d/zwrt-datad disable 2>/dev/null
 /etc/init.d/u60-datad disable 2>/dev/null
 rm -f /etc/rc.d/S*u60pro-devui /etc/rc.d/K*u60pro-devui \
-      /etc/rc.d/S*zwrt-datad /etc/rc.d/K*zwrt-datad \
+      $(datad_is_kit_service || echo /etc/rc.d/S*zwrt-datad /etc/rc.d/K*zwrt-datad) \
       /etc/rc.d/S*u60-datad /etc/rc.d/K*u60-datad
 
 /etc/init.d/u60pro-devui stop 2>/dev/null
-/etc/init.d/zwrt-datad stop 2>/dev/null
+datad_is_kit_service || /etc/init.d/zwrt-datad stop 2>/dev/null
 /etc/init.d/u60-datad stop 2>/dev/null
 
 killall -9 u60pro-devui 2>/dev/null
-killall -9 zwrt-datad 2>/dev/null
+datad_is_kit_service || killall -9 zwrt-datad 2>/dev/null
 killall -9 u60-datad 2>/dev/null
 
 rm -f "$LEGACY_DIR/u60pro-devui" "$LEGACY_DIR/u60-datad" "$LEGACY_DIR/zwrt-datad" \

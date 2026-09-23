@@ -25,6 +25,8 @@
  * script embeds it) — one zte-agent instance, one password, no reason to
  * make the user configure it twice in two separate conf files. */
 #define ST_AGENT_SH  "/data/local/tmp/start_zte_agent.sh"
+/* procd 装法（zte-agent.init）把密码放在这里，旧启动脚本可能已不存在；先读它 */
+#define ST_AGENT_SH_ENV "/data/zte-agent.env"
 #define ST_PORT      9090
 #define ST_IO_MS     1500
 #define ST_TTL_MS    1000    /* 测速进行中要看得出数字在跳，刷新快一点 */
@@ -64,7 +66,9 @@ static void load_conf(void)
 
     if (s_conf_loaded) return;
     s_conf_loaded = 1;
-    fp = fopen(ST_AGENT_SH, "r");
+    /* procd 装法的 env 文件优先，旧启动脚本兜底（两种写法同一个解析） */
+    fp = fopen(ST_AGENT_SH_ENV, "r");
+    if (!fp) fp = fopen(ST_AGENT_SH, "r");
     if (!fp) return;
     while (fgets(line, sizeof line, fp)) {
         char *p = strstr(line, "ZTE_AGENT_PASSWORD="), *e, q = 0;

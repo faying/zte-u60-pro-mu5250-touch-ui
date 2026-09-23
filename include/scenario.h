@@ -11,10 +11,25 @@
 
 /*
  * 主循环每轮调用。active = 首页正显示在亮着的屏幕上。
- * 不 active 时直接返回；刚切到首页时立刻读一次，之后自己节流。
+ * 不 active 时也照样按节流读（30 秒一次，本机请求）：顶栏的「后台失联」
+ * 提示任何页面都要能看到。刚切到首页时立刻读一次。
  * 返回 1 = 显示内容有变化，需要重绘。
  */
 int scenario_poll(int active);
+
+/*
+ * zte-agent 是否失联、有几条未读告警（/api/public/status 的 alerts.unread）。
+ * lost_secs > 0 = 已经这么多秒读不到 public status，且超过 2 分钟；0 = 正常。
+ * 刚启动还没读成功过的也从启动时刻算起。
+ */
+typedef struct {
+    long lost_secs;
+    int  unread;
+    int  checked;     /* the device check (doctor.sh, via the agent) has run */
+    int  bad, warn;   /* its counts; details are on the admin web's health page */
+} agent_health_t;
+
+void agent_health(agent_health_t *out);
 
 typedef struct {
     int  available;      /* agent 有回应且引擎已配置 —— 否则卡片不出现 */

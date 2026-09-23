@@ -19,6 +19,7 @@
 #include "speedtest.h"
 #include "lvgl.h"
 
+#include <fcntl.h>
 #include <signal.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -26,6 +27,7 @@
 #include <string.h>
 #include <math.h>
 #include <time.h>
+#include <unistd.h>
 
 extern unsigned long g_frame_count;   /* defined in main.c */
 
@@ -148,7 +150,7 @@ static lv_obj_t *s_es_row[ESIM_MAX_ROWS], *s_es_row_name[ESIM_MAX_ROWS],
                 *s_es_row_sub[ESIM_MAX_ROWS], *s_es_row_tag[ESIM_MAX_ROWS];
 /* System page */
 static lv_obj_t *s_set_bright, *s_off_btn[3], *s_vendor_btn, *s_vendor_lbl;
-static lv_obj_t *s_set_ver, *s_set_imei, *s_set_usb, *s_set_fw;
+static lv_obj_t *s_set_ver, *s_set_imei, *s_set_usb, *s_set_fw, *s_set_health;
 static lv_obj_t *s_sy_bat, *s_sy_chg, *s_sy_cpu, *s_sy_mem, *s_sy_up;
 static lv_obj_t *s_sy_dps_sw, *s_sy_dps_st;
 static lv_obj_t *s_sy_speedunit_sw, *s_sy_speedunit_st;
@@ -217,6 +219,7 @@ static lv_obj_t   *s_banner, *s_banner_txt;
  * page (not just Home), same "shared chrome" pattern as the tab bar. */
 static lv_obj_t   *s_top_time, *s_top_net, *s_top_updown, *s_top_bat, *s_top_sig[5];
 static lv_obj_t   *s_top_bat_icon, *s_top_bat_fill, *s_top_bat2;
+static lv_obj_t   *s_top_alert;   /* red: admin backend lost; amber: unread alerts */
 
 /* ================= design system =================
  * Every layout number and semantic colour lives here. Pages compose cards and
@@ -1133,12 +1136,27 @@ static void speedunit_cb(lv_event_t *e)
     save_devui_conf();
 }
 
+/* Ask u60-uid (the screen-owner daemon) to switch. It stops us, waits for
+ * /dev/dri/card0 to be free and starts the vendor UI — and because it asked
+ * us to stop, it does not count our exit as a crash. Opening a FIFO for write
+ * with O_NONBLOCK fails (ENXIO) when nobody is reading it, which is exactly
+ * "u60-uid is not running". */
+static int request_vendor_via_uid(void)
+{
+    int fd = open("/tmp/u60-uid.ctl", O_WRONLY | O_NONBLOCK);
+    if (fd < 0) return 0;
+    int ok = write(fd, "vendor\n", 7) == 7;
+    close(fd);
+    return ok;
+}
+
 /* Switch to the vendor UI. Two-stage confirm (same pattern v1 used for
  * act:exitstock in htmlmain.c): a misfire here is expensive — the vendor UI
- * has no button back to us, so the only way home is corner-wake's gesture or
- * SSH. The panel is bare DRM with no compositor, so this process must exit
- * and close /dev/dri/card0 before the vendor UI can open it: the init.d
- * start is scheduled for +2s and we exit via SIGTERM. */
+ * has no button back to us, so the only way home is the corner long-press
+ * (u60-uid) or SSH. Without u60-uid (older installs) we do it ourselves: the
+ * panel is bare DRM with no compositor, so this process must exit and close
+ * /dev/dri/card0 before the vendor UI can open it — the init.d start is
+ * scheduled for +2s and we exit via SIGTERM. */
 static void act_switch_vendor(lv_event_t *e)
 {
     static uint32_t arm;
@@ -1147,6 +1165,7 @@ static void act_switch_vendor(lv_event_t *e)
     LV_UNUSED(e);
     if (arm && now - arm < 5000) {
         lv_label_set_text(s_vendor_lbl, "切换中…");
+        if (request_vendor_via_uid()) return;
         system("( sleep 2; /etc/init.d/zte_topsw_devui start ) >/dev/null 2>&1 &");
         raise(SIGTERM);
         return;
@@ -1158,7 +1177,7 @@ static void act_switch_vendor(lv_event_t *e)
 
 static void build_system(lv_obj_t *t)
 {
-    t = mk_scroll(t, 698);
+    t = mk_scroll(t, 720);
 
     lv_obj_t *disp = mk_card(t, 10, 134);
     lv_label_set_text(mklabel(disp, UI_PAD, 8, FCN_S, UI_C_TEXT_3), "\xE5\xB1\x8F\xE5\xB9\x95" /* 屏幕 */);
@@ -1206,21 +1225,23 @@ static void build_system(lv_obj_t *t)
         lv_obj_set_style_text_align(*load_val[i], LV_TEXT_ALIGN_RIGHT, 0);
     }
 
-    lv_obj_t *dev = mk_card(t, 306, 130);
+    lv_obj_t *dev = mk_card(t, 306, 152);
     lv_label_set_text(mklabel(dev, UI_PAD, 8, FCN_S, UI_C_TEXT_3), "\xE8\xAE\xBE\xE5\xA4\x87" /* 设备 */);
-    static const char *const dev_cap[3] = { "\xE7\x89\x88\xE6\x9C\xAC" /* 版本 */, "IMEI", "USB" };
-    lv_obj_t **dev_val[3] = { &s_set_ver, &s_set_imei, &s_set_usb };
-    for (int i = 0; i < 3; i++) {
+    /* 健康: the device check's summary (doctor.sh via the agent). Only counts
+     * here — what failed is on the admin web's health page. */
+    static const char *const dev_cap[4] = { "\xE7\x89\x88\xE6\x9C\xAC" /* 版本 */, "IMEI", "USB", "健康" };
+    lv_obj_t **dev_val[4] = { &s_set_ver, &s_set_imei, &s_set_usb, &s_set_health };
+    for (int i = 0; i < 4; i++) {
         lv_label_set_text(mklabel(dev, UI_PAD, 30 + i * 22, FCN_S, UI_C_TEXT_3), dev_cap[i]);
         *dev_val[i] = mklabel(dev, UI_CARD_W - UI_PAD - 200, 30 + i * 22, FCN_S, UI_C_TEXT_2);
         lv_obj_set_width(*dev_val[i], 200);
         lv_obj_set_style_text_align(*dev_val[i], LV_TEXT_ALIGN_RIGHT, 0);
     }
-    s_set_fw = mklabel(dev, UI_PAD, 98, &lv_font_montserrat_14, UI_C_TEXT_3);
+    s_set_fw = mklabel(dev, UI_PAD, 120, &lv_font_montserrat_14, UI_C_TEXT_3);
     lv_obj_set_width(s_set_fw, UI_CARD_W - 2 * UI_PAD);
     lv_label_set_long_mode(s_set_fw, LV_LABEL_LONG_CLIP);
 
-    lv_obj_t *swc = mk_card(t, 446, 30 + 2 * SW_ROW_H + 8);
+    lv_obj_t *swc = mk_card(t, 468, 30 + 2 * SW_ROW_H + 8);
     lv_label_set_text(mklabel(swc, UI_PAD, 8, FCN_S, UI_C_TEXT_3), "\xE5\xBC\x80\xE5\x85\xB3" /* 开关 */);
     s_sy_dps_sw = mk_switch_row(swc, 30,
         "\xE7\x94\xB5\xE6\xBA\x90\xE7\x9B\xB4\xE4\xBE\x9B\xE7\x94\xB5" /* 电源直供电 */,
@@ -1229,7 +1250,7 @@ static void build_system(lv_obj_t *t)
         "\xE7\x8A\xB6\xE6\x80\x81\xE6\xA0\x8F\xE7\xBD\x91\xE9\x80\x9F\xE7\x94\xA8 Mbps" /* 状态栏网速用 Mbps */,
         &s_sy_speedunit_st, speedunit_cb, 0);
 
-    lv_obj_t *sys = mk_card(t, 446 + 30 + 2 * SW_ROW_H + 8 + 10, 104);
+    lv_obj_t *sys = mk_card(t, 468 + 30 + 2 * SW_ROW_H + 8 + 10, 104);
     lv_label_set_text(mklabel(sys, UI_PAD, 8, FCN_S, UI_C_TEXT_3), "\xE7\xB3\xBB\xE7\xBB\x9F" /* 系统 */);
     s_vendor_btn = lv_button_create(sys);
     lv_obj_set_size(s_vendor_btn, UI_CARD_W - 2 * UI_PAD, 36);
@@ -2276,6 +2297,52 @@ static void refresh_cb(lv_timer_t *t)
         set_label_fmt(s_top_time, c_time, sizeof c_time, "%02d:%02d", tmv.tm_hour, tmv.tm_min);
     }
 
+    /* zte-agent health: read from the scenario poller (which now polls on
+     * every page). The Wi-Fi watchdog keeps Wi-Fi up without the agent; this
+     * is only so the owner knows. Runs before the datad check below, so the
+     * dot stays right while the data service is down too. */
+    /* Polled here, before the datad early-return below: agent_health() is
+     * "time since the last successful read", so skipping the read whenever
+     * datad is down would turn a datad outage into a false "agent lost". */
+    int sc_changed = scenario_poll(tab_visible(TAB_HOME));
+    agent_health_t ah;
+    agent_health(&ah);
+    {
+        static int c_alert = -1;
+        int st = ah.lost_secs ? 2 : ah.unread > 0 ? 1 : 0;
+        if (st != c_alert) {
+            c_alert = st;
+            if (st == 0) {
+                lv_obj_add_flag(s_top_alert, LV_OBJ_FLAG_HIDDEN);
+            } else {
+                lv_obj_set_style_bg_color(s_top_alert, lv_color_hex(st == 2 ? UI_C_BAD : UI_C_WARN), 0);
+                lv_obj_remove_flag(s_top_alert, LV_OBJ_FLAG_HIDDEN);
+            }
+        }
+    }
+
+    {
+        static char c_h[40] = "";
+        static uint32_t c_hcol;
+        uint32_t col = UI_C_TEXT_3;
+        if (!ah.checked) {
+            set_label_fmt(s_set_health, c_h, sizeof c_h, "%s", "—");
+        } else if (ah.bad) {
+            col = UI_C_BAD;
+            set_label_fmt(s_set_health, c_h, sizeof c_h, "■ %d 项异常", ah.bad);
+        } else if (ah.warn) {
+            col = UI_C_WARN;
+            set_label_fmt(s_set_health, c_h, sizeof c_h, "▲ %d 项注意", ah.warn);
+        } else {
+            col = UI_C_OK;
+            set_label_fmt(s_set_health, c_h, sizeof c_h, "%s", "● 一切正常");
+        }
+        if (col != c_hcol) {
+            c_hcol = col;
+            lv_obj_set_style_text_color(s_set_health, lv_color_hex(col), 0);
+        }
+    }
+
     if (!data_refresh(&d)) {
         /* Backend down is a device-wide condition, so it is reported once in
          * the shared banner instead of overwriting home-page content. */
@@ -2285,7 +2352,14 @@ static void refresh_cb(lv_timer_t *t)
         set_label_fmt(s_cc_sum, c_sum_down, sizeof c_sum_down, "%s", "");
         return;
     }
-    banner_set(NULL);
+    if (ah.lost_secs) {
+        /* Same banner, lower priority than "data service down" above. */
+        char msg[64];
+        snprintf(msg, sizeof msg, "管理后台失联 %ld 分钟", ah.lost_secs / 60);
+        banner_set(msg);
+    } else {
+        banner_set(NULL);
+    }
 
     /* Top status bar — same signal-strength color tiers as the Home card's
      * dots, reused here for the always-visible summary. */
@@ -2489,7 +2563,7 @@ static void refresh_cb(lv_timer_t *t)
 
     /* ---- 情景 (Home) ---- */
     {
-        if (scenario_poll(tab_visible(TAB_HOME))) {
+        if (sc_changed) {
             static char c_ss[64] = "", c_sn[96] = "";
             scenario_status_t sc;
             scenario_get_status(&sc);
@@ -2830,8 +2904,8 @@ static void refresh_cb(lv_timer_t *t)
                 lv_label_set_text(s_st_phase, "");
                 lv_label_set_text(s_st_offline,
                     "连不上测速服务（zte-agent）。\n"
-                    "检查 zte-agent 有没有在跑，以及 start_zte_agent.sh 里\n"
-                    "有没有 ZTE_AGENT_PASSWORD。");
+                    "检查 zte-agent 有没有在跑，以及 /data/zte-agent.env\n"
+                    "（或 start_zte_agent.sh）里有没有 ZTE_AGENT_PASSWORD。");
             } else {
                 lv_obj_remove_flag(s_st_live, LV_OBJ_FLAG_HIDDEN);
                 lv_obj_remove_flag(s_st_detail, LV_OBJ_FLAG_HIDDEN);
@@ -3159,8 +3233,20 @@ static void key_poll_cb(lv_timer_t *t)
 {
     LV_UNUSED(t);
     int ev = key_input_poll(&s_key, lv_tick_get());
+    if (ev != KEY_EV_NONE) {
+        /* The key is not an LVGL input device, so a press does not reset the
+         * inactivity timer. Without this, waking an auto-slept screen with the
+         * key turned it on and the auto-off below turned it straight back off
+         * in the same pass — a one-frame flash (2026-09-23, owner report). */
+        lv_display_trigger_activity(NULL);
+    }
     if (ev == KEY_EV_SHORT) {
-        backlight_toggle();
+        /* Decide from the real brightness, not our remembered state: the vendor
+         * key daemon (zte_topsw_key) also sees the power key, and if anything
+         * else changed the backlight our flag would make this toggle the wrong
+         * way and the press would seem to do nothing. */
+        if (backlight_is_lit()) backlight_off();
+        else                    backlight_on();
         s_auto_slept = 0;
     } else if (ev == KEY_EV_LONG) {
         backlight_on();
@@ -3315,6 +3401,17 @@ static void build_statusbar(void)
      * htmlmain's width there's real space for "100%" centered inside
      * without crowding — the original ask ("number inside the battery")
      * was never wrong, the icon was just too small to do it in. */
+    /* Alert dot in the 19px gap between the rates (ends x=260) and the
+     * battery (x=279). A dot, not text: there is no room for words here, and
+     * the words go in the bottom banner (lost) or the admin web (alerts). */
+    s_top_alert = lv_obj_create(bar);
+    lv_obj_remove_style_all(s_top_alert);
+    lv_obj_set_size(s_top_alert, 7, 7);
+    lv_obj_set_style_radius(s_top_alert, 4, 0);
+    lv_obj_set_style_bg_opa(s_top_alert, LV_OPA_COVER, 0);
+    lv_obj_align(s_top_alert, LV_ALIGN_LEFT_MID, 266, 0);
+    lv_obj_add_flag(s_top_alert, LV_OBJ_FLAG_HIDDEN);
+
     s_top_bat_icon = lv_obj_create(bar);
     lv_obj_remove_style_all(s_top_bat_icon);
     lv_obj_set_size(s_top_bat_icon, 35, 16);
@@ -3423,9 +3520,15 @@ static void build_tabbar(void)
 /* ---- shared chrome: global status banner ---- */
 static void banner_set(const char *txt)
 {
+    /* Called every loop; only touch the label when the words change, or the
+     * banner is re-laid-out and redrawn on every frame. */
+    static char shown[96] = "";
     if (!s_banner) return;
     if (txt) {
-        lv_label_set_text(s_banner_txt, txt);
+        if (strcmp(shown, txt)) {
+            snprintf(shown, sizeof shown, "%s", txt);
+            lv_label_set_text(s_banner_txt, txt);
+        }
         lv_obj_remove_flag(s_banner, LV_OBJ_FLAG_HIDDEN);
     } else {
         lv_obj_add_flag(s_banner, LV_OBJ_FLAG_HIDDEN);

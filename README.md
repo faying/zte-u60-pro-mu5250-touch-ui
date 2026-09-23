@@ -66,8 +66,8 @@ adb shell '/etc/init.d/zte_topsw_devui stop; sleep 1;
 
 开机自启：把二进制放 `/data/plugins/u60pro-devui/`、后端 `zwrt-datad` 放
 `/data/plugins/zwrt-datad/`，再跑 `scripts/install-autostart.sh` —— 保留原厂 `zte_topsw_devui`
-做早期屏幕/触摸 bring-up，`rc.local -> start.sh legacy` 晚接管。细节见
-[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)。
+做早期屏幕/触摸 bring-up，之后由屏幕守护进程 **u60-uid**（`/etc/init.d/u60-uid start`，见下文「可靠性」）
+接管；没装 u60-uid 时退回 `rc.local -> start.sh legacy`。细节见 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)。
 
 > **新构建先旁路文件名验证，稳定后再换正式位置**——见 manager 仓库 CLAUDE.md 的部署安全说明；
 > 一个启动即崩溃的构建直接覆盖正式位置，会把整机拖进重启循环。
@@ -88,7 +88,29 @@ adb shell '/etc/init.d/zte_topsw_devui stop; sleep 1;
 - **eSIM**：通过 lpac 管理设备内 eUICC 卡的 profile。
 - **Tailscale**：状态卡片和开关。
 - **测速**：可选后端，支持循环测速。
-- **corner-wake**：屏幕熄灭时角落轻触唤醒的辅助进程，识别 `/proc/<pid>/comm` 时对 devui 进程名做前缀匹配（兼容旁路测试文件名）。
+- **u60-uid**（取代 corner-wake）：屏幕的唯一主人——拉起或接管界面、崩了自动拉起并记告警、
+  连续 2 次没稳住就交还原厂界面（不会被固件升级成整机重启循环）、原厂界面在屏时长按右下角 3 秒回来。
+
+## 可靠性（进程监督、Wi-Fi 兜底、告警）
+
+`scripts/` 里的这一组配合 [manager 仓库](https://github.com/faying/zte-u60-pro-mu5250-manager) 的 zte-agent 使用，
+文件约定见那边的 `docs/RELIABILITY.md`：
+
+| 文件 | 作用 |
+|---|---|
+| `supervise.sh` + `zte-agent.init` / `zwrt-datad.init` | procd 监督：前台运行、转发信号、崩溃落盘到 `/data/crashlog/` 并告警 |
+| `u60-guard.sh` + `.init` | Wi-Fi 兜底看门狗：后台心跳停了且 AP 关着时强制开 Wi-Fi；告警短信的唯一发送方（限流） |
+| `u60-uid.init`（`src/uid.c`） | 屏幕守护进程，见上 |
+| `alert-lib.sh` | 写告警事件的唯一入口 |
+| `agent-auth.sh` | 后台密码迁移与三项鉴权检查 |
+| `doctor.sh` | 只读体检（开机同步、自动升级、各服务、心跳、Wi-Fi、告警……） |
+| `config-backup.sh` | 配置备份/校验/演练/恢复（只备份配置，不含运行状态） |
+| `power-sample.sh` | 耗电基线：电池与各程序 CPU 占比 |
+| `chaos.sh` | 真机混沌回归（逐个 `kill -9`、Wi-Fi 兜底） |
+
+`scripts/test/docker.sh` 在 busybox 容器里跑全部脚本测试（命令全部桩替换，不碰设备）。
+
+> 屏幕上几分钟没有任何界面，固件会整机重启。任何停掉一个界面的操作都要在同一步里起另一个。
 
 ## 文档
 

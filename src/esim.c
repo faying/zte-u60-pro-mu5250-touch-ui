@@ -25,6 +25,8 @@
 
 #define ES_CONF       "/data/plugins/u60pro-devui/esim.conf"
 #define ES_AGENT_SH   "/data/local/tmp/start_zte_agent.sh"
+/* procd 装法（zte-agent.init）把密码放在这里，旧启动脚本可能已不存在；先读它 */
+#define ES_AGENT_SH_ENV "/data/zte-agent.env"
 #define ES_IO_MS      1500
 #define ES_IDLE_MS    2000      /* 页面开着时查 job 的间隔 */
 #define ES_JOB_MS     1000      /* 本机发起的切换进行中 */
@@ -80,12 +82,16 @@ static long now_ms(void)
     return (long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 
-/* agent 的密码写在它的启动脚本里：export ZTE_AGENT_PASSWORD='...' */
+/* agent 的密码：procd 装法在 /data/zte-agent.env（ZTE_AGENT_PASSWORD=...），
+ * 旧装法在启动脚本里（export ZTE_AGENT_PASSWORD='...'）。两种写法这里都认。 */
 static void read_agent_password(void)
 {
-    FILE *fp = fopen(ES_AGENT_SH, "r");
+    static const char *paths[] = { ES_AGENT_SH_ENV, ES_AGENT_SH };
+    FILE *fp = NULL;
     char line[256];
 
+    for (size_t i = 0; i < sizeof paths / sizeof *paths && !fp; i++)
+        fp = fopen(paths[i], "r");
     if (!fp) return;
     while (fgets(line, sizeof line, fp)) {
         char *p = strstr(line, "ZTE_AGENT_PASSWORD="), *e, q = 0;

@@ -66,6 +66,12 @@ void backlight_toggle(void)
 }
 
 int backlight_is_on(void) { return s_is_on; }
+/* What the panel is actually doing right now (sysfs), and resync our flag. */
+int backlight_is_lit(void)
+{
+    s_is_on = read_int(BL_BRIGHTNESS, 0) > 0;
+    return s_is_on;
+}
 
 void backlight_set(int level)
 {

@@ -102,8 +102,24 @@ start_corner_wake() {
     nohup "$CORNER_BIN" >/tmp/corner-wake.log 2>&1 </dev/null &
 }
 
+# The screen belongs to u60-uid (u60-uid.init) once rc.local starts it: it
+# launches the UI, restarts it, gives up to the vendor UI after repeated
+# crashes, and does corner-wake's job. Starting the UI (or corner-wake) from
+# here as well would give the screen two owners. It runs `start.sh prep` for
+# the boot chores below that used to happen on this script's launch path.
+uid_in_charge() {
+    [ -x /etc/init.d/u60-uid ] && grep -q '^[^#]*/etc/init.d/u60-uid start' /etc/rc.local 2>/dev/null
+}
+
+# Handed over to procd (zwrt-datad.init) once rc.local starts it there.
+# Both conditions, so a half-finished migration still gets one datad.
+datad_under_procd() {
+    [ -x /etc/init.d/zwrt-datad ] && grep -q '^[^#]*/etc/init.d/zwrt-datad start' /etc/rc.local 2>/dev/null
+}
+
 start_datad_legacy() {
     [ "$BOOTMODE" = normal ] || return 0
+    datad_under_procd && return 0
     [ -x "$DATAD_BIN" ] || return 0
     pidof zwrt-datad >/dev/null 2>&1 && return 0
     killall -9 u60-datad 2>/dev/null
@@ -167,6 +183,10 @@ boot_trace
 migrate_legacy_ui
 
 case "$MODE" in
+    prep)
+        # Called once by u60-uid at its start: the boot chores only.
+        exit 0
+        ;;
     procd)
         stop_vendor_ui
         start_corner_wake
@@ -174,6 +194,11 @@ case "$MODE" in
         exec "$DEVUI_BIN"
         ;;
     legacy)
+        if uid_in_charge; then
+            echo "start.sh: u60-uid owns the screen; not starting the UI here" >&2
+            start_datad_legacy
+            exit 0
+        fi
         stop_vendor_ui
         # Data aggregator first on normal boots (the UI reads its snapshot).
         # For charge-only boots the full-screen charging UI can fall back to

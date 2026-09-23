@@ -14,6 +14,7 @@ void backlight_on(void);      /* restore the remembered on-level (instant) */
 void backlight_off(void);
 void backlight_toggle(void);
 int  backlight_is_on(void);
+int  backlight_is_lit(void);   /* reads sysfs; use before deciding on/off */
 
 /* Animated screen off/on (blocking): fade the live brightness without changing
  * the remembered user level. Off ramps level->1 then 0 (about 0.125s at full,

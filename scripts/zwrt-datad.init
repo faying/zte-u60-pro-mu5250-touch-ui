@@ -1,0 +1,65 @@
+#!/bin/sh /etc/rc.common
+# procd service for zwrt-datad (the data aggregator the touch UI reads).
+# Install to /etc/init.d/zwrt-datad; start from /etc/rc.local with
+# `/etc/init.d/zwrt-datad start`. start.sh then leaves datad alone (it checks
+# for this script AND that rc.local starts it, so neither can be half-done).
+#
+# Launch semantics are start.sh's start_datad_legacy, moved here unchanged:
+# normal boots only, token seeding, LAN listener arguments, modem stream
+# settings, and the data service's own auto-update kept off.
+#
+# Do NOT run `enable`/`disable` (overlay whiteouts, manager CLAUDE.md).
+# SPDX-License-Identifier: MIT
+
+START=96
+USE_PROCD=1
+
+DIR=/data/plugins/zwrt-datad
+BIN=$DIR/zwrt-datad
+TOKEN_FILE=$DIR/auth.token
+LAN_BIND=0.0.0.0
+LAN_PORT=9461
+SUPERVISE=/data/u60-guard/supervise.sh
+
+# Same test as start.sh: in power-off charging the UI falls back to sysfs,
+# so there is nothing for datad to do.
+boot_is_normal() {
+    _state=$(awk -F"'" '/option mode_main_state/ { print $2; exit }' /etc/config/zwrt_zte_mc_tmp 2>/dev/null)
+    case "$_state" in
+        mode_power_off_*) return 1 ;;
+        mode_power_on | mode_power_on_charger) return 0 ;;
+    esac
+    grep -q 'silent_boot.mode=nonsilent' /proc/cmdline 2>/dev/null
+}
+
+# datad refuses to start without a non-empty token file; the token protects
+# its LAN listener.
+seed_token() {
+    if [ ! -s "$TOKEN_FILE" ]; then
+        mkdir -p "$DIR" || return 1
+        _tmp=$(mktemp "$TOKEN_FILE.tmp.XXXXXX") || return 1
+        chmod 600 "$_tmp" || { rm -f "$_tmp"; return 1; }
+        (umask 077; head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n' >"$_tmp")
+        [ -s "$_tmp" ] || { rm -f "$_tmp"; return 1; }
+        mv -f "$_tmp" "$TOKEN_FILE" || { rm -f "$_tmp"; return 1; }
+    fi
+    chmod 600 "$TOKEN_FILE"
+}
+
+start_service() {
+    boot_is_normal || return 0
+    [ -x "$BIN" ] && [ -f "$SUPERVISE" ] || return 1
+    seed_token || return 1
+    killall -9 u60-datad 2>/dev/null # the old aggregator, if a legacy install left it
+    procd_open_instance
+    # --lan-bind is what opens the LAN listener AND keeps loopback auth-free
+    # for the touch UI; --lan-port alone does neither.
+    procd_set_param command /bin/sh "$SUPERVISE" zwrt-datad datad-crash \
+        "$BIN" -i 1000 --lan-bind "$LAN_BIND" --lan-port "$LAN_PORT" --auth-token-file "$TOKEN_FILE"
+    # ZWRT_DATAD_OTA_DISABLE_AUTO: our fork has no update sources and defaults
+    # off; this keeps it off regardless (see start.sh).
+    procd_set_param env DATAD_MODEM_REMOTE_STREAM=1 DATAD_MODEM_REMOTE_STALE_SEC=6 ZWRT_DATAD_OTA_DISABLE_AUTO=1
+    procd_set_param respawn 300 5 5  # see zte-agent.init for why 300
+    procd_set_param term_timeout 10
+    procd_close_instance
+}

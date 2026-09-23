@@ -6,7 +6,7 @@
  * zte_topsw_mdm，不收敛就重启整机），这套逻辑 agent 里已经做好并实测过，
  * 这里只做界面。只有切换，不做下载/删除/改名。
  *
- * agent 的登录密码默认从 /data/local/tmp/start_zte_agent.sh 里的
+ * agent 的登录密码默认从 /data/zte-agent.env（没有则 /data/local/tmp/start_zte_agent.sh）里的
  * ZTE_AGENT_PASSWORD 读；可选配置 /data/plugins/u60pro-devui/esim.conf：
  *     port=9090
  *     password=

@@ -1,0 +1,47 @@
+#!/bin/sh /etc/rc.common
+# procd service for zte-agent (admin API + web on :9090, scenario engine).
+# Install to /etc/init.d/zte-agent; start from /etc/rc.local with
+# `/etc/init.d/zte-agent start`, replacing `sh /data/local/tmp/start_zte_agent.sh`.
+#
+# Do NOT run `enable`/`disable`: /etc is an overlay on this device and those
+# leave whiteouts in rc.d (manager CLAUDE.md).
+#
+# The admin password is in /data/zte-agent.env (mode 600), one line:
+#   ZTE_AGENT_PASSWORD=<password, taken literally to the end of the line>
+# (agent-auth.sh migrate writes it). The agent reads that file itself: only
+# its PATH goes into the procd env, because procd lists every instance's env
+# in `ubus call service list`. WITHOUT A PASSWORD THE AGENT ANSWERS EVERY
+# REQUEST UNAUTHENTICATED, so both this script and the agent refuse to start.
+#
+# respawn 300 5 5: procd forgives past crashes only after one run lasts the
+# threshold; the 6th exit inside it and procd gives up until the next
+# `start`. 300 s (not 3600) so that a few kills in a test session, or one bad
+# minute, do not use that up for an hour.
+# SPDX-License-Identifier: MIT
+
+START=95
+USE_PROCD=1
+
+BIN=/data/zte-agent
+ENV_FILE=/data/zte-agent.env
+SUPERVISE=/data/u60-guard/supervise.sh
+
+has_password() {
+    grep -q '^ZTE_AGENT_PASSWORD=.' "$ENV_FILE" 2>/dev/null
+}
+
+start_service() {
+    [ -x "$BIN" ] && [ -f "$SUPERVISE" ] || return 1
+    if ! has_password; then
+        echo "zte-agent: no password in $ENV_FILE; refusing to start an open admin API" >&2
+        logger -t zte-agent "no password in $ENV_FILE; not started"
+        return 1
+    fi
+    procd_open_instance
+    procd_set_param command /bin/sh "$SUPERVISE" zte-agent agent-crash "$BIN"
+    # SUPERVISED: exit on a dead engine thread so procd restarts us whole.
+    procd_set_param env ZTE_AGENT_PASSWORD_FILE="$ENV_FILE" ZTE_AGENT_SUPERVISED=1
+    procd_set_param respawn 300 5 5
+    procd_set_param term_timeout 10
+    procd_close_instance
+}

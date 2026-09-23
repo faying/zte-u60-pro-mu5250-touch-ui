@@ -84,5 +84,24 @@ $(DRMOWNER_TARGET): $(DRMOWNER_SRCS)
 	@echo "built $(DRMOWNER_TARGET):"
 	@$(CROSS_COMPILE)size $(DRMOWNER_TARGET) 2>/dev/null || true
 
+# u60-uid: the screen-owner daemon (starts/stops u60pro-devui, hands the panel
+# to the vendor UI, corner long-press back). Replaces corner-wake. libc +
+# touch_input.c only, like corner-wake. Decisions live in uid_core.c so they
+# can be unit-tested: `make uid-test` → tests/uid_core_test (static, runs in an
+# arm64 busybox container via scripts/test/docker.sh).
+UID_TARGET := u60-uid
+UID_SRCS   := src/uid.c src/uid_core.c src/touch_input.c
+UID_CFLAGS := -std=c11 -Os -ffunction-sections -fdata-sections \
+              -Wall -Wextra -Wno-unused-parameter \
+              -D_GNU_SOURCE -I$(ROOT) -Iinclude
+
+$(UID_TARGET): $(UID_SRCS) include/uid_core.h
+	$(CC) $(UID_CFLAGS) $(UID_SRCS) -o $@ -static -Wl,--gc-sections
+	@echo "built $(UID_TARGET):"
+	@$(CROSS_COMPILE)size $(UID_TARGET) 2>/dev/null || true
+
+uid-test: tests/uid_core_test.c src/uid_core.c include/uid_core.h
+	$(CC) $(UID_CFLAGS) tests/uid_core_test.c src/uid_core.c -o scripts/test/uid/uid_core_test -static
+
 clean:
-	rm -f $(OBJS) $(TARGET) $(CORNER_TARGET) $(DRMOWNER_TARGET)
+	rm -f $(OBJS) $(TARGET) $(CORNER_TARGET) $(DRMOWNER_TARGET) $(UID_TARGET) scripts/test/uid/uid_core_test

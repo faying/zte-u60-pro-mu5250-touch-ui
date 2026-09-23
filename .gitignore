@@ -66,3 +66,5 @@ drm_text
 /docs/WORKFLOW-LOCAL-U60.md
 /docs/WORKFLOW-PRIVATE.md
 /.review-shots/
+/scripts/test/uid/uid_core_test
+/u60-uid

@@ -26,8 +26,8 @@
 #define SC_PORT       9090
 #define SC_IO_MS      800       /* 本机请求正常几十毫秒；agent 卡住时别拖住首页 */
 #define SC_TTL_MS     30000     /* 情景最快两次扫描才切一次，30 秒一读足够 */
-#define SC_BACKOFF_MS 60000     /* agent 没回应时放慢 */
 #define SC_RESP_MAX   16384     /* public/status 约 1KB */
+#define SC_LOST_MS    120000    /* 读不到超过 2 分钟才算后台失联：agent 重启只要几秒 */
 
 static int  s_ok, s_configured, s_enabled, s_wifi_off;
 static char s_name[48], s_pin[48];
@@ -36,6 +36,11 @@ static long s_last_switch;
 static int      s_was_active;
 static long     s_poll_ms;
 static unsigned s_sig;
+
+/* 最近一次读成功的时刻；0 = 从未成功，从 s_first_ms 起算 */
+static long s_ok_ms, s_first_ms;
+static int  s_unread;
+static int  s_h_checked, s_h_bad, s_h_warn;
 
 static long now_ms(void)
 {
@@ -122,17 +127,34 @@ int scenario_poll(int active)
     unsigned h = 2166136261u;
     long t;
 
-    if (!active) { s_was_active = 0; return 0; }
+    int just_shown = active && !s_was_active;
+
     t = now_ms();
-    if (s_was_active && t - s_poll_ms < (s_ok ? SC_TTL_MS : SC_BACKOFF_MS)) return 0;
-    s_was_active = 1;
+    if (!s_first_ms) s_first_ms = t;
+    s_was_active = active;
+    /* 不在首页也按 30 秒读：顶栏的失联提示每一页都要准。刚切到首页时抢先读
+     * 一次，但 agent 正读不到时不抢（卡住的 agent 会让每次切页顿 0.8 秒）。 */
+    if (s_poll_ms && t - s_poll_ms < SC_TTL_MS && !(just_shown && s_ok)) return 0;
     s_poll_ms = t;
 
     s_ok = 0;
     b = sc_get("/api/public/status");
     /* 一层一层取：json_get 只认当前对象最外层的键，scenario 在 data 里面。 */
-    if (b && json_get(b, "data", data, sizeof data) &&
-        json_get(data, "scenario", sc, sizeof sc)) {
+    if (b && json_get(b, "data", data, sizeof data)) {
+        char al[128];
+        s_ok_ms = t;
+        s_unread = json_get(data, "alerts", al, sizeof al) ? (int)json_get_int(al, "unread", 0) : 0;
+        if (json_get(data, "health", al, sizeof al)) {
+            s_h_checked = bool_field(al, "checked");
+            s_h_bad = (int)json_get_int(al, "bad", 0);
+            s_h_warn = (int)json_get_int(al, "warn", 0);
+        } else {
+            s_h_checked = 0;
+        }
+    } else {
+        data[0] = 0;
+    }
+    if (data[0] && json_get(data, "scenario", sc, sizeof sc)) {
         s_ok = 1;
         s_configured = bool_field(sc, "configured");
         s_enabled = bool_field(sc, "enabled");
@@ -142,8 +164,8 @@ int scenario_poll(int active)
         s_last_switch = json_get_int(sc, "last_switch", 0);
     }
 
-    snprintf(nums, sizeof nums, "%d/%d/%d/%d/%ld", s_ok, s_configured, s_enabled,
-             s_wifi_off, s_last_switch);
+    snprintf(nums, sizeof nums, "%d/%d/%d/%d/%ld/%d", s_ok, s_configured, s_enabled,
+             s_wifi_off, s_last_switch, s_unread);
     h = fnv(h, nums);
     h = fnv(h, s_name);
     h = fnv(h, s_pin);
@@ -160,4 +182,14 @@ void scenario_get_status(scenario_status_t *out)
     out->wifi_off = s_wifi_off;
     snprintf(out->pin, sizeof out->pin, "%s", s_pin);
     out->last_switch = s_last_switch;
+}
+
+void agent_health(agent_health_t *out)
+{
+    long t = now_ms(), since = s_ok_ms ? s_ok_ms : s_first_ms;
+    out->lost_secs = (since && t - since > SC_LOST_MS) ? (t - since) / 1000 : 0;
+    out->unread = out->lost_secs ? 0 : s_unread;
+    out->checked = out->lost_secs ? 0 : s_h_checked;
+    out->bad = s_h_bad;
+    out->warn = s_h_warn;
 }
