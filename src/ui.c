@@ -60,6 +60,9 @@ enum { SUB_WIFI, SUB_SMS, SUB_CELL, SUB_LOCK, SUB_SPEED, SUB_CHILL, SUB_ESIM, SU
         * it). Only 规则→节点流量 is a genuinely separate concept (traffic
         * accounting, not node selection), so that one keeps its own page. */
        SUB_CHILL_NODES, SUB_CHILL_PAIRS,
+       /* Not on the tile wall: one message in full, opened from the SMS list
+        * (sub_open_child, so 返回 goes back to the list). */
+       SUB_SMS_DETAIL,
        SUB_N };
 
 /* ---- shared widget handles ---- */
@@ -178,10 +181,19 @@ static band_group_t s_bg[3];
 static lv_obj_t *s_lk_mode_btn[4], *s_lk_mode_lbl, *s_lk_reset_lbl;
 static uint32_t  s_lk_mode_arm, s_lk_reset_arm;
 static int       s_lk_mode_pending = -1;
-/* SMS subpage */
-#define SMS_MAX_ROWS 6
+/* SMS subpage: a toolbar (unread count + 全部已读), then one card per
+ * message showing two lines; tapping a card opens SUB_SMS_DETAIL. */
+#define SMS_MAX_ROWS 12
+#define SMS_TOOLBAR_H 44
+#define SMS_ROW_PITCH 86
 static lv_obj_t *s_sms_card, *s_sms_row[SMS_MAX_ROWS], *s_sms_num[SMS_MAX_ROWS],
                 *s_sms_date[SMS_MAX_ROWS], *s_sms_body[SMS_MAX_ROWS], *s_sms_dot[SMS_MAX_ROWS];
+static lv_obj_t *s_sms_count, *s_sms_allread_btn, *s_sms_empty;
+static long      s_sms_row_id[SMS_MAX_ROWS];
+/* SMS detail subpage */
+static long      s_smsd_id = -1;
+static lv_obj_t *s_smsd_scroll, *s_smsd_num, *s_smsd_date, *s_smsd_body, *s_smsd_del_btn, *s_smsd_del_lbl;
+static uint32_t  s_smsd_del_arm;
 static uint32_t  s_autooff_ms = 0;   /* 0 = never */
 static int       s_auto_slept = 0;
 /* CJK fonts loaded from the device at runtime (NULL if unavailable).
@@ -429,6 +441,19 @@ static void fmt_band_list(char *out, size_t out_sz, const char *csv, char prefix
  * [[lvgl-heap-instability]]), not just a contributing factor. Skip the call
  * into LVGL entirely when nothing changed. Every refresh_cb label update
  * should go through this, not lv_label_set_text_fmt directly. */
+/* Copy as much of `src` as fits in `cap` bytes without splitting a UTF-8
+ * character (a split one renders as a broken glyph). */
+static void utf8_prefix(char *out, size_t cap, const char *src)
+{
+    size_t n = strlen(src);
+    if (n >= cap) {
+        n = cap - 1;
+        while (n > 0 && ((unsigned char)src[n] & 0xC0) == 0x80) n--;   /* back off to a lead byte */
+    }
+    memcpy(out, src, n);
+    out[n] = 0;
+}
+
 static void set_label_fmt(lv_obj_t *label, char *cache, size_t cache_sz, const char *fmt, ...)
 {
     char buf[160];
@@ -589,6 +614,7 @@ static void sub_open(int id)
         "Tailscale",
         "\xE8\x8A\x82\xE7\x82\xB9" /* 节点 */,
         "\xE8\xA7\x84\xE5\x88\x99 \xE2\x86\x92 \xE8\x8A\x82\xE7\x82\xB9" /* 规则 → 节点 */,
+        "短信详情",
     };
     if (id < 0 || id >= SUB_N) return;
     for (int i = 0; i < SUB_N; i++)
@@ -1367,7 +1393,37 @@ static void build_sub_perf(lv_obj_t *t)
 static void sms_row_click_cb(lv_event_t *e)
 {
     int idx = (int)(intptr_t)lv_event_get_user_data(e);
-    if (!sms_delete_tap(idx)) sms_mark_read(idx);
+    if (sms_delete_tap(idx)) return;          /* second tap on an armed row: deleted */
+    if (s_sms_row_id[idx] < 0) return;
+    /* Open it. Reading it in full is what marks it read — tapping a row used
+     * to mark it read with nothing else happening, which looked like the tap
+     * did nothing, and left no way to see a long message past two lines. */
+    s_smsd_id = s_sms_row_id[idx];
+    s_smsd_del_arm = 0;
+    sms_mark_read_id(s_smsd_id);
+    lv_obj_scroll_to_y(s_smsd_scroll, 0, LV_ANIM_OFF);
+    sub_open_child(SUB_SMS_DETAIL, SUB_SMS);
+}
+
+static void sms_allread_cb(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    sms_mark_all_read();
+}
+
+/* Two taps within 4 s, same pattern as the list's long-press delete. */
+static void smsd_delete_cb(lv_event_t *e)
+{
+    uint32_t now = lv_tick_get();
+    LV_UNUSED(e);
+    if (s_smsd_del_arm && now - s_smsd_del_arm > 300 && now - s_smsd_del_arm < 4000) {
+        sms_delete_id(s_smsd_id);
+        s_smsd_del_arm = 0;
+        s_smsd_id = -1;
+        sub_back();
+        return;
+    }
+    s_smsd_del_arm = now;
 }
 
 static void sms_row_longpress_cb(lv_event_t *e)
@@ -1377,12 +1433,37 @@ static void sms_row_longpress_cb(lv_event_t *e)
 }
 
 /* ---- SMS subpage ---- */
+static lv_obj_t *mk_small_btn(lv_obj_t *parent, const char *text, lv_event_cb_t cb, lv_obj_t **lbl_out)
+{
+    lv_obj_t *b = lv_button_create(parent);
+    lv_obj_set_height(b, 32);
+    lv_obj_set_style_radius(b, 10, 0);
+    lv_obj_set_style_pad_hor(b, 14, 0);
+    lv_obj_add_event_cb(b, cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *l = lv_label_create(b);
+    lv_obj_set_style_text_font(l, FCN_S, 0);
+    lv_label_set_text(l, text);
+    lv_obj_center(l);
+    lv_obj_set_width(b, LV_SIZE_CONTENT);
+    if (lbl_out) *lbl_out = l;
+    return b;
+}
+
 static void build_sub_sms(lv_obj_t *t)
 {
-    t = mk_scroll_h(t, UI_SUB_VIEW, 8 + SMS_MAX_ROWS * 86 + 8);
+    t = mk_scroll_h(t, UI_SUB_VIEW, 8 + SMS_TOOLBAR_H + SMS_MAX_ROWS * SMS_ROW_PITCH + 8);
     s_sms_card = t;
+    s_sms_count = mklabel(t, UI_INSET + 4, 16, FCN_S, UI_C_TEXT_2);
+    s_sms_allread_btn = mk_small_btn(t, "全部已读", sms_allread_cb, NULL);
+    lv_obj_align(s_sms_allread_btn, LV_ALIGN_TOP_RIGHT, -UI_INSET, 8);
+    s_sms_empty = mklabel(t, UI_INSET + 4, 8 + SMS_TOOLBAR_H, FCN_S, UI_C_TEXT_3);
+    lv_label_set_text(s_sms_empty, "没有短信。新短信会显示在这里，点开可看全文。");
+    lv_obj_set_width(s_sms_empty, UI_CARD_W - 8);
+    lv_label_set_long_mode(s_sms_empty, LV_LABEL_LONG_WRAP);
+    lv_obj_add_flag(s_sms_empty, LV_OBJ_FLAG_HIDDEN);
     for (int i = 0; i < SMS_MAX_ROWS; i++) {
-        lv_obj_t *c = mk_card(t, 8 + i * 86, 76);
+        s_sms_row_id[i] = -1;
+        lv_obj_t *c = mk_card(t, 8 + SMS_TOOLBAR_H + i * SMS_ROW_PITCH, 76);
         s_sms_row[i]  = c;
         lv_obj_add_flag(c, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_add_event_cb(c, sms_row_click_cb, LV_EVENT_CLICKED, (void *)(intptr_t)i);
@@ -1399,8 +1480,9 @@ static void build_sub_sms(lv_obj_t *t)
         lv_obj_set_width(s_sms_date[i], 110);
         lv_obj_set_style_text_align(s_sms_date[i], LV_TEXT_ALIGN_RIGHT, 0);
         s_sms_body[i] = mklabel(c, UI_PAD, 30, FCN_S, UI_C_TEXT_2);
-        lv_obj_set_width(s_sms_body[i], UI_CARD_W - 2 * UI_PAD);
-        lv_label_set_long_mode(s_sms_body[i], LV_LABEL_LONG_WRAP);
+        /* Two lines, then "…": the card is a preview, the detail page has it all. */
+        lv_obj_set_size(s_sms_body[i], UI_CARD_W - 2 * UI_PAD, 40);
+        lv_label_set_long_mode(s_sms_body[i], LV_LABEL_LONG_DOT);
         lv_obj_add_flag(c, LV_OBJ_FLAG_HIDDEN);
     }
 
@@ -1415,6 +1497,51 @@ static void build_sub_sms(lv_obj_t *t)
      * per page (inside its build_* function), so it doesn't fight the user's
      * own scrolling on later visits. */
     lv_obj_scroll_to_y(t, 0, LV_ANIM_OFF);
+}
+
+/* ---- SMS detail subpage ----
+ * One message in full: sender, time, the whole text (scrolls), delete.
+ * The column grows with the text, so it is a flex layout rather than the
+ * fixed-y cards the other pages use. */
+static void build_sub_sms_detail(lv_obj_t *t)
+{
+    lv_obj_t *sc = lv_obj_create(t);
+    lv_obj_remove_style_all(sc);
+    lv_obj_set_size(sc, UI_W, UI_SUB_VIEW);
+    lv_obj_set_scroll_dir(sc, LV_DIR_VER);
+    lv_obj_set_scrollbar_mode(sc, LV_SCROLLBAR_MODE_ACTIVE);
+    lv_obj_set_flex_flow(sc, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(sc, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_top(sc, 8, 0);
+    lv_obj_set_style_pad_bottom(sc, 24, 0);
+    lv_obj_set_style_pad_row(sc, 10, 0);
+    s_smsd_scroll = sc;
+
+    lv_obj_t *c = lv_obj_create(sc);
+    lv_obj_remove_style_all(c);
+    lv_obj_remove_flag(c, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_width(c, UI_CARD_W);
+    lv_obj_set_height(c, LV_SIZE_CONTENT);
+    lv_obj_set_style_radius(c, UI_CARD_RADIUS, 0);
+    lv_obj_set_style_bg_color(c, lv_color_hex(UI_C_CARD), 0);
+    lv_obj_set_style_bg_opa(c, LV_OPA_COVER, 0);
+    lv_obj_set_style_pad_all(c, UI_PAD, 0);
+    lv_obj_set_flex_flow(c, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(c, 6, 0);
+
+    s_smsd_num = lv_label_create(c);
+    lv_obj_set_style_text_font(s_smsd_num, FCN, 0);
+    lv_obj_set_style_text_color(s_smsd_num, lv_color_hex(UI_C_TEXT), 0);
+    s_smsd_date = lv_label_create(c);
+    lv_obj_set_style_text_font(s_smsd_date, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(s_smsd_date, lv_color_hex(UI_C_TEXT_3), 0);
+    s_smsd_body = lv_label_create(c);
+    lv_obj_set_style_text_font(s_smsd_body, FCN_S, 0);
+    lv_obj_set_style_text_color(s_smsd_body, lv_color_hex(UI_C_TEXT), 0);
+    lv_obj_set_width(s_smsd_body, lv_pct(100));
+    lv_label_set_long_mode(s_smsd_body, LV_LABEL_LONG_WRAP);
+
+    s_smsd_del_btn = mk_small_btn(sc, "删除这条", smsd_delete_cb, &s_smsd_del_lbl);
 }
 
 /* ---- CHILL subpage ---- */
@@ -2155,6 +2282,7 @@ static void build_func(lv_obj_t *t)
         NULL, NULL,
         "\xE8\xB0\x83\xE8\xAF\x95\xE9\xA1\xB5", /* 调试页 */
         NULL, NULL, NULL,   /* SUB_TS/NODES/PAIRS: 不在磁贴墙上 */
+        NULL,               /* SUB_SMS_DETAIL: 从短信列表点进去 */
     };
     /* Explicit list, not 0..SUB_N: SUB_TS has a subpage but no tile (it is
      * opened from the Tailscale card on Home). */
@@ -3052,15 +3180,32 @@ static void refresh_cb(lv_timer_t *t)
     /* ---- SMS subpage ---- */
     {
         static char c_num[SMS_MAX_ROWS][48], c_date[SMS_MAX_ROWS][24], c_body[SMS_MAX_ROWS][160];
-        int n = d.sms_n > SMS_MAX_ROWS ? SMS_MAX_ROWS : d.sms_n;
+        static char c_cnt[40];
+        int n = d.sms_n > SMS_MAX_ROWS ? SMS_MAX_ROWS : d.sms_n, unread = 0;
+        for (int i = 0; i < d.sms_n; i++) unread += d.sms[i].unread ? 1 : 0;
+        if (d.sms_n == 0) set_label_fmt(s_sms_count, c_cnt, sizeof c_cnt, "%s", "");
+        else if (unread) set_label_fmt(s_sms_count, c_cnt, sizeof c_cnt, "%d 条未读 · 共 %d 条", unread, d.sms_n);
+        else set_label_fmt(s_sms_count, c_cnt, sizeof c_cnt, "共 %d 条，都已读", d.sms_n);
+        if (unread) lv_obj_remove_flag(s_sms_allread_btn, LV_OBJ_FLAG_HIDDEN);
+        else        lv_obj_add_flag(s_sms_allread_btn, LV_OBJ_FLAG_HIDDEN);
+        if (d.sms_n) lv_obj_add_flag(s_sms_empty, LV_OBJ_FLAG_HIDDEN);
+        else         lv_obj_remove_flag(s_sms_empty, LV_OBJ_FLAG_HIDDEN);
         for (int i = 0; i < SMS_MAX_ROWS; i++) {
-            if (i >= n) { lv_obj_add_flag(s_sms_row[i], LV_OBJ_FLAG_HIDDEN); continue; }
+            if (i >= n) {
+                s_sms_row_id[i] = -1;
+                lv_obj_add_flag(s_sms_row[i], LV_OBJ_FLAG_HIDDEN);
+                continue;
+            }
+            char pv[150];
+            s_sms_row_id[i] = d.sms[i].id;
             lv_obj_remove_flag(s_sms_row[i], LV_OBJ_FLAG_HIDDEN);
             set_label_fmt(s_sms_num[i], c_num[i], sizeof c_num[i], "%s", d.sms[i].num);
             set_label_fmt(s_sms_date[i], c_date[i], sizeof c_date[i], "%s", d.sms[i].date);
-            /* The body buffer is 16KB; only the first two rendered lines are
-             * visible, so the cached copy stays small on purpose. */
-            set_label_fmt(s_sms_body[i], c_body[i], sizeof c_body[i], "%s", d.sms[i].text);
+            /* Only two lines show; cut on a UTF-8 boundary so a Chinese
+             * character is never split into a broken glyph (snprintf alone
+             * cuts bytes). The label adds the "…". */
+            utf8_prefix(pv, sizeof pv, d.sms[i].text);
+            set_label_fmt(s_sms_body[i], c_body[i], sizeof c_body[i], "%s", pv);
             if (d.sms[i].unread) lv_obj_remove_flag(s_sms_dot[i], LV_OBJ_FLAG_HIDDEN);
             else                 lv_obj_add_flag(s_sms_dot[i], LV_OBJ_FLAG_HIDDEN);
             lv_obj_set_style_bg_color(s_sms_row[i],
@@ -3068,6 +3213,30 @@ static void refresh_cb(lv_timer_t *t)
         }
     }
 
+    /* ---- SMS detail subpage ---- */
+    if (s_sub_cur == SUB_SMS_DETAIL) {
+        static char c_dn[48], c_dd[24], c_del[32];
+        static char c_dbody[DEVUI_SMS_TEXT_MAX];
+        int k = -1;
+        for (int i = 0; i < d.sms_n; i++)
+            if (d.sms[i].id == s_smsd_id) { k = i; break; }
+        if (k < 0) {
+            /* Deleted (here or elsewhere) while open: nothing left to show. */
+            s_smsd_id = -1;
+            sub_back();
+        } else {
+            set_label_fmt(s_smsd_num, c_dn, sizeof c_dn, "%s", d.sms[k].num);
+            set_label_fmt(s_smsd_date, c_dd, sizeof c_dd, "%s", d.sms[k].date);
+            if (strcmp(c_dbody, d.sms[k].text)) {   /* full text: too big for set_label_fmt */
+                snprintf(c_dbody, sizeof c_dbody, "%s", d.sms[k].text);
+                lv_label_set_text(s_smsd_body, c_dbody);
+            }
+            int armed = s_smsd_del_arm && lv_tick_get() - s_smsd_del_arm < 4000;
+            if (!armed) s_smsd_del_arm = 0;
+            set_label_fmt(s_smsd_del_lbl, c_del, sizeof c_del, "%s", armed ? "再点一次确认删除" : "删除这条");
+            lv_obj_set_style_bg_color(s_smsd_del_btn, lv_color_hex(armed ? UI_C_BAD : UI_C_ACCENT), 0);
+        }
+    }
 
     /* ---- 信令读取 subpage ---- */
     {
@@ -3663,6 +3832,7 @@ void ui_create(void)
     build_sub_chill_pairs(s_sub_page[SUB_CHILL_PAIRS]);
     build_sub_esim(s_sub_page[SUB_ESIM]);
     build_sub_perf(s_sub_page[SUB_PERF]);
+    build_sub_sms_detail(s_sub_page[SUB_SMS_DETAIL]);
     sub_close();
 
     /* Seed the tileview's "active tile" pointer. lv_tileview_add_tile()

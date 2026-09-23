@@ -116,9 +116,19 @@ trim_log
 
 CHILD=
 STOPPING=
+# A stop must finish inside procd's term_timeout (10 s in our init scripts):
+# after that procd SIGKILLs this wrapper and a child still busy shutting down
+# is left behind — zwrt-datad does exactly that, waiting on its open SSE
+# clients, and the next start then spends 10 s clearing the leftover. So
+# forward the signal, then KILL whatever has not exited after STOP_GRACE.
+STOP_GRACE=${SUPERVISE_STOP_GRACE:-6}
 on_signal() {
+    [ -n "$STOPPING" ] && return
     STOPPING=1
-    [ -n "$CHILD" ] && kill -"$1" "$CHILD" 2>/dev/null
+    if [ -n "$CHILD" ]; then
+        kill -"$1" "$CHILD" 2>/dev/null
+        ( sleep "$STOP_GRACE"; kill -KILL "$CHILD" 2>/dev/null ) &
+    fi
 }
 trap 'on_signal TERM' TERM
 trap 'on_signal INT' INT

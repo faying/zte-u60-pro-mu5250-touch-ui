@@ -111,5 +111,10 @@ int sms_mark_read(int index);        /* no-op if the row is already read */
 int sms_delete_arm(int index);       /* long-press: arms the row, doesn't delete yet */
 int sms_delete_armed(int index);     /* is this row currently armed? (for the UI to paint) */
 int sms_delete_tap(int index);       /* tap while armed (past a short debounce): deletes */
+/* By message id — the detail page keeps showing one message while the list
+ * underneath is re-read and reordered, so row numbers are not stable there. */
+int sms_mark_read_id(long id);       /* no-op if already read or gone */
+int sms_mark_all_read(void);         /* returns how many were unread */
+int sms_delete_id(long id);
 
 #endif /* U60PRO_DATA_H */

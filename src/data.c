@@ -839,7 +839,8 @@ int data_refresh_live(devui_data_t *d)
  */
 static void sms_control_send(const char *action, const char *params_json)
 {
-    char body[160], req[512];
+    /* Room for "mark all read": up to DEVUI_SMS_MAX ids in one request. */
+    char body[DEVUI_SMS_MAX * 12 + 96], req[DEVUI_SMS_MAX * 12 + 448];
     int fd = connect_tcp(DEVUI_BACKEND_HOST, DEVUI_BACKEND_PORT, 800);
     if (fd < 0) return;
     snprintf(body, sizeof body, "{\"action\":\"%s\",\"params\":%s}", action, params_json);
@@ -860,6 +861,47 @@ int sms_mark_read(int index)
     snprintf(params, sizeof params, "{\"ids\":\"%ld;\",\"tag\":0}",
              g_backend.current_data.sms[index].id);
     sms_control_send("sms.mark_read", params);
+    return 1;
+}
+
+int sms_mark_read_id(long id)
+{
+    char params[48];
+    for (int i = 0; i < g_backend.current_data.sms_n; i++) {
+        if (g_backend.current_data.sms[i].id != id) continue;
+        if (!g_backend.current_data.sms[i].unread) return 1;
+        snprintf(params, sizeof params, "{\"ids\":\"%ld;\",\"tag\":0}", id);
+        sms_control_send("sms.mark_read", params);
+        return 1;
+    }
+    return 0;
+}
+
+/* One request for all of them: the ids field takes "a;b;c;". */
+int sms_mark_all_read(void)
+{
+    char ids[DEVUI_SMS_MAX * 12 + 1] = "", params[DEVUI_SMS_MAX * 12 + 32];
+    size_t len = 0;
+    int n = 0;
+    for (int i = 0; i < g_backend.current_data.sms_n; i++) {
+        if (!g_backend.current_data.sms[i].unread) continue;
+        int w = snprintf(ids + len, sizeof ids - len, "%ld;", g_backend.current_data.sms[i].id);
+        if (w < 0 || (size_t)w >= sizeof ids - len) break;
+        len += (size_t)w;
+        n++;
+    }
+    if (!n) return 0;
+    snprintf(params, sizeof params, "{\"ids\":\"%s\",\"tag\":0}", ids);
+    sms_control_send("sms.mark_read", params);
+    return n;
+}
+
+int sms_delete_id(long id)
+{
+    char params[32];
+    if (id < 0) return 0;
+    snprintf(params, sizeof params, "{\"ids\":\"%ld;\"}", id);
+    sms_control_send("sms.delete", params);
     return 1;
 }
 

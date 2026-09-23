@@ -56,6 +56,7 @@ echo "\$*" >>$T/ubus.log
 case "\$2 \$3" in
     "zwrt_wlan reload") [ -f $T/reload-works ] && echo 8 >$T/hostapd ;;
     "zwrt_wms zte_libwms_send_sms") cat $T/sms-resp 2>/dev/null || echo '{"result":3}' ;;
+    "zwrt_wms zte_libwms_get_sms_data") case "\$4" in *'"mem_store":1'*) cat $T/sent-box 2>/dev/null ;; esac ;;
 esac
 exit 0
 EOF
@@ -64,10 +65,15 @@ EOF
 echo "\$*" >>$T/kill.log
 /bin/kill "\$@"
 EOF
-    # The device has jsonfilter; busybox does not. Enough for '@.result'.
+    # The device has jsonfilter; busybox does not. Enough for '@.result' and
+    # "@.messages[@.number='N'].id" (fixtures put one message per line).
     cat >"$T/bin/jsonfilter" <<'EOF'
 #!/bin/sh
-sed -n 's/.*"result"[^0-9]*\([0-9][0-9]*\).*/\1/p'
+case "$2" in
+  *messages*) n=$(echo "$2" | sed -n "s/.*number='\([^']*\)'.*/\1/p")
+              grep "\"number\":\"$n\"" | sed -n 's/.*"id":\([0-9]*\).*/\1/p' ;;
+  *) sed -n 's/.*"result"[^0-9]*\([0-9][0-9]*\).*/\1/p' ;;
+esac
 EOF
     chmod +x "$T"/bin/*
 
@@ -266,6 +272,7 @@ teardown
 echo "SMS"
 setup
 echo "8.00" >"$T/tz"
+printf '%s\n' '{"id":77,"number":"+8612300000000"}' '{"id":76,"number":"+8612300000000"}' >"$T/sent-box"
 up 100 # inside grace: only the SMS part does anything
 . "$SCRIPTS/alert-lib.sh"
 alert_add agent-crash one
@@ -277,8 +284,9 @@ alert_add agent-crash three
 round
 check "sent the first" 'grep -q "${TAB}2${TAB}agent-crash${TAB}sent" $T/alerts/sms-log'
 check "same kind within the hour: suppressed" 'grep -q "${TAB}3${TAB}agent-crash${TAB}suppressed-rate" $T/alerts/sms-log'
-check "body is UCS-2 hex of 'U60 alert: agent-crash two'" 'grep -q "\"message_body\":\"00550036003000200061006C006500720074003A0020006100670065006E0074002D00630072006100730068002000740077006F\"" $T/ubus.log'
+check "body: plain Chinese for agent-crash, UCS-2 hex (UTF-8 decoded)" 'grep -q "\"message_body\":\"301000550036003030117BA17406540E53F0610F5916900051FAFF0C5DF281EA52A891CD542F30024E0D75287BA13002FF08" $T/ubus.log'
 check "number and fields as sms_forward sends them" 'grep -q "\"number\":\"+8612300000000\",.*\"encode_type\":\"UNICODE\",\"sms_time\":\"[0-9][0-9];[0-9][0-9];[0-9][0-9];[0-9][0-9];[0-9][0-9];[0-9][0-9];[+-][0-9]*\",\"id\":\"-1\"" $T/ubus.log'
+check "sent copy deleted (newest to that number)" 'grep -q "zwrt_wms zwrt_wms_delete_sms {\"id\":\"77\"}" $T/ubus.log'
 check "SMS time zone from ZTE SNTP (+8), not the UTC system zone" 'grep -q "\"sms_time\":\"[0-9;]*;+8\"" $T/ubus.log'
 for k in k-a k-b k-c k-d k-e; do alert_add "$k" x; done
 round

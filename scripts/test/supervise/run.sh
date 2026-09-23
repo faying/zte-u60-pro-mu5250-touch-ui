@@ -60,6 +60,26 @@ check "child got the TERM and is gone" '! kill -0 $child 2>/dev/null'
 check "not recorded as a crash" '[ ! -d $T/crash/fakesvc ] && [ -z "$(kinds)" ]'
 teardown
 
+echo "stop requested, child ignores TERM"
+setup
+printf '#!/bin/sh\ntrap "" TERM\nwhile :; do sleep 1; done\n' >"$T/stubborn"; chmod +x "$T/stubborn"
+export SUPERVISE_STOP_GRACE=2
+sh "$SUP" stubborn agent-crash "$T/stubborn" &
+w=$!
+wait_for '[ -s $T/supervise-stubborn.pid ]'
+child=$(cat "$T/supervise-stubborn.pid")
+t0=$(date +%s)
+kill -TERM "$w"
+wait "$w"
+rc=$?
+t1=$(date +%s)
+check "wrapper still exits 0" '[ $rc = 0 ]'
+check "stubborn child killed after the grace period" '! kill -0 $child 2>/dev/null'
+check "within grace + a little (not procd's 10 s)" '[ $((t1 - t0)) -le 4 ]'
+check "not recorded as a crash" '[ ! -d $T/crash/stubborn ] && [ -z "$(kinds)" ]'
+unset SUPERVISE_STOP_GRACE
+teardown
+
 echo "child dies while the wrapper waits"
 setup
 sh "$SUP" fakesvc agent-crash "$T/fakesvc" 100 &

@@ -315,8 +315,42 @@ rate_ok() {
     ' "$ALERT_DIR/sms-log"
 }
 
-ucs2_hex() { # ASCII in, UCS-2 big-endian hex out, as sms_forward.rs encodes it
-    printf '%s' "$1" | od -An -tx1 -v | tr -d ' \n' | sed 's/../00&/g' | tr 'a-f' 'A-F'
+# UTF-8 in, UCS-2 big-endian hex out (uppercase), as sms_forward.rs encodes it.
+# The messages are Chinese, so this decodes UTF-8 itself: busybox has no iconv.
+# Characters outside the BMP (emoji) become U+FFFD — none of ours use them.
+ucs2_hex() {
+    printf '%s' "$1" | od -An -tu1 -v | awk '
+        { for (i = 1; i <= NF; i++) b[n++] = $i }
+        END {
+            i = 0
+            while (i < n) {
+                c = b[i]
+                if (c < 128)      { cp = c; i += 1 }
+                else if (c < 224) { cp = (c - 192) * 64 + (b[i + 1] - 128); i += 2 }
+                else if (c < 240) { cp = (c - 224) * 4096 + (b[i + 1] - 128) * 64 + (b[i + 2] - 128); i += 3 }
+                else              { cp = 65533; i += 4 }
+                printf "%04X", cp
+            }
+        }'
+}
+
+# What the owner reads on their phone. Plain Chinese, one SMS (<= 70 chars):
+# what happened, whether it affects getting online, and whether to do anything.
+# The event's technical text stays in the web page's alert list.
+sms_body() { # <kind> <device-local time>
+    case "$1" in
+        wifi-takeover) m="管理后台没反应了。为了让你能上网，已自动打开U60的Wi-Fi。不用管。" ;;
+        wifi-restore-failed) m="想自动打开U60的Wi-Fi没成功，还在重试。如果手机连不上U60，请重启它。" ;;
+        agent-silent) m="管理后台超过5分钟没反应。上网一般不受影响；Wi-Fi要是关着，会自动打开。" ;;
+        agent-hung) m="管理后台卡住了，已强制重启。不用管。" ;;
+        agent-crash) m="管理后台意外退出，已自动重启。不用管。" ;;
+        datad-crash) m="屏幕的数据服务意外退出，已自动重启。不用管。" ;;
+        devui-crash) m="屏幕界面闪退了，已自动重新打开。不用管。" ;;
+        devui-gave-up) m="屏幕界面连续打不开，已换成原厂界面，上网不受影响。长按屏幕右下角3秒可换回。" ;;
+        sms-test) m="这是测试短信。收到了，说明告警短信能正常发到你手机。" ;;
+        *) m="有一条新告警（$1），请到管理网页「系统→告警」查看。" ;;
+    esac
+    printf '【U60】%s（%s）' "$m" "$2"
 }
 
 # ZTE's "YY;MM;DD;HH;MM;SS;+TZ", TZ in whole hours as in sms_forward.rs.
@@ -351,6 +385,24 @@ send_sms() { # send_sms <number> <text> — 0 on success
     esac
 }
 
+# The firmware keeps every SMS we send in its "sent" box, where it shows up in
+# the device's SMS list (the touch screen, the web page). The owner does not
+# want alerts piling up there: once one is sent, delete that copy — the newest
+# sent message to that number, as sms_forward.rs does for forwarded SMS.
+delete_sent_copy() { # <number>
+    sleep 1   # let the firmware store it
+    for _store in 1 0; do
+        _id=$($UBUS call zwrt_wms zte_libwms_get_sms_data \
+            "{\"tags\":2,\"page\":0,\"data_per_page\":5,\"mem_store\":$_store,\"order_by\":\"order by id desc\"}" 2>/dev/null |
+            $JSONFILTER -e "@.messages[@.number='$1'].id" 2>/dev/null | head -n 1)
+        case "$_id" in '' | *[!0-9]*) continue ;; esac
+        $UBUS call zwrt_wms zwrt_wms_delete_sms "{\"id\":\"$_id\"}" >/dev/null 2>&1 &&
+            log "sms: deleted the sent copy (id $_id)"
+        return 0
+    done
+    log "sms: sent copy not found to delete"
+}
+
 sms_round() {
     [ -f "$ALERT_DIR/queue" ] || return 0
     _done=$(num "$ALERT_DIR/sms-done")
@@ -371,8 +423,9 @@ sms_round() {
             break # rate limits need a real clock; leave it pending, not done
         elif ! rate_ok "$_kind" "$_w"; then
             sms_log "$_w" "$_seq" "$_kind" suppressed-rate
-        elif send_sms "$_number" "U60 alert: $_kind $_text"; then
+        elif send_sms "$_number" "$(sms_body "$_kind" "$(date '+%m-%d %H:%M')")"; then
             sms_log "$_w" "$_seq" "$_kind" sent
+            delete_sent_copy "$_number"
         else
             sms_log "$_w" "$_seq" "$_kind" failed
             alert_add sms-failed "alert $_seq ($_kind) not sent"
