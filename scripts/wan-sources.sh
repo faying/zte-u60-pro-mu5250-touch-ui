@@ -37,7 +37,8 @@ summarize() {
         # 1790190000.123456 IP6 240e::1.58834 > 2607::44c.443: tcp 0
         $2 == "IP" || $2 == "IP6" {
             sec = int($1); src = $3; dst = $5; sub(/:$/, "", dst)
-            proto = (tolower($0) ~ /udp/) ? "udp" : ((tolower($0) ~ /icmp/) ? "icmp" : "tcp")
+            # the whole ?: in parentheses: busybox awk misparses "x = (c) ? a : b" as x = (c)
+            proto = ((tolower($0) ~ /udp/) ? "udp" : ((tolower($0) ~ /icmp/) ? "icmp" : "tcp"))
             len = 0; if (match($0, /length [0-9]+/)) len = substr($0, RSTART + 7, RLENGTH - 7) + 0
             else if (match($0, /tcp [0-9]+/)) len = substr($0, RSTART + 4, RLENGTH - 4) + 0
             # split host.port (the port is after the last dot)
@@ -71,7 +72,7 @@ owners() {
     $NETSTAT -tunp 2>/dev/null | awk '
         # tcp and udp lines both end in PID/program (tcp has a State column before it)
         $1 ~ /^(tcp|udp)/ && $NF ~ /\// {
-            p = ($1 ~ /^udp/) ? "udp" : "tcp"
+            p = (($1 ~ /^udp/) ? "udp" : "tcp")
             a = $4; n = split(a, x, ":"); port = x[n]
             split($NF, q, "/"); prog = q[2]
             if (port != "" && prog != "") print p, port, prog

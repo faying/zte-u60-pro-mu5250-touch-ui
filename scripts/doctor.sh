@@ -54,10 +54,10 @@ calibrate_standby() {
         { for (k = 2; k <= 8; k++) if ($k != "-" && $k != "") v[k, ++cnt[k]] = $k }
         END {
             for (k = 2; k <= 8; k++) {
-                c = cnt[k]; if (c == 0) { print k, "-", "-"; continue }
+                c = cnt[k] + 0; if (c == 0) { print k, "-", "-"; continue }
                 for (i = 1; i <= c; i++) x[i] = v[k, i]
                 m = med(x, c)
-                for (i = 1; i <= c; i++) { d = v[k, i] - m; x[i] = d < 0 ? -d : d }
+                for (i = 1; i <= c; i++) { d = v[k, i] - m; x[i] = (d < 0 ? -d : d) }   # busybox awk: ?: must be parenthesised
                 printf "%d %.1f %.1f\n", k, m, med(x, c)
             }
         }' "$STANDBY_STAT" >"$STANDBY_BASE.tmp" && mv -f "$STANDBY_BASE.tmp" "$STANDBY_BASE" || return 1
@@ -76,7 +76,7 @@ standby_check() {
             if (rows < 8) { printf "ok\t最近 15 分钟息屏记录只有 %d 行，不判定\n", rows; exit }
             out = ""
             for (k = 2; k <= 8; k++) {
-                c = cnt[k]; if (c == 0 || bm[k] == "-" || bm[k] == "") continue
+                c = cnt[k] + 0; if (c == 0 || bm[k] == "-" || bm[k] == "") continue
                 for (i = 1; i <= c; i++) x[i] = v[k, i]
                 m = med(x, c)
                 if (k == 2) cell = m

@@ -423,6 +423,21 @@ check "keeps the last 60 lines" '[ "$(wc -l <"$T/standby.stat")" = 60 ]'
 unset GUARD_NETDEV GUARD_BACKLIGHT GUARD_STANDBY_STAT; export GUARD_WAKE_GAP=100000000
 teardown
 
+echo "## LAN IPv6 off"
+setup
+export GUARD_LAN_V6_FLAG=$T/lan-ipv6-off GUARD_LAN_V6_SYSCTL=$T/disable_ipv6
+echo 0 >"$T/disable_ipv6"; round
+check "no flag: left alone" '[ "$(cat "$T/disable_ipv6")" = 0 ]'
+touch "$T/lan-ipv6-off"; round
+check "flag: IPv6 disabled on the bridge" '[ "$(cat "$T/disable_ipv6")" = 1 ]'
+check "flag: logged" 'grep -q "disabled it on br-lan" "$T/guard.log"'
+round
+check "already off: not logged again" '[ "$(grep -c "disabled it on br-lan" "$T/guard.log")" = 1 ]'
+echo 0 >"$T/disable_ipv6"; round
+check "turned back on (firmware): disabled again" '[ "$(cat "$T/disable_ipv6")" = 1 ]'
+unset GUARD_LAN_V6_FLAG GUARD_LAN_V6_SYSCTL
+teardown
+
 echo
 echo "passed $PASS, failed $FAIL"
 [ "$FAIL" = 0 ]

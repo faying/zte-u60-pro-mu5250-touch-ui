@@ -62,6 +62,14 @@ BACKLIGHT=${GUARD_BACKLIGHT:-/sys/class/leds/led:lcd/brightness}
 WAN_IF=${GUARD_WAN_IF:-rmnet_data0}
 TS_IF=${GUARD_TS_IF:-tailscale0}
 STANDBY_PROGS="tailscaled mihomo u60pro-devui zwrt-datad zte-agent"
+# LAN IPv6 off (owner's choice, 2026-09-24): while this flag file exists,
+# IPv6 stays disabled on the LAN bridge. With no IPv6 on br-lan, odhcpd has
+# nothing to advertise and clients get no IPv6 at all — the only way that
+# survives zte_router, which rewrites dhcp.lan's RA settings whenever the
+# cellular IPv6 comes up. Delete the flag file to give the LAN IPv6 back
+# (then: echo 0 > /proc/sys/net/ipv6/conf/br-lan/disable_ipv6).
+LAN_V6_FLAG=${GUARD_LAN_V6_FLAG:-/data/u60-guard/lan-ipv6-off}
+LAN_V6_SYSCTL=${GUARD_LAN_V6_SYSCTL:-/proc/sys/net/ipv6/conf/br-lan/disable_ipv6}
 
 TAB=$(printf '\t')
 
@@ -535,12 +543,20 @@ standby_round() {
     tail -n 60 "$STANDBY_STAT" >"$STANDBY_STAT.tmp" && mv -f "$STANDBY_STAT.tmp" "$STANDBY_STAT"
 }
 
+lanv6_round() {
+    [ -f "$LAN_V6_FLAG" ] || return 0
+    _v=; { read -r _v <"$LAN_V6_SYSCTL"; } 2>/dev/null
+    [ -z "$_v" ] || [ "$_v" = 1 ] && return 0
+    echo 1 >"$LAN_V6_SYSCTL" 2>/dev/null && log "LAN IPv6 was on again: disabled it on br-lan"
+}
+
 round() {
     guard_round
     rtc_round
     sms_round
     logcap_round
     standby_round
+    lanv6_round
 }
 
 case "$1" in

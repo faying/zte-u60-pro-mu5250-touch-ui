@@ -60,7 +60,8 @@ wan_stats() {
             m = 0; c = 0
             for (i = 1; i <= k; i++) all[++c] = gaps[i]
             for (i = 2; i <= c; i++) { v = all[i]; j = i - 1; while (j > 0 && all[j] > v) { all[j + 1] = all[j]; j-- } all[j + 1] = v }
-            if (c > 0) m = (c % 2) ? all[(c + 1) / 2] : (all[c / 2] + all[c / 2 + 1]) / 2
+            # busybox awk parses "m = (c % 2) ? a : b" as m = c % 2; parenthesise the whole ?:
+            if (c > 0) m = ((c % 2) ? all[(c + 1) / 2] : (all[c / 2] + all[c / 2 + 1]) / 2)
             printf "%d %d %.1f %g\n", busy, n, (n > 0 ? q * 100 / n : 0), m
         }'
 }
