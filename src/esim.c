@@ -50,6 +50,7 @@ static int  s_conf_loaded;
 
 static es_prof_t s_prof[ES_MAX];
 static int  s_count;
+static int  s_loaded;         /* a profile list has been read at least once */
 static char s_err[96];          /* 读列表失败的原因，"" = 正常 */
 static int  s_offline;          /* agent 没响应：列表还留着，但不给点 */
 
@@ -332,8 +333,11 @@ static int load_list(void)
     }
     parse_profiles(arr);
     s_err[0] = 0;
+    s_loaded = 1;
     return 1;
 }
+
+int esim_loaded(void) { return s_loaded; }
 
 /* 查 job。*reload 置 1 = 有操作刚结束，卡上的列表可能变了。返回 0 = agent 没响应 */
 static int poll_job(int *reload)

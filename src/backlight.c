@@ -89,6 +89,7 @@ void backlight_set(int level)
 /* Report the remembered user level (not the live, possibly-mid-fade value) so
  * the brightness slider never jumps around during the off/on fade animation. */
 int backlight_get(void) { return s_on_level; }
+void backlight_remember(int level) { if (level > 0) s_on_level = level; }
 int backlight_max(void) { return read_int(BL_MAX, 255); }
 
 static long now_ms(void)

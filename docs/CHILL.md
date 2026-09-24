@@ -13,6 +13,18 @@
 令牌前缀 `SC_` 与动作前缀 `act:sc*` 是缩写，保持不变，
 这样只换二进制不换页面时的令牌兼容性也不受影响。
 
+## LVGL 版的 CHILL 页
+
+上面这些令牌和动作是 litehtml 版的。LVGL 版（默认构建）是原生页面，`src/ui.c` 的 `build_sub_chill()`：
+
+- **状态**：当前节点、延迟、组，右上角总开关；连接数（代理 / 直连）、累计流量。
+- **出口**：代理 / 全局 / 直连·AI 不动 / 全部直连，经 zte-agent 的 `PUT /api/services/chill/exit`。
+- **档位**：省电 / 标准 / 性能，经 `PUT /api/services/chill/profile`（agent 调 `chill.sh profile`）。
+  当前值读本机 `/tmp/chill.state` 的 `profile`、`profile_effective`、`thermal_eco`；进出「省电」要重启核心，
+  连接会断大约 10 秒，页面右上角写明；设备过热、`chill.sh` 暂时按省电跑时显示「太热 · 暂按省电」。
+  三档具体改什么见 manager 仓库 `scripts/chill/chill.sh` 的「档位」一节。
+- **节点**、**规则 → 节点**：二级页，直接读 mihomo 的 `/group`、`/proxies`、`/connections`。
+
 ## 为什么直接读 clash API，而不是走 zwrt-datad
 
 上游的设计原则是「UI 只读 zwrt-datad 的本机接口」。这里做了一处偏离，理由是：

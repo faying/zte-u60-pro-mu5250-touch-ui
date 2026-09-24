@@ -26,6 +26,7 @@ void backlight_predim(void);  /* force live brightness to 1 (before a wake rende
 
 void backlight_set(int level); /* set brightness directly (remembers on-level) */
 int  backlight_get(void);      /* current brightness */
+void backlight_remember(int level); /* on-level to restore, without touching the panel (started dark) */
 int  backlight_max(void);      /* max_brightness */
 
 #endif /* U60PRO_BACKLIGHT_H */

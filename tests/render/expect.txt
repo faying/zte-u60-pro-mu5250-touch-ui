@@ -1,0 +1,321 @@
+# Controls inventory, made executable: every line must be a visible label
+# (substring match) on that page, or render_test fails.
+#   <scenes>\t<page>\t<text>     scenes: *  |  a,b  |  !a,b   (tests/render/fixtures.c)
+# The status bar and tab bar are collected with every page.
+# Changing a format on purpose: change it here in the same commit, and say why.
+*	home	首页
+*	home	图表
+*	home	功能
+*	home	系统
+*	charts	首页
+*	charts	图表
+*	charts	功能
+*	charts	系统
+*	func	首页
+*	func	图表
+*	func	功能
+*	func	系统
+*	system	首页
+*	system	图表
+*	system	功能
+*	system	系统
+!loading,datad-down	home	5G
+good	home	11:41
+good	home	↓12.3Mb ↑1.5Mb
+good	home	78
+good	home	中国电信
+good	home	QCI 9
+good	home	AMBR 1668/1008
+good	home	中国电信 · 4 NR 载波
+good	home	320
+good	home	MHz
+good	home	信号良好
+good	home	今日 2.4GB · 本月 59.5GB
+good	home	n78 100M
+good	home	ARFCN 627264
+good	home	PCI 603
+good	home	RSRP
+good	home	SINR
+good	home	-87
+good	home	17.7
+good	home	n1
+good	home	20M
+good	home	ARFCN 426030
+good	home	PCI 615
+good	home	-95
+good	home	9.5
+good	home	n41 100M
+good	home	未激活
+good	home	ARFCN 504990 · PCI 120
+good	home	情景
+good	home	在家
+good	home	Wi-Fi 已关
+good	home	Tailscale
+good	home	已连接
+good	home	100.64.0.7 · DERP hkg
+good	home	在线 3/5 · 直连 1 · 中继 1
+good	home	子网
+good	home	10.0.66.0/24
+good	home	CHILL
+good	home	运行中
+good	home	代理 · TW 台湾 01
+good	home	代理 21 · 直连 16
+good	home	↓12.4G ↑1.1G
+good	home	规则 → 节点
+good	home	AI → 
+good	home	美国 01
+good	home	↓820M ↑95M
+good	home	节点选择 → 
+good	home	台湾 01
+good	home	↓640M ↑41M
+good	home	流媒体 → 
+good	home	苹果服务 → DIRECT
+good	home	漏网之鱼 → 
+good	home	↓1.2M/s ↑45K/s
+abroad	home	国外
+*	charts	CPU
+*	charts	内存
+*	charts	网速
+*	charts	电池
+good	charts	15%
+good	charts	42°C
+good	charts	74%
+good	charts	1184M / 1590M
+good	charts	↓ 1.5 MB/s
+good	charts	↑ 183.6 KB/s
+good	charts	78%
+good	charts	放电中 · 33°C
+good	charts	近 5 分钟
+*	func	WiFi
+*	func	短信
+*	func	信令读取
+*	func	锁频
+*	func	测速
+*	func	CHILL
+*	func	eSIM
+*	func	性能测试
+good	func	U60-Test · 6 台
+good	func	3 条 · 2 未读
+good	func	WL_AND_5G
+good	func	↓ 812 · ↑ 96 Mbps
+good	func	运行中 · 代理
+good	func	中国联通 · 主号
+good	func	调试页
+*	system	屏幕
+*	system	亮度
+*	system	自动息屏
+*	system	常亮
+*	system	30秒
+*	system	2分钟
+*	system	外观
+*	system	浅色
+*	system	深色
+*	system	自动
+*	system	电池与负载
+*	system	电池
+*	system	充电器
+*	system	CPU
+*	system	内存
+*	system	运行
+*	system	设备
+*	system	版本
+*	system	IMEI
+*	system	USB
+*	system	健康
+*	system	开关
+*	system	电源直供电
+*	system	状态栏网速用 Mbps
+*	system	切换到原厂界面
+*	system	电源键：短按 亮屏/息屏  长按 电源菜单
+good	system	78% · 33°C 4.05V -349mA
+good	system	未接入
+good	system	占用 15% · 42°C
+good	system	74% · 1184M / 1590M
+good	system	9h00m
+good	system	BD_CNMU5250V1.0.0B27
+good	system	4901********518
+good	system	调试关闭
+good	system	一切正常
+good	system	OpenWrt 23.05.4
+full-charging	system	4.67V 1203mA
+*	wifi	热点
+*	wifi	加密
+*	wifi	密码
+*	wifi	WiFi 总开关
+*	wifi	2.4G 频段
+*	wifi	5G 频段
+*	wifi	节能模式
+*	wifi	NFC 碰一碰
+*	wifi	已连接设备
+*	wifi	DHCP
+*	wifi	网关
+*	wifi	地址池
+*	wifi	租期
+good	wifi	U60-Test
+good	wifi	sae
+good	wifi	correct-horse-battery
+good	wifi	5/6 台
+good	wifi	iPhone
+good	wifi	10.0.66.20
+good	wifi	Kindle
+good	wifi	10.0.66.1
+good	wifi	2 · 共 252
+good	wifi	24 小时
+good	sms	2 条未读 · 共 3 条
+good	sms	全部已读
+good	sms	10000
+good	sms	09-24 09:12
+good	sms	【中国电信】您好
+good	sms	+8613800000000
+good	sms	106900000000
+good	sms-detail	10000
+good	sms-detail	09-24 09:12
+good	sms-detail	如需帮助请回复 CX。
+good	sms-detail	删除这条
+good	alerts	都已读
+good	alerts	Wi-Fi 看门狗重新打开了 Wi-Fi
+good	alerts	触屏界面闪退，已自动重新打开
+good	alerts	exit 139 (SIGSEGV)
+good	alerts	开机后1分
+empty	alerts	一切正常，没有告警
+*	cell	5G 服务小区
+*	cell	频段
+*	cell	ARFCN
+*	cell	PCI
+*	cell	Cell ID
+*	cell	PLMN
+*	cell	RSRP / RSRQ / SINR
+*	cell	LTE
+*	cell	网络
+*	cell	选网方式
+*	cell	WAN
+*	cell	制式
+*	cell	高铁模式
+*	cell	支持频段
+*	cell	邻小区
+good	cell	n78  100 MHz
+good	cell	627264
+good	cell	603
+good	cell	23960174596
+good	cell	460-11 中国电信
+good	cell	-87 / -11 / 17.7
+good	cell	RSRP -106  RSRQ -17  SINR -4.0  RSSI -71
+good	cell	WL_AND_5G
+good	cell	ipv4_ipv6_connected
+good	cell	关闭
+good	cell	n1 n28 n41 n78 n79
+good	cell	B1 B3 B5 B8 B34 B38 B39 B40 B41
+*	lock	选网方式
+*	lock	自动
+*	lock	5G SA
+*	lock	5G NSA
+*	lock	4G
+*	lock	切换会短暂断网，需要按两次确认
+*	lock	5G SA 频段
+*	lock	5G NSA 频段
+*	lock	4G 频段
+*	lock	应用锁频
+*	lock	恢复默认配置
+good	lock	n78
+good	lock	n79
+good	lock	B41
+*	lock-mode-armed	再按一次确认切换
+*	system-vendor-armed	再按一次确认切换
+good	speed	网络测速
+good	speed	812.4
+good	speed	延迟 23ms · 抖动 4ms
+good	speed	↓ 812.4 Mbps  ↑ 96.2 Mbps
+good	speed	China Telecom (Shanghai)
+good	speed	重新测速
+good	speed	服务器
+good	speed	自动（最佳服务器）
+good	speed	China Unicom · Shanghai, China
+empty	speed	连不上测速服务
+*	chill	连接
+*	chill	流量
+*	chill	出口
+*	chill	代理
+*	chill	全局
+*	chill	直连·AI 不动
+*	chill	全部直连
+*	chill	节点
+*	chill	规则 → 节点
+good	chill	运行中
+good	chill	代理 21 · 直连 16
+good	chill	↓12.4G ↑1.1G
+good	chill	4 组 · 10 个
+good	chill	6 条
+good	chill-nodes	策略组
+good	chill-nodes	节点选择
+good	chill-nodes	AI
+good	chill-nodes	流媒体
+good	chill-nodes	苹果服务
+good	chill-nodes	节点
+good	chill-nodes	测延迟
+good	chill-nodes	台湾 01
+good	chill-nodes	42 ms
+good	chill-nodes	超时
+good	chill-nodes	美国 02
+good	chill-nodes	201 ms
+good	chill-pairs	规则 → 节点流量
+good	chill-pairs	↓2.1G ↑12M
+good	chill-pairs	Google → 
+good	chill-pairs	↓3M ↑1M
+good	esim	当前配置
+good	esim	中国联通 · 主号
+good	esim	就绪
+good	esim	配置列表
+good	esim	ICCID 8986 0000 0000 0000 0001
+good	esim	使用中
+good	esim	Chunghwa Telecom
+good	esim	giffgaff
+good	esim-armed	再点一次
+good	tailscale	本机
+good	tailscale	主机名
+good	tailscale	u60-pro
+good	tailscale	IP
+good	tailscale	100.64.0.7
+good	tailscale	DERP
+good	tailscale	hkg
+good	tailscale	子网路由
+good	tailscale	10.0.66.0/24
+good	tailscale	节点
+good	tailscale	macbook-pro
+good	tailscale	100.64.0.2
+good	tailscale	直连
+good	tailscale	中继
+good	tailscale	在线
+good	tailscale	离线
+good	tailscale	old-ipad
+*	perf	渲染刷新率
+*	perf	触控上报率
+*	exit-menu	在国外 · CHILL 怎么走
+*	exit-menu	代理（和在国内一样）
+*	exit-menu	全局
+*	exit-menu	直连 · AI 不动
+*	exit-menu	全部直连（AI 也直连）
+!empty	exit-menu	关闭 CHILL（最省电）
+*	exit-menu	取消
+*	power-menu	电源
+*	power-menu	关机
+*	power-menu	重启
+*	power-menu	取消
+empty	exit-menu	打开 CHILL
+weak	home	信号偏弱
+nosignal	home	没有信号
+nosignal	home	无服务
+nosignal	home	恢复默认配置
+nosim	home	没有 SIM 卡
+nosim	home	在「功能 → eSIM」启用
+loading	home	正在读取…
+datad-down	home	数据服务掉线 · 数字停在
+empty	home	需要登录
+empty	home	在管理网页打开登录链接
+empty	home	已关闭
+abroad	home	出口节点
+abroad	home	直连·AI 不动
+lowbat	home	电量低，尽快充电
+full-charging	charts	充电中
+!loading,datad-down	charts-collecting	正在收集 · 1 分钟后出现曲线
+empty	wifi	还没有设备连上
+empty	esim	还没有 eSIM 配置 · 用管理网页添加

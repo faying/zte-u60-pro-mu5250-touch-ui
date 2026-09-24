@@ -5,6 +5,10 @@
 #   sh /data/u60-guard/doctor.sh          human-readable (install.sh doctor)
 #   sh /data/u60-guard/doctor.sh --tsv    one check per line for zte-agent:
 #                                          <ok|warn|bad>\t<id>\t<label>\t<detail>
+#   sh /data/u60-guard/doctor.sh --calibrate-standby
+#                                          set the standby sentinel's baseline from
+#                                          u60-guard's screen-off records (≥30 lines;
+#                                          run after 30-60 min with the screen off)
 #
 # One implementation of "is this device healthy", used by the install kit over
 # SSH (works with the agent dead) and by zte-agent's /api/health (health page,
@@ -29,7 +33,65 @@ DAEMON_CONF=${DOC_DAEMON_CONF:-/etc/config/zte_topsw_daemon.conf}
 DATA_DIR=${DOC_DATA:-/data}
 WGET=${DOC_WGET:-wget}
 PROC=${DOC_PROC:-/proc}
+STANDBY_STAT=${DOC_STANDBY_STAT:-/tmp/standby.stat}
+STANDBY_BASE=${DOC_STANDBY_BASE:-/data/u60-guard/standby.baseline}
 CLOCK_SANE_AFTER=1704067200
+
+# Standby sentinel. u60-guard writes one line per screen-off minute:
+#   <uptime> <cellular pkts/min> <tunnel pkts/min> <wakeups/s ×5 programs | ->
+# Columns 2-8 are judged against a baseline of median and MAD (median
+# absolute deviation) taken from those same records.
+standby_labels='- 蜂窝包/分 Tailscale隧道包/分 tailscaled唤醒/秒 mihomo唤醒/秒 触屏唤醒/秒 数据服务唤醒/秒 后台唤醒/秒'
+
+calibrate_standby() {
+    n=$(wc -l <"$STANDBY_STAT" 2>/dev/null || echo 0)
+    if [ "${n:-0}" -lt 30 ]; then
+        echo "只有 ${n:-0} 行息屏记录，至少要 30 行（屏幕熄灭约 30 分钟后再试）"; return 1
+    fi
+    awk '
+        function sortv(a, c,   i, j, v) { for (i = 2; i <= c; i++) { v = a[i]; j = i - 1; while (j > 0 && a[j] > v) { a[j + 1] = a[j]; j-- } a[j + 1] = v } }
+        function med(a, c) { sortv(a, c); return (c % 2) ? a[(c + 1) / 2] : (a[c / 2] + a[c / 2 + 1]) / 2 }
+        { for (k = 2; k <= 8; k++) if ($k != "-" && $k != "") v[k, ++cnt[k]] = $k }
+        END {
+            for (k = 2; k <= 8; k++) {
+                c = cnt[k]; if (c == 0) { print k, "-", "-"; continue }
+                for (i = 1; i <= c; i++) x[i] = v[k, i]
+                m = med(x, c)
+                for (i = 1; i <= c; i++) { d = v[k, i] - m; x[i] = d < 0 ? -d : d }
+                printf "%d %.1f %.1f\n", k, m, med(x, c)
+            }
+        }' "$STANDBY_STAT" >"$STANDBY_BASE.tmp" && mv -f "$STANDBY_BASE.tmp" "$STANDBY_BASE" || return 1
+    echo "基线已写入 $STANDBY_BASE（$n 行记录）"
+}
+
+# prints "<ok|warn>\t<detail>"
+standby_check() {
+    [ -f "$STANDBY_BASE" ] || { printf 'ok\t未校准（屏幕熄灭 30~60 分钟后执行 doctor.sh --calibrate-standby）\n'; return; }
+    awk -v now="$(uptime_s)" -v labels="$standby_labels" -v base="$STANDBY_BASE" '
+        function sortv(a, c,   i, j, v) { for (i = 2; i <= c; i++) { v = a[i]; j = i - 1; while (j > 0 && a[j] > v) { a[j + 1] = a[j]; j-- } a[j + 1] = v } }
+        function med(a, c) { sortv(a, c); return (c % 2) ? a[(c + 1) / 2] : (a[c / 2] + a[c / 2 + 1]) / 2 }
+        BEGIN { split(labels, lab, " "); while ((getline l < base) > 0) { split(l, f, " "); bm[f[1]] = f[2]; bd[f[1]] = f[3] } }
+        $1 >= now - 900 { rows++; for (k = 2; k <= 8; k++) if ($k != "-" && $k != "") v[k, ++cnt[k]] = $k }
+        END {
+            if (rows < 8) { printf "ok\t最近 15 分钟息屏记录只有 %d 行，不判定\n", rows; exit }
+            out = ""
+            for (k = 2; k <= 8; k++) {
+                c = cnt[k]; if (c == 0 || bm[k] == "-" || bm[k] == "") continue
+                for (i = 1; i <= c; i++) x[i] = v[k, i]
+                m = med(x, c)
+                if (k == 2) cell = m
+                if (m > bm[k] + 3 * bd[k] && m > 1.5 * bm[k] && m - bm[k] >= 1)
+                    out = out (out == "" ? "" : "；") sprintf("%s %.0f（基线 %.0f）", lab[k], m, bm[k])
+            }
+            if (out != "") printf "warn\t%s\n", out
+            else printf "ok\t正常（蜂窝每分钟 %.0f 个包）\n", cell
+        }' "$STANDBY_STAT" 2>/dev/null || printf 'ok\t没有息屏记录\n'
+}
+
+if [ "$1" = "--calibrate-standby" ]; then
+    uptime_s() { cut -d. -f1 "$UPTIME_FILE" 2>/dev/null || echo 0; }
+    calibrate_standby; exit $?
+fi
 
 TSV=0
 [ "$1" = "--tsv" ] && TSV=1
@@ -209,6 +271,9 @@ elif [ "$free_kb" -lt 102400 ]; then
 else
     report ok disk "/data 空间" "剩 $((free_kb / 1024)) MB"
 fi
+
+_sb=$(standby_check)
+report "${_sb%%	*}" standby "待机" "${_sb#*	}"
 
 if [ "$TSV" = 0 ]; then
     echo

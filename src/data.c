@@ -354,6 +354,9 @@ static int parse_snapshot(devui_data_t *d, const char *buf)
         getstr(sec, "imei", d->imei, sizeof d->imei);
     }
 
+    if (json_get(buf, "sim", sec, sizeof sec))
+        getstr(sec, "state", d->sim_state, sizeof d->sim_state);
+
     if (force_hsr_enabled()) d->hsr = 1;
 
     d->valid = 1;
@@ -756,6 +759,8 @@ int data_backend_init(void)
         g_backend.next_retry_ms = mono_ms() + DEVUI_BACKEND_RETRY_MS;
     return g_backend.current_valid;
 }
+
+int data_backend_fd(void) { return g_backend.sse_fd; }
 
 int data_backend_poll(uint32_t now_ms)
 {

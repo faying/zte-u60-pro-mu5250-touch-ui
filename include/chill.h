@@ -90,6 +90,12 @@ void chill_get_top_pair(int i, chill_traffic_item_t *out);
 int chill_set_mode(const char *mode);   /* rule|global|direct */
 int chill_select_node(int index);       /* index into the cached node list */
 int chill_restart_core(void);
+/* 档位：eco / standard / perf（chill.sh profile）。raw 是用户选的，effective 是实际在跑的
+ * （温度降档时是 eco）。set 经 agent 的 PUT /api/services/chill/profile，进出 eco 会重启核心。 */
+const char *chill_profile_raw(void);
+const char *chill_profile_effective_raw(void);
+int chill_thermal_eco(void);
+int chill_set_profile(const char *profile);
 int chill_test_delay(void);             /* 组测延迟（异步）：1 = 已发起，2 = 上一轮还在跑，0 = 发不出去 */
 int chill_delay_pending(void);          /* 1 = 测延迟还在进行，结果到了会自动填进节点列表 */
 

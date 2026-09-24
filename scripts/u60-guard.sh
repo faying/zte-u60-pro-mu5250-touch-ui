@@ -51,6 +51,17 @@ PS=${GUARD_PS:-ps w}
 SLEEP=${GUARD_SLEEP:-sleep}
 KILL=${GUARD_KILL:-kill}
 JSONFILTER=${GUARD_JSONFILTER:-jsonfilter}
+# Logs that nothing else rotates. tailscaled writes ~7.5 MB/day to its log and
+# runs for weeks; start.sh opens it for append, so copy-then-truncate is safe.
+CAP_LOGS=${GUARD_CAP_LOGS:-/data/tailscaled.log}
+CAP_BYTES=${GUARD_CAP_BYTES:-1048576}
+# Standby sentinel records (read by doctor.sh; see docs/RELIABILITY.md §8)
+STANDBY_STAT=${GUARD_STANDBY_STAT:-/tmp/standby.stat}
+NETDEV=${GUARD_NETDEV:-/proc/net/dev}
+BACKLIGHT=${GUARD_BACKLIGHT:-/sys/class/leds/led:lcd/brightness}
+WAN_IF=${GUARD_WAN_IF:-rmnet_data0}
+TS_IF=${GUARD_TS_IF:-tailscale0}
+STANDBY_PROGS="tailscaled mihomo u60pro-devui zwrt-datad zte-agent"
 
 TAB=$(printf '\t')
 
@@ -413,8 +424,8 @@ sms_round() {
 
     while IFS="$TAB" read -r _seq _wall _up _kind _text; do
         _w=$(wall_s)
-        if [ "$_kind" = sms-failed ]; then
-            : # never an SMS about a failed SMS
+        if [ "$_kind" = sms-failed ] || [ "$_kind" = devui-theme-paused ]; then
+            : # never an SMS about a failed SMS, or about the screen's colours
         elif ! valid_number "$_number"; then
             sms_log "$_w" "$_seq" "$_kind" no-number
         elif [ -f "$ALERT_DIR/abroad" ] && [ ! -f "$ALERT_DIR/sms-abroad" ]; then
@@ -437,10 +448,99 @@ sms_round() {
 
 # ── main ────────────────────────────────────────────────────────────────────
 
+# ── log caps ────────────────────────────────────────────────────────────────
+# Over CAP_BYTES: keep one previous copy as <log>.old and start the log over.
+# Only for writers that opened the file with O_APPEND (>>); a plain > writer
+# would keep its offset and leave a hole the size of the old log.
+# Every process holding <file> open must have it in O_APPEND mode (02000).
+# Only checked once a log is over the cap, so the fd scan is rare.
+appenders_only() { # <file>
+    for _fd in "$PROC"/[0-9]*/fd/*; do
+        [ "$(readlink "$_fd" 2>/dev/null)" = "$1" ] || continue
+        _fl=$(awk '/^flags:/ {print $2}' "${_fd%/fd/*}/fdinfo/${_fd##*/}" 2>/dev/null)
+        [ -n "$_fl" ] && [ $(( 0$_fl & 1024 )) -ne 0 ] || return 1
+    done
+    return 0
+}
+logcap_round() {
+    for _f in $CAP_LOGS; do
+        [ -f "$_f" ] || continue
+        _sz=$(wc -c <"$_f" 2>/dev/null) || continue
+        [ "${_sz:-0}" -gt "$CAP_BYTES" ] || continue
+        # The fd scan below starts a process per open file on the device
+        # (~2200), so after a refusal it is not repeated for an hour.
+        _skip=$(num "$STATE/logcap-skip")
+        [ "$_skip" -gt 0 ] && [ $(( $(uptime_s) - _skip )) -lt 3600 ] && continue
+        if ! appenders_only "$_f"; then
+            # truncating under a non-append writer leaves a hole the size of the old log
+            [ "$_skip" -gt 0 ] || log "not capping $_f: a writer did not open it for append"
+            mkdir -p "$STATE"; uptime_s >"$STATE/logcap-skip"
+            continue
+        fi
+        rm -f "$STATE/logcap-skip"
+        cp "$_f" "$_f.old" && : >"$_f" && log "capped $_f at $_sz bytes (previous copy in $_f.old)"
+    done
+}
+
+# ── standby sentinel ────────────────────────────────────────────────────────
+# While the screen is dark, one line per round into STANDBY_STAT:
+#   <uptime> <cellular pkts/min> <tailscale-tunnel pkts/min> <wakeups/s for
+#   each of STANDBY_PROGS, or - when that program restarted or is missing>
+# The tunnel is counted separately rather than subtracted: traffic from
+# other tailnet devices (a browser tab polling this device, say) is exactly
+# the kind of waste the sentinel exists to show. Rounds far apart (the
+# device slept) and lit-screen rounds are not recorded. Keeps 60 lines, in
+# /tmp. doctor.sh does the judging.
+find_pid() { # exact comm match; first hit
+    for _d in "$PROC"/[0-9]*; do
+        { read -r _c <"$_d/comm"; } 2>/dev/null || continue
+        [ "$_c" = "$1" ] && { echo "${_d##*/}"; return; }
+    done
+}
+standby_round() {
+    _now=$(uptime_s)
+    _w=0; _t=0
+    while IFS=' :' read -r _if _rb _rp _re _rd _rf _rfr _rc _rm _tb _tp _rest; do
+        case $_if in "$WAN_IF") _w=$((_rp + _tp)) ;; "$TS_IF") _t=$((_rp + _tp)) ;; esac
+    done 2>/dev/null <"$NETDEV"
+    _cur="$_now $_w $_t"
+    for _n in $STANDBY_PROGS; do
+        _p=$(find_pid "$_n")
+        if [ -n "$_p" ]; then
+            _s=$(awk '/^(non)?voluntary_ctxt_switches/ {x += $2} END {print x + 0}' "$PROC/$_p"/task/*/status 2>/dev/null)
+            _cur="$_cur $_p:${_s:-0}"
+        else
+            _cur="$_cur -"
+        fi
+    done
+    _prev=$(cat "$STATE/standby.prev" 2>/dev/null)
+    mkdir -p "$STATE"; echo "$_cur" >"$STATE/standby.prev"
+    _bl=0; { read -r _bl <"$BACKLIGHT"; } 2>/dev/null
+    [ "${_bl:-0}" -gt 0 ] 2>/dev/null && return 0
+    [ -n "$_prev" ] || return 0
+    echo "$_prev $_cur" | awk -v gap="$WAKE_GAP" '{
+        n = NF / 2                       # prev fields, then cur fields
+        el = $(n + 1) - $1
+        if (el <= 0 || el > gap) exit 1
+        wan = ($(n + 2) - $2) * 60 / el; ts = ($(n + 3) - $3) * 60 / el
+        if (wan < 0 || ts < 0) exit 1   # counters reset (interface came back)
+        line = sprintf("%d %.0f %.0f", $(n + 1), wan, ts)
+        for (i = 4; i <= n; i++) {
+            split($i, a, ":"); split($(n + i), b, ":")
+            if ($i == "-" || $(n + i) == "-" || a[1] != b[1] || b[2] < a[2]) line = line " -"
+            else line = line sprintf(" %.1f", (b[2] - a[2]) / el)
+        }
+        print line
+    }' >>"$STANDBY_STAT" || return 0
+    tail -n 60 "$STANDBY_STAT" >"$STANDBY_STAT.tmp" && mv -f "$STANDBY_STAT.tmp" "$STANDBY_STAT"
+}
+
 round() {
     guard_round
     rtc_round
     sms_round
+    logcap_round
+    standby_round
 }
 
 case "$1" in

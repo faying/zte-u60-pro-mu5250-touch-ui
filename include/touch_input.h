@@ -33,6 +33,9 @@ typedef struct {
     int strokeq_x0[TOUCH_INPUT_QUEUE_LEN], strokeq_y0[TOUCH_INPUT_QUEUE_LEN];
     int strokeq_x1[TOUCH_INPUT_QUEUE_LEN], strokeq_y1[TOUCH_INPUT_QUEUE_LEN];
     int strokeq_head, strokeq_tail;
+    /* a whole tap that started and ended inside one touch_input_read(): the
+     * caller only ever saw "released", so it never saw the tap */
+    int lost_tap, lost_x, lost_y;
 } touch_input_t;
 
 /* Probe and open a touch device scaled to screen_w x screen_h. 0 on success. */
@@ -62,6 +65,12 @@ int  touch_input_take_latest_stroke(touch_input_t *t, int *x0, int *y0, int *x1,
 /* Drop the release event that the caller has already handled through the live
  * pressed->released edge. Keeps later queued taps/strokes intact. */
 void touch_input_drop_replayed_release(touch_input_t *t, int drop_tap);
+
+/* A tap whose press and release both arrived within one touch_input_read()
+ * (the loop was busy, e.g. a slow poll): the caller saw no press at all.
+ * Returns 1 and the press position once per such tap. An LVGL read callback
+ * reports it as pressed now and released on the next read. */
+int  touch_input_take_lost_tap(touch_input_t *t, int *x, int *y);
 
 /* Drop any queued taps/strokes (call when switching context, e.g. entering a pad). */
 void touch_input_clear_taps(touch_input_t *t);

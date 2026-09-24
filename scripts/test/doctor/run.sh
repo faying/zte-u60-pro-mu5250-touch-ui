@@ -74,4 +74,34 @@ setup; rm -f "$T"/initd/*; run
 check "missing services are warnings, not errors" '[ "$(level svc-zte-agent)" = warn ]'
 rm -rf "$T"
 
+echo "standby sentinel"
+setup; export DOC_STANDBY_STAT=$T/sb DOC_STANDBY_BASE=$T/sb.base   # uptime is 1000: recent = 100 and later
+detail() { awk -F'\t' -v id="$1" '$2 == id {print $4}' "$T/out"; }
+rows() { # rows <n> <first uptime> <wan pkts/min> [tailscaled wakeups/s]
+    _i=0; while [ $_i -lt "$1" ]; do echo "$(($2 + _i * 60)) $3 20 ${4:-30.0} 5.0 2.0 1.0 0.5"; _i=$((_i + 1)); done
+}
+run
+check "no baseline: ok, says not calibrated" '[ "$(level standby)" = ok ] && detail standby | grep -q 未校准'
+rows 10 100 60 >"$T/sb"
+sh "$SCRIPTS/doctor.sh" --calibrate-standby >"$T/cal"; RCC=$?
+check "calibration refuses fewer than 30 lines" '[ $RCC != 0 ] && [ ! -f "$T/sb.base" ]'
+: >"$T/sb"; i=0; while [ $i -lt 40 ]; do echo "$((100 + i * 20)) $((50 + i)) 20 30.0 5.0 2.0 1.0 0.5" >>"$T/sb"; i=$((i + 1)); done
+sh "$SCRIPTS/doctor.sh" --calibrate-standby >"$T/cal"; RCC=$?
+check "calibration: median 69.5, MAD 10.0 for 50..89" '[ $RCC = 0 ] && grep -qx "2 69.5 10.0" "$T/sb.base"'
+check "calibration: constant column has MAD 0" 'grep -qx "3 20.0 0.0" "$T/sb.base"'
+rows 5 700 300 >"$T/sb"; run
+check "too few recent rows: no verdict" '[ "$(level standby)" = ok ] && detail standby | grep -q 不判定'
+rows 10 300 72 >"$T/sb"; run
+check "within the baseline: ok" '[ "$(level standby)" = ok ] && detail standby | grep -q "正常（蜂窝每分钟 72"'
+rows 10 300 200 >"$T/sb"; run
+check "cellular chatter well above baseline: warn" '[ "$(level standby)" = warn ] && detail standby | grep -q "蜂窝包/分 200（基线 70）"'
+rows 10 300 70 90.0 >"$T/sb"; run
+check "one program waking far more: warn names it" '[ "$(level standby)" = warn ] && detail standby | grep -q "tailscaled唤醒/秒 90（基线 30）"'
+{ rows 4 300 70; echo "600 70 20 - - - - -"; rows 5 660 70; } >"$T/sb"; run
+check "missing values (-) are skipped" '[ "$(level standby)" = ok ]'
+: >"$T/sb"; i=1; while [ $i -le 10 ]; do echo "$((i * 9)) 500 20 30.0 5.0 2.0 1.0 0.5" >>"$T/sb"; i=$((i + 1)); done; run   # all before uptime 100
+check "old rows (over 15 min) are ignored" '[ "$(level standby)" = ok ] && detail standby | grep -q 不判定'
+unset DOC_STANDBY_STAT DOC_STANDBY_BASE
+rm -rf "$T"
+
 echo; echo "passed $PASS, failed $FAIL"; [ "$FAIL" = 0 ]

@@ -83,8 +83,11 @@ adb shell '/etc/init.d/zte_topsw_devui stop; sleep 1;
 
 ## 功能
 
-- **CHILL**：内建 ShellCrash / mihomo 控制页——内核状态、实时速率、代理组切换、选节点、测延迟、
-  重启内核。命名和原因见 [docs/CHILL.md](docs/CHILL.md)（屏幕上统一叫 CHILL，不叫 RELAX）。
+- **新设计（LVGL 版）**：浅色 / 深色 / 跟随时间自动切换；数字用 Nunito（OFL，字体文件不在仓库里，
+  由装机包带到设备 `/data/plugins/u60pro-devui/fonts/`，没有时退回设备自带的 Roboto）；息屏时的触摸不会点到界面，
+  按电源键关的屏只认电源键，自动息屏的屏双击亮起。离屏渲染测试在 `tests/render`（`scripts/test/render/`）。
+- **CHILL**：mihomo 控制页——内核状态、实时速率、出口（代理 / 全局 / 直连·AI 不动 / 全部直连）、
+  档位（省电 / 标准 / 性能）、代理组切换、选节点、测延迟。见 [docs/CHILL.md](docs/CHILL.md)。
 - **eSIM**：通过 lpac 管理设备内 eUICC 卡的 profile。
 - **Tailscale**：状态卡片和开关。
 - **测速**：可选后端，支持循环测速。

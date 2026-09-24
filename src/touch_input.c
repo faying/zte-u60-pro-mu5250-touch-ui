@@ -78,14 +78,41 @@ static int probe_is_touch(int fd, int *use_mt)
     return 0;
 }
 
-static void load_axis_range(int fd, int axis, int *lo, int *hi)
+/* Range of an axis, and its current value: the input core drops an event
+ * whose value equals the last one it sent, so a tap in the same row or column
+ * as the previous one (before this process started, e.g. across a theme
+ * switch exec) carries no Y (or X) at all. Starting from 0 put such a tap on
+ * the wrong edge of the screen (seen on the device 2026-09-24). */
+static void load_axis_range(int fd, int axis, int *lo, int *hi, int *cur)
 {
     struct input_absinfo_compat a;
     memset(&a, 0, sizeof(a));
     if (ioctl(fd, EVIOCGABS_(axis), &a) == 0 && a.maximum > a.minimum) {
         *lo = a.minimum;
         *hi = a.maximum;
+        *cur = a.value;
     }
+}
+
+/* Multitouch positions are kept per slot, not in the axis info, so
+ * EVIOCGABS reports 0 for them: read the current slot's values instead. */
+#define EVIOCGMTSLOTS_(len) _IOC(_IOC_READ, 'E', 0x0a, len)
+#ifndef ABS_MT_SLOT
+#define ABS_MT_SLOT 0x2f
+#endif
+static void seed_mt_position(int fd, int *x, int *y)
+{
+    struct input_absinfo_compat sl;
+    int slot = 0;
+    memset(&sl, 0, sizeof sl);
+    if (ioctl(fd, EVIOCGABS_(ABS_MT_SLOT), &sl) == 0 && sl.value >= 0 && sl.value < 16) slot = sl.value;
+    struct { uint32_t code; int32_t v[16]; } q;
+    memset(&q, 0, sizeof q);
+    q.code = ABS_MT_POSITION_X;
+    if (ioctl(fd, EVIOCGMTSLOTS_(sizeof q), &q) == 0) *x = q.v[slot];
+    memset(&q, 0, sizeof q);
+    q.code = ABS_MT_POSITION_Y;
+    if (ioctl(fd, EVIOCGMTSLOTS_(sizeof q), &q) == 0) *y = q.v[slot];
 }
 
 int touch_input_init(touch_input_t *t, int screen_w, int screen_h)
@@ -118,9 +145,10 @@ int touch_input_init(touch_input_t *t, int screen_w, int screen_h)
             t->fd = fd;
             t->use_mt = use_mt;
             load_axis_range(fd, use_mt ? ABS_MT_POSITION_X : ABS_X,
-                            &t->raw_min_x, &t->raw_max_x);
+                            &t->raw_min_x, &t->raw_max_x, &t->raw_cur_x);
             load_axis_range(fd, use_mt ? ABS_MT_POSITION_Y : ABS_Y,
-                            &t->raw_min_y, &t->raw_max_y);
+                            &t->raw_min_y, &t->raw_max_y, &t->raw_cur_y);
+            if (use_mt) seed_mt_position(fd, &t->raw_cur_x, &t->raw_cur_y);
             fprintf(stderr, "touch: using %s (%s, x[%d..%d] y[%d..%d])\n",
                     path, use_mt ? "MT" : "ST",
                     t->raw_min_x, t->raw_max_x, t->raw_min_y, t->raw_max_y);
@@ -178,6 +206,7 @@ void touch_input_read(touch_input_t *t, int *x, int *y, int *pressed)
 
     struct input_event_compat ev;
     int new_press = t->pressed;
+    int down_here = 0;          /* the current press began during this call */
 
     /* Drain everything currently available (non-blocking). Accumulate the
      * latest raw axis values, then resolve once per SYN_REPORT so the X/Y
@@ -204,6 +233,7 @@ void touch_input_read(touch_input_t *t, int *x, int *y, int *pressed)
             t->pressed = new_press;
             if (!was && new_press) {              /* press down: remember origin */
                 t->press_x = sx; t->press_y = sy; t->in_tap = 1;
+                down_here = 1;
             } else if (was && !new_press && t->in_tap) {   /* release: latch a tap if it barely moved */
                 int dx = sx - t->press_x, dy = sy - t->press_y;
                 int ns = (t->strokeq_tail + 1) % TOUCH_INPUT_QUEUE_LEN;
@@ -214,6 +244,12 @@ void touch_input_read(touch_input_t *t, int *x, int *y, int *pressed)
                     t->strokeq_y1[t->strokeq_tail] = sy;
                     t->strokeq_tail = ns;
                 }
+                if (down_here && dx * dx + dy * dy <= 14 * 14) {
+                    t->lost_tap = 1;           /* the caller never saw this press */
+                    t->lost_x = t->press_x;
+                    t->lost_y = t->press_y;
+                }
+                down_here = 0;
                 if (dx * dx + dy * dy <= 14 * 14) {
                     int nx = (t->tapq_tail + 1) % TOUCH_INPUT_QUEUE_LEN;
                     if (nx != t->tapq_head) {      /* enqueue (drop if full) */
@@ -231,6 +267,15 @@ void touch_input_read(touch_input_t *t, int *x, int *y, int *pressed)
     *x = t->cur_x;
     *y = t->cur_y;
     *pressed = t->pressed;
+}
+
+int touch_input_take_lost_tap(touch_input_t *t, int *x, int *y)
+{
+    if (!t->lost_tap) return 0;
+    t->lost_tap = 0;
+    *x = t->lost_x;
+    *y = t->lost_y;
+    return 1;
 }
 
 int touch_input_take_tap(touch_input_t *t, int *x, int *y)

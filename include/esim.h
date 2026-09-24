@@ -64,4 +64,8 @@ void esim_get_profile(int index, esim_profile_t *out);
  * "ro" vs clickable distinction. */
 int esim_locked(void);
 
+/* A profile list has been read from the card at least once: an empty list
+ * then means "no eSIM profiles", not "still reading". */
+int esim_loaded(void);
+
 #endif /* U60_ESIM_H */

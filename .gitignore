@@ -67,4 +67,7 @@ drm_text
 /docs/WORKFLOW-PRIVATE.md
 /.review-shots/
 /scripts/test/uid/uid_core_test
+/scripts/test/ui_logic/ui_logic_test
 /u60-uid
+scripts/test/ui_exec/ui_exec_test
+scripts/test/render/render_test

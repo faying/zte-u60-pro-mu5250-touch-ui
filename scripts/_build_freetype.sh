@@ -29,8 +29,10 @@ FT_USE_MODULE( FT_Module_Class, sfnt_module_class )
 FT_USE_MODULE( FT_Renderer_Class, ft_smooth_renderer_class )
 EOF
 
+# base/ftsynth: FT_GlyphSlot_Embolden, used by the bold patch in
+# patches/lvgl-v9.5.0-freetype-bold.patch (synthetic bold CJK in bitmap mode).
 SRCS="base/ftbase base/ftsystem base/ftinit base/ftdebug base/ftbbox \
-      base/ftbitmap base/ftglyph base/ftmm base/ftstroke cache/ftcache autofit/autofit \
+      base/ftbitmap base/ftglyph base/ftmm base/ftstroke base/ftsynth cache/ftcache autofit/autofit \
       truetype/truetype cff/cff psaux/psaux psnames/psnames \
       pshinter/pshinter sfnt/sfnt smooth/smooth gzip/ftgzip"
 

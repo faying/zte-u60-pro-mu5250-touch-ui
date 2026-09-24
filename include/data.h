@@ -77,6 +77,10 @@ typedef struct {
     /* system */
     long uptime, cpu_temp, cpu_usage, mem_used_pct, mem_total, mem_avail;
     char model[64], fw[80], sw_version[80], imei[24];
+
+    /* sim.state as datad reports it ("sim ready", …); "" when not reported.
+     * Only "has no usable SIM" is read from it (ui_logic.h ui_sig_state). */
+    char sim_state[24];
 } devui_data_t;
 
 /* Start the backend transport and seed the first visible snapshot if available. */
@@ -126,5 +130,8 @@ int sms_delete_id(long id);
  * 2026-09-23: datad ~6% → ~2% of a core with the screen off.
  */
 void data_set_pace(int panel_lit);
+
+/* The SSE socket, or -1 while there is none (main.c waits on it while dark). */
+int data_backend_fd(void);
 
 #endif /* U60PRO_DATA_H */

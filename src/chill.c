@@ -43,6 +43,10 @@ static int  s_conf_loaded;
 
 static int  s_online;
 static char s_mode_raw[16];
+/* 档位（chill.sh 写在 /tmp/chill.state 里）：用户选的、实际生效的、是否因温度暂降 */
+static char s_profile[12] = "standard", s_profile_eff[12] = "standard";
+static int  s_thermal_eco;
+static long s_profile_pending_ms;   /* 刚点过：几秒内先按点的显示，别被旧 state 盖回去 */
 static char s_node[SC_NAME_MAX];
 /* 「🚀 节点选择」当前选中的原始名字：出口状态（代理 / 直连·AI 不动）看它是不是 DIRECT */
 static char s_main_now[SC_NAME_MAX];
@@ -674,6 +678,57 @@ static void delay_cancel(void);
  * 返回 1 = 这次真的发了请求（无论各子请求成功与否），调用方据此决定要不要
  * 强制重绘；返回 0 = 什么都没做（不活跃，或者还在节流窗口内）。
  */
+#define CHILL_STATE_FILE "/tmp/chill.state"
+
+static int valid_profile(const char *p)
+{
+    return !strcmp(p, "eco") || !strcmp(p, "standard") || !strcmp(p, "perf");
+}
+
+/* chill.state 是本机的小文件（几百字节），直接读，不经过 agent。 */
+static void read_profile_state(long t)
+{
+    char buf[1024], v[16];
+    FILE *fp;
+    size_t n;
+
+    if (s_profile_pending_ms && t - s_profile_pending_ms < 15000) return;
+    s_profile_pending_ms = 0;
+    fp = fopen(CHILL_STATE_FILE, "r");
+    if (!fp) return;
+    n = fread(buf, 1, sizeof buf - 1, fp);
+    fclose(fp);
+    buf[n] = 0;
+    if (json_get(buf, "profile", v, sizeof v) && valid_profile(v))
+        snprintf(s_profile, sizeof s_profile, "%s", v);
+    else
+        snprintf(s_profile, sizeof s_profile, "standard");   /* 旧版 chill.sh 没这个字段 */
+    if (json_get(buf, "profile_effective", v, sizeof v) && valid_profile(v))
+        snprintf(s_profile_eff, sizeof s_profile_eff, "%s", v);
+    else
+        snprintf(s_profile_eff, sizeof s_profile_eff, "%s", s_profile);
+    s_thermal_eco = strstr(buf, "\"thermal_eco\":true") != NULL;
+}
+
+const char *chill_profile_raw(void)           { return s_profile; }
+const char *chill_profile_effective_raw(void) { return s_profile_eff; }
+int chill_thermal_eco(void)                   { return s_thermal_eco; }
+
+int chill_set_profile(const char *p)
+{
+    char body[40];
+    int code;
+    if (!p || !valid_profile(p)) return 0;
+    snprintf(body, sizeof body, "{\"profile\":\"%s\"}", p);
+    code = agent_request("PUT", "/api/services/chill/profile", body);
+    if (code < 200 || code >= 300) return 0;
+    snprintf(s_profile, sizeof s_profile, "%s", p);
+    if (!s_thermal_eco) snprintf(s_profile_eff, sizeof s_profile_eff, "%s", p);
+    s_profile_pending_ms = now_ms();
+    s_last_ms = 0;
+    return 1;
+}
+
 int chill_poll(int active)
 {
     char path[512], enc[384], *b;
@@ -684,6 +739,7 @@ int chill_poll(int active)
     if (!active) { s_last_ms = 0; return 0; }
     if (s_last_ms && t - s_last_ms < SC_TTL_MS) return 0;
     s_last_ms = t;
+    read_profile_state(t);
 
     b = sc_http("GET", "/configs", NULL);
     if (!b) {

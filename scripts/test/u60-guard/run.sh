@@ -311,6 +311,18 @@ setup
 up 100
 . "$SCRIPTS/alert-lib.sh"
 echo "12300000000" >"$T/alerts/sms-to"
+alert_add devui-theme-paused x
+round
+check "theme-paused alert: no SMS, cursor advanced" '! grep -q send_sms $T/ubus.log && [ "$(cat $T/alerts/sms-done)" = 1 ]'
+alert_add agent-crash x
+round
+check "and it does not use up the day's budget" 'grep -q "agent-crash${TAB}sent" $T/alerts/sms-log'
+teardown
+
+setup
+up 100
+. "$SCRIPTS/alert-lib.sh"
+echo "12300000000" >"$T/alerts/sms-to"
 alert_add agent-crash x
 GUARD_WALL_NOW=35392498 round
 check "clock not set: nothing sent, left pending" '[ ! -f $T/alerts/sms-done ] && ! grep -q send_sms $T/ubus.log'
@@ -348,6 +360,67 @@ echo '138"},{"x' >"$T/alerts/sms-to"
 alert_add agent-crash x
 round
 check "malformed number never reaches ubus" '! grep -q send_sms $T/ubus.log && grep -q no-number $T/alerts/sms-log'
+teardown
+
+echo "## log cap"
+setup
+export GUARD_CAP_LOGS="$T/ts.log $T/missing.log" GUARD_CAP_BYTES=100
+head -c 150 /dev/zero | tr '\0' 'a' >"$T/ts.log"
+round
+check "over the cap: previous copy kept as .old" '[ "$(wc -c <"$T/ts.log.old")" -eq 150 ]'
+check "over the cap: log started over" '[ ! -s "$T/ts.log" ]'
+check "over the cap: logged" 'grep -q "capped $T/ts.log at 150 bytes" "$T/guard.log"'
+head -c 50 /dev/zero | tr '\0' 'b' >"$T/ts.log"
+round
+check "under the cap: untouched" '[ "$(wc -c <"$T/ts.log")" -eq 50 ] && [ "$(wc -c <"$T/ts.log.old")" -eq 150 ]'
+# a writer that did not open the log for append: leave it alone
+head -c 150 /dev/zero | tr '\0' 'c' >"$T/ts.log"
+mkdir -p "$T/proc/700/fd" "$T/proc/700/fdinfo"; ln -s "$T/ts.log" "$T/proc/700/fd/1"
+printf 'pos:\t150\nflags:\t0100001\n' >"$T/proc/700/fdinfo/1"
+round
+check "non-append writer: not truncated" '[ "$(wc -c <"$T/ts.log")" -eq 150 ]'
+check "non-append writer: logged once" '[ "$(grep -c "not capping" "$T/guard.log")" = 1 ]'
+round
+check "non-append writer: still logged once" '[ "$(grep -c "not capping" "$T/guard.log")" = 1 ]'
+printf 'pos:\t150\nflags:\t0102001\n' >"$T/proc/700/fdinfo/1"
+round
+check "within the hour after a refusal: not rescanned" '[ "$(wc -c <"$T/ts.log")" -eq 150 ]'
+up $(( $(cut -d. -f1 "$T/uptime") + 3700 ))
+round
+check "an hour later, append writer: capped" '[ ! -s "$T/ts.log" ]'
+rm -rf "$T/proc/700"
+unset GUARD_CAP_LOGS GUARD_CAP_BYTES
+teardown
+
+echo "## standby sentinel records"
+setup
+export GUARD_NETDEV=$T/netdev GUARD_BACKLIGHT=$T/bl GUARD_STANDBY_STAT=$T/standby.stat
+netdev() { printf 'rmnet_data0: 0 %s 0 0 0 0 0 0 0 0 0 0 0 0 0 0\ntailscale0: 0 %s 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n' "$1" "$2" >"$T/netdev"; }
+tsproc() { # tsproc <pid> <switches>
+    rm -rf "$T/proc/5"[0-9][0-9]; mkdir -p "$T/proc/$1/task/$1"; echo tailscaled >"$T/proc/$1/comm"
+    printf 'voluntary_ctxt_switches:\t%s\nnonvoluntary_ctxt_switches:\t0\n' "$2" >"$T/proc/$1/task/$1/status"
+}
+# keep the agent's heartbeat fresh, so the Wi-Fi watchdog stays out of it
+# (its stub sleep would move the fake clock and skew the rates)
+sround() { hb "$(cut -d. -f1 "$T/uptime")"; round; }
+echo 0 >"$T/bl"; netdev 1000 100; tsproc 500 1000; up 1000
+sround
+check "first round: nothing recorded yet" '[ ! -s "$T/standby.stat" ]'
+netdev 1600 160; tsproc 500 1600; up 1060
+sround
+check "dark round: rates recorded" '[ "$(cat "$T/standby.stat")" = "1060 600 60 10.0 - - - -" ]'
+echo 255 >"$T/bl"; netdev 2000 200; up 1120
+sround
+check "lit screen: not recorded" '[ "$(wc -l <"$T/standby.stat")" = 1 ]'
+echo 0 >"$T/bl"; netdev 2600 260; tsproc 501 50; up 1180
+sround
+check "restarted program: -" '[ "$(tail -n 1 "$T/standby.stat")" = "1180 600 60 - - - - -" ]'
+GUARD_WAKE_GAP=150; export GUARD_WAKE_GAP; netdev 3000 300; up 1500
+sround
+check "rounds too far apart (slept): not recorded" '[ "$(wc -l <"$T/standby.stat")" = 2 ]'
+i=0; while [ $i -lt 70 ]; do up $((1560 + i * 60)); sround; i=$((i + 1)); done
+check "keeps the last 60 lines" '[ "$(wc -l <"$T/standby.stat")" = 60 ]'
+unset GUARD_NETDEV GUARD_BACKLIGHT GUARD_STANDBY_STAT; export GUARD_WAKE_GAP=100000000
 teardown
 
 echo

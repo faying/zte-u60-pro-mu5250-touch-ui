@@ -172,6 +172,7 @@ static const char *kind_label(const char *kind)
         { "datad-crash",         "数据服务意外退出，已自动重启" },
         { "devui-crash",         "触屏界面闪退，已自动重新打开" },
         { "devui-gave-up",       "触屏界面反复打不开，已换回原厂界面" },
+        { "devui-theme-paused",  "自动切换深浅色已暂停，重启后恢复" },
         { "wifi-takeover",       "Wi-Fi 看门狗重新打开了 Wi-Fi" },
         { "wifi-restore-failed", "Wi-Fi 看门狗没能打开 Wi-Fi" },
         { "sms-failed",          "告警短信发送失败" },
