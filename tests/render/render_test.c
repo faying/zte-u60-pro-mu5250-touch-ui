@@ -20,6 +20,7 @@
  *
  * SPDX-License-Identifier: MIT
  */
+#include "src/misc/lv_text_private.h"   /* lv_text_encoded_next */
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -140,10 +141,36 @@ static void save_png(const char *name)
 static char *s_texts[MAX_TEXTS];
 static int s_ntexts;
 
+/* Characters a label shows but its font chain has no glyph for (they would
+ * render as nothing). Flags, emoji and joiners are skipped: no font on the
+ * device has them, the UI shows them as-is from node names. */
+#define MAX_MISSING 32
+static uint32_t s_missing[MAX_MISSING];
+static int s_nmissing;
+
+static int glyph_exempt(uint32_t c)
+{
+    return c < 0x20 || c == 0x200D || (c >= 0xFE00 && c <= 0xFE0F) || c >= 0x1F000;
+}
+
+static void check_glyphs(lv_obj_t *label, const char *t)
+{
+    const lv_font_t *f = lv_obj_get_style_text_font(label, LV_PART_MAIN);
+    lv_font_glyph_dsc_t dsc;
+    for (uint32_t i = 0; t[i];) {
+        uint32_t c = lv_text_encoded_next(t, &i);
+        if (glyph_exempt(c) || lv_font_get_glyph_dsc(f, &dsc, c, 0)) continue;
+        int seen = 0;
+        for (int k = 0; k < s_nmissing && !seen; k++) seen = s_missing[k] == c;
+        if (!seen && s_nmissing < MAX_MISSING) s_missing[s_nmissing++] = c;
+    }
+}
+
 static void texts_clear(void)
 {
     for (int i = 0; i < s_ntexts; i++) free(s_texts[i]);
     s_ntexts = 0;
+    s_nmissing = 0;
 }
 
 static void collect(lv_obj_t *o)
@@ -151,7 +178,7 @@ static void collect(lv_obj_t *o)
     if (!o || lv_obj_has_flag(o, LV_OBJ_FLAG_HIDDEN)) return;
     if (lv_obj_check_type(o, &lv_label_class) && s_ntexts < MAX_TEXTS) {
         const char *t = lv_label_get_text(o);
-        if (t && *t) s_texts[s_ntexts++] = strdup(t);
+        if (t && *t) { s_texts[s_ntexts++] = strdup(t); check_glyphs(o, t); }
     }
     for (uint32_t i = 0; i < lv_obj_get_child_count(o); i++) collect(lv_obj_get_child(o, (int32_t)i));
 }
@@ -266,7 +293,21 @@ static void dump_texts(const char *page)
     }
 }
 
-static void page_done(const char *page) { check_expect(page); dump_texts(page); }
+static void check_missing(const char *page)
+{
+    for (int k = 0; k < s_nmissing; k++) {
+        char u[8] = "";
+        uint32_t c = s_missing[k];
+        if (c < 0x80) { u[0] = (char)c; }
+        else if (c < 0x800) { u[0] = (char)(0xC0 | c >> 6); u[1] = (char)(0x80 | (c & 0x3F)); }
+        else if (c < 0x10000) { u[0] = (char)(0xE0 | c >> 12); u[1] = (char)(0x80 | (c >> 6 & 0x3F)); u[2] = (char)(0x80 | (c & 0x3F)); }
+        bad("%s: no glyph for U+%04X \"%s\" in the label's fonts", page, (unsigned)c, u);
+    }
+    if (!s_nmissing) ok("");
+    s_nmissing = 0;
+}
+
+static void page_done(const char *page) { check_expect(page); check_missing(page); dump_texts(page); }
 
 /* ---- navigation ---- */
 static void to_tab(int i)

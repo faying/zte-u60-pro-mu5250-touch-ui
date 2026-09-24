@@ -71,3 +71,4 @@ drm_text
 /u60-uid
 scripts/test/ui_exec/ui_exec_test
 scripts/test/render/render_test
+.cache/

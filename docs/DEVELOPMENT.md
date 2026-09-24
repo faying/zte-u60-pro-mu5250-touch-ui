@@ -227,6 +227,28 @@ bash zwrt-datad/scripts/build.sh       # → zwrt-datad(.stripped)
 - litehtml 的 `document_container` 有约 30 个纯虚函数，全部要实现；`create_element` 返回 `nullptr` 也得显式 override，否则是抽象类编译不过。
 - litehtml **不支持 CSS grid / JS / CSS 动画**，`var()` 也不可靠——布局用 table/flex/block，主题用 `body.dark`/`body.light` 类切换，动画靠宿主驱动帧。
 
+## 字体（LVGL 版）
+
+加载顺序在 `src/ui_theme.c` 的 `ui_fonts_load()`：
+
+| 用途 | 首选 | 找不到时 |
+|---|---|---|
+| 中文和正文 | 设备自带 `/usr/ui/fonts/ZTEZhengYuan.ttf`（运行时加载，仓库不打包） | `/data/plugins/u60pro-devui/fonts/u60-cjk-fallback.ttf` → LVGL 的 Montserrat（只有拉丁字符，中文全空白） |
+| 数字 | `fonts/Nunito-600/700/800.ttf`（OFL） | 设备自带 Roboto → 中文字体本身 |
+
+粗体全部是合成的（`patches/` 里给 LVGL v9.5.0 FreeType 位图模式加的粗体补丁），每种字体只带一个字重。
+启动日志 `ui: fonts cjk=device|bundled|montserrat numerals=nunito|roboto|cjk` 说明实际用了哪套。
+
+**中文兜底字体** `u60-cjk-fallback.ttf` 由 `scripts/fonts/build-cjk-fallback.sh <输出目录>` 生成：
+Resource Han Rounded CN Regular 0.990（OFL 1.1，圆体，和设备字体、Nunito 同一风格）的子集，
+收 GB2312 全部 + Big5 常用字 + 全角标点符号 + 程序里写死的所有文字，约 1 万字、4.4 MB。
+短信、运营商名、Wi-Fi 名、节点名是任意文字，所以不能只裁界面用到的字。原字体保留字体名 "Source"，
+改过的版本按 OFL 改名为 "U60 CJK Fallback"，许可证 `OFL-ResourceHanRounded.txt` 随字体一起装。
+字体文件是二进制，不进仓库，由装机包（`DEVUI_FONTS_DIR`）带到设备。
+
+**测试**：离屏渲染测试逐页检查每个文字的每个字符在它的字体链里有没有字形（国旗、emoji 除外）；
+`scripts/test/render/render.sh --cjk-fallback` 不给设备字体、只放兜底字体再跑一遍全部场景。
+
 ## 部署与运行
 
 ```sh

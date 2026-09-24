@@ -44,13 +44,16 @@ void ui_theme_select(int dark);
  *       as fallback, so "12 条" renders the digits in Nunito and 条 in CJK.
  * cj* = device CJK font (ZTEZhengYuan); *b = synthetic bold (LVGL patch).
  * Missing Nunito → device Roboto at the same sizes (no weights, not rounded);
- * missing Roboto too → the CJK font itself. Never NULL after ui_fonts_load. */
+ * missing Roboto too → the CJK font itself. Missing device CJK font → the
+ * bundled subset $U60_DEVUI_FONT_DIR/u60-cjk-fallback.ttf, then Montserrat
+ * (Latin only). Never NULL after ui_fonts_load. */
 typedef struct {
     const lv_font_t *nbat, *n11, *n12, *n15, *n17, *n20, *n32, *n36;
     const lv_font_t *cj11, *cj12, *cj13, *cj14, *cj15;
     const lv_font_t *cj15b, *cj17b, *cj20b, *cj22b, *cj24b;
     const lv_font_t *cj20;                      /* regular 20: fallback under cj20b */
     const char *numerals;                       /* "nunito" / "roboto" / "cjk" — for the startup log */
+    const char *cjk;                            /* "device" / "bundled" / "montserrat" — which CJK font loaded */
 } ui_fonts_t;
 
 extern ui_fonts_t UF;

@@ -12,6 +12,9 @@
 #define CJK_FONT_DEFAULT    "/usr/ui/fonts/ZTEZhengYuan.ttf"
 #define ROBOTO_FONT_DEFAULT "/usr/ui/fonts/Roboto.ttf"
 #define FONT_DIR_DEFAULT    "/data/plugins/u60pro-devui/fonts"
+/* Bundled CJK subset (scripts/fonts/build-cjk-fallback.sh), used when the
+ * device font is missing: without it Chinese falls to Montserrat = blank. */
+#define CJK_FALLBACK_NAME   "u60-cjk-fallback.ttf"
 
 static const ui_theme_t k_light = {
     .bg = 0xeff3f7, .card = 0xffffff, .sep = 0xdee3e7,
@@ -80,6 +83,14 @@ int ui_fonts_load(void)
     /* lv_init() already ran lv_freetype_init (LV_USE_FREETYPE); a second call
      * only logs a warning, so there is none here. */
     lv_font_t *probe = ft(cj, 13, 0);
+    const char *cjk_src = "device";
+    static char fb[256];                 /* outlives this call: font objects may keep the path */
+    if (!probe) {
+        snprintf(fb, sizeof fb, "%s/%s", dir, CJK_FALLBACK_NAME);
+        probe = ft(fb, 13, 0);
+        if (probe) { cj = fb; cjk_src = "bundled"; }
+        else cjk_src = "montserrat";
+    }
     int ok = probe != NULL;
     const lv_font_t *m12 = &lv_font_montserrat_12, *m14 = &lv_font_montserrat_14,
                     *m16 = &lv_font_montserrat_16, *m20 = &lv_font_montserrat_20;
@@ -107,7 +118,8 @@ int ui_fonts_load(void)
     UF.n36 = num(dir, rob, 800, 36, UF.cj24b, &rb, &cf);
     UF.numerals = cf ? "cjk" : rb ? "roboto" : "nunito";
 
-    fprintf(stderr, "ui: fonts cjk=%s numerals=%s (dir %s)\n", ok ? "device" : "montserrat", UF.numerals, dir);
+    UF.cjk = cjk_src;
+    fprintf(stderr, "ui: fonts cjk=%s numerals=%s (dir %s)\n", cjk_src, UF.numerals, dir);
     fflush(stderr);
     return ok ? 0 : -1;
 }
