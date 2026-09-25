@@ -1,5 +1,7 @@
 # 自定义界面教程（写自己的 UI）
 
+> **适用范围：旧版 litehtml 渲染器**（`src/htmlmain.c`，`scripts/build.sh` 编，非默认构建）。默认构建是 LVGL 版（`src/ui.c`，底部 5 个标签「首页 · 蜂窝 · Wi-Fi · 出口 · 系统」），界面是原生 C 布局，不读 `ui/*.html`；设计规则见 manager 仓库 `docs/DESIGN.md` §4。
+
 `u60pro-devui` 的设计是：**程序固定，界面是数据**。二进制本身不内置任何画面，它在运行时去
 `/data/plugins/u60pro-devui/ui` 目录读取你写的 **HTML/CSS** 并渲染到屏幕。所以你想改界面，
 **完全不用重新编译**——改 HTML、推到设备、即时生效。

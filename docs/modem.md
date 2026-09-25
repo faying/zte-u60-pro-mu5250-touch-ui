@@ -1,5 +1,7 @@
 # Modem / 信令页
 
+> **适用范围：旧版 litehtml 渲染器**（`src/htmlmain.c`，`scripts/build.sh` 编，非默认构建）。默认构建是 LVGL 版（`src/ui.c`，底部 5 个标签「首页 · 蜂窝 · Wi-Fi · 出口 · 系统」），界面是原生 C 布局，不读 `ui/*.html`；设计规则见 manager 仓库 `docs/DESIGN.md` §4。
+
 这份文档只讲 `u60pro-devui` 里和 modem/信令第二页有关的页面行为。后端抓取、解码、回放和字段来源的主说明在配套 `zwrt-datad` 后端文档里。
 
 ## 范围

@@ -121,7 +121,9 @@ group=🚀 节点选择
 （含 `<head>`、状态栏、返回栏）。所以页面里**不要**写 `<style>`（会被丢弃，样式全失效）、
 不要写 `{{STATUSBAR}}`、也不要自己加返回栏（会出现两个）。样式一律进 `ui/style.css`。
 
-## 构建
+## 构建（litehtml 版）
+
+LVGL 版（默认构建）用 `make`，见 [README](../README.md#构建)。下面只适用于 litehtml 版。
 
 上游未钉 litehtml 版本，而 master 已把 `on_lbutton_down` 的第 5 个参数从
 `position::vector&` 改成 `std::function` 回调，直接用 master 会编译失败。
@@ -136,7 +138,7 @@ bash scripts/_build_litehtml.sh
 bash scripts/build.sh              # -> u60pro-devui.stripped
 ```
 
-## 部署
+## 部署（litehtml 版）
 
 ```sh
 adb push u60pro-devui.stripped /data/plugins/u60pro-devui/u60pro-devui

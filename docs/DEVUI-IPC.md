@@ -1,5 +1,8 @@
 # DevUI 内建外部画面接口（DEVUI-IPC）
 
+> **适用范围：旧版 litehtml 渲染器**（`src/htmlmain.c`，`scripts/build.sh` 编，非默认构建）。默认构建是 LVGL 版（`src/ui.c`，底部 5 个标签「首页 · 蜂窝 · Wi-Fi · 出口 · 系统」），界面是原生 C 布局，不读 `ui/*.html`；设计规则见 manager 仓库 `docs/DESIGN.md` §4。
+> 注意：`/tmp/u60-devui.sock` 只在 litehtml 版里实现，LVGL 版没有这条通道。
+
 `u60pro-devui` 在原有 `/data/plugins/u60pro-devui/ui/*.html` 页面流之外，内建了一条本地
 IPC 渲染通道：其他本机进程可以直接把像素帧、图片、绘图命令或纯文字提交给 DevUI，由
 DevUI 临时接管屏幕显示；外部画面结束后设备自动回到原本的 DevUI 页面流。

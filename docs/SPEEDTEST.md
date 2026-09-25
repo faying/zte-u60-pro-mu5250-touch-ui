@@ -1,5 +1,7 @@
 # Optional speedtest integration
 
+> LVGL 版的测速也用同一个可选后端（`src/speedtest.c`），入口在它自己的页面里。
+
 Documents the optional `better-speedtest` integration in `u60pro-devui`.
 
 ## Current model

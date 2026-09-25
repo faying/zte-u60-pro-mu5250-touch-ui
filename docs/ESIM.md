@@ -1,5 +1,7 @@
 # eSIM 切换页
 
+> 后端对接（`src/esim.c` 调 zte-agent `/api/esim/*`）两个版本共用；下文的 `{{ES_*}}` 令牌、`act:esim:*` 动作和 `ui/functions/esim.html` 只属于 litehtml 版。
+
 在 DevUI「更多功能」里加一个 eSIM 页：列出 SIM 槽里那张可插拔 eUICC 卡（eSTK.me / 5ber 这类）
 上的 profile，点两次切换。**只做切换**，下载、删除、改名都留给网页后台。
 

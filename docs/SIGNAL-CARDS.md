@@ -1,5 +1,7 @@
 # 信号卡片与锁屏预览
 
+> **适用范围：旧版 litehtml 渲染器**（`src/htmlmain.c`，`scripts/build.sh` 编，非默认构建）。默认构建是 LVGL 版（`src/ui.c`，底部 5 个标签「首页 · 蜂窝 · Wi-Fi · 出口 · 系统」），界面是原生 C 布局，不读 `ui/*.html`；设计规则见 manager 仓库 `docs/DESIGN.md` §4。
+
 收口 `u60pro-devui` 第一页信号卡片的当前行为。后端抓取、modem 解码、回放和 raw log 归
 `zwrt-datad` 维护；这里只记录 DevUI 如何消费已经归一化的值并渲染到屏幕。
 

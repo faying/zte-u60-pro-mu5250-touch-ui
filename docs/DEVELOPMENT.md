@@ -4,6 +4,8 @@
 
 > 当前正式命名与安装路径已经统一为：`zwrt-datad`、`/data/plugins/zwrt-datad/zwrt-datad`、`/data/plugins/u60pro-devui/`。下文历史章节里如果出现 `u60-datad` 或 `/data/u60pro`，表示当时版本记录，不再是当前安装规范。
 
+> **两套渲染器**：默认构建是 LVGL 版（`src/main.c` + `src/ui.c`，`make`，底部 5 个标签「首页 · 蜂窝 · Wi-Fi · 出口 · 系统」，界面是原生 C 布局）；下文「架构总览」「界面模型」「模板令牌」、顶层页清单、锁屏/短信/电源菜单等章节描述的是**旧版 litehtml 渲染器**（`src/htmlmain.c`，`scripts/build.sh`），代码仍在但不是默认构建。LVGL 版的字体见「字体（LVGL 版）」，设计规则见 manager 仓库 `docs/DESIGN.md` §4。
+
 ## 维护范围
 
 - 本文只保留公开可分享的架构、构建、硬件接口和 UI 行为说明。
@@ -21,7 +23,7 @@
 1. **UI 与后端解耦**：所有 ubus 访问集中在后端，UI 只读一个本机 HTTP/SSE 接口，便于审计、分享、独立重建。
 2. **程序与界面解耦**：二进制本身是固定的"框架"，**实际界面是 `/data/plugins/u60pro-devui/ui` 目录里的 HTML/CSS**。用户改界面只需要改 HTML，不必重新编译。开源发布时二进制保持不变，界面完全可由用户自定义。
 
-## 架构总览
+## 架构总览（litehtml 旧版）
 
 ```text
 ubus 服务 ──▶ zwrt-datad ──▶ HTTP /state + SSE /events ──▶ u60pro-devui ──▶ DRM framebuffer
@@ -281,7 +283,9 @@ adb shell "/etc/init.d/zte_topsw_devui stop; sleep 1; \
 /data/plugins/zwrt-datad/zwrt-datad       # 数据后端
 ```
 
-**当前稳定方案（2026-06-25 实机回归后确认）** 仍然是 **vendor 早期 bring-up + `rc.local` 晚接管**：
+**现行方案：屏幕归 u60-uid。** rc.local 里是 `/etc/init.d/u60-uid start`（`scripts/u60-uid.init`，源码 `src/uid.c`）。u60-uid 是触屏界面唯一的主人：拉起或接管界面、崩了自动拉起并记告警、连续 2 次没稳住就交还原厂界面、原厂界面在屏时长按右下角 3 秒回来（corner-wake 已退役）。它在启动时调一次 `start.sh prep` 只做开机杂务；`start.sh` 检测到 rc.local 里有 u60-uid 时不再自己起界面。契约见 manager 仓库 `docs/RELIABILITY.md`。
+
+下面是没装 u60-uid 时的回退方案（2026-06-25 实机回归确认）， **vendor 早期 bring-up + `rc.local` 晚接管**：
 
 ```sh
 [ -x /data/plugins/u60pro-devui/start.sh ] && sh /data/plugins/u60pro-devui/start.sh >/tmp/u60pro-boot.log 2>&1 & # u60pro_devui
@@ -314,7 +318,7 @@ procd -> zte_topsw_devui (早期屏幕/触摸 bring-up) -> rc.local -> /data/plu
 
 当前策略改为：
 
-- `start.sh legacy` 是**默认且稳定**的开机路径，会沿用 `nohup` 后台拉起 `zwrt-datad` + `u60pro-devui`。
+- 没装 u60-uid 时，`start.sh legacy` 是开机路径，会沿用 `nohup` 后台拉起 `zwrt-datad` + `u60pro-devui`。
 - `start.sh procd` 仍保留在脚本里，但仅供手动实验；**不要**把它当默认自启方案。
 - `u60pro-devui` 内部仍保留"外部供电 + 触控初始化失败 -> 强制切到全屏充电页"的兜底，避免误入普通页面。
 - `start.sh` 会把 `mode_main_state`、`reboot_reason_code`、`/proc/cmdline`、电源状态和输入设备枚举写进 `/data/plugins/u60pro-devui/boot-trace.log`，用于继续比对不同开机路径。
