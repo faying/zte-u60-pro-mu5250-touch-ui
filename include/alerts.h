@@ -28,6 +28,20 @@ int  alerts_unread(void);
 void alerts_get(int index, alert_item_t *out);
 const char *alerts_error(void);   /* "" = 正常 */
 
+/* 体检（/api/health，doctor.sh 的结果）里不正常的项：系统页「健康」写「N 项注意」
+ * 的就是这些，和告警的已读/未读是两回事，所以同一页里分开列（2026-09-25）。 */
+#define HEALTH_MAX 8
+typedef struct {
+    int  bad;           /* 1 = 异常，0 = 注意 */
+    char id[24];
+    char label[48];
+    char detail[320];
+} health_item_t;
+
+int  health_count(void);          /* 不正常的项数；-1 = 还没读到，-2 = 读过但没读到 */
+int  health_checked(void);        /* 正常的项数（读到了才有意义） */
+void health_get(int index, health_item_t *out);
+
 /* 全部标为已读（发给 agent，随后立即重读）。 */
 void alerts_mark_all_read(void);
 

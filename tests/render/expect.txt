@@ -4,49 +4,47 @@
 # The status bar and tab bar are collected with every page.
 # Changing a format on purpose: change it here in the same commit, and say why.
 *	home	首页
-*	home	图表
-*	home	功能
+*	home	蜂窝
+*	home	Wi-Fi
+*	home	出口
 *	home	系统
-*	charts	首页
-*	charts	图表
-*	charts	功能
-*	charts	系统
-*	func	首页
-*	func	图表
-*	func	功能
-*	func	系统
 *	system	首页
-*	system	图表
-*	system	功能
+*	system	蜂窝
+*	system	Wi-Fi
+*	system	出口
 *	system	系统
 !loading,datad-down	home	5G
 good	home	11:41
 good	home	↓12.3Mb ↑1.5Mb
 good	home	78
 good	home	中国电信
-good	home	QCI 9
-good	home	AMBR 1668/1008
-good	home	中国电信 · 4 NR 载波
-good	home	320
-good	home	MHz
+good	cellular	QCI 9
+good	cellular	AMBR 1668/1008
+good	home	中国电信 · 5G SA · 本地
+good	home	2 条载波聚合
+good	home	带宽充足
+good	home	n78 100M · n1 20M
 good	home	信号良好
+good	home	120 MHz
+good	home	MHz
+good	home	网络正常
 good	home	今日 2.4GB · 本月 59.5GB
 good	home	n78 100M
-good	home	ARFCN 627264
-good	home	PCI 603
+good	cellular	ARFCN 627264
+good	cellular	PCI 603
 good	home	RSRP
 good	home	SINR
 good	home	-87
 good	home	17.7
 good	home	n1
 good	home	20M
-good	home	ARFCN 426030
-good	home	PCI 615
-good	home	-95
+good	cellular	ARFCN 426030
+good	cellular	PCI 615
+good	cellular	-95
 good	home	9.5
-good	home	n41 100M
-good	home	未激活
-good	home	ARFCN 504990 · PCI 120
+good	cellular	n41 100M
+good	cellular	未激活
+good	cellular	ARFCN 504990 · PCI 120
 good	home	情景
 good	home	在家
 good	home	Wi-Fi 已关
@@ -56,51 +54,51 @@ good	home	100.64.0.7 · DERP hkg
 good	home	在线 3/5 · 直连 1 · 中继 1
 good	home	子网
 good	home	10.0.66.0/24
+good	exit	Tailscale
+good	exit	已连接 · 在线 3/5
 good	home	CHILL
-good	home	运行中
-good	home	代理 · TW 台湾 01
-good	home	代理 21 · 直连 16
-good	home	↓12.4G ↑1.1G
-good	home	规则 → 节点
-good	home	AI → 
-good	home	美国 01
-good	home	↓820M ↑95M
-good	home	节点选择 → 
-good	home	台湾 01
-good	home	↓640M ↑41M
-good	home	流媒体 → 
-good	home	苹果服务 → DIRECT
-good	home	漏网之鱼 → 
-good	home	↓1.2M/s ↑45K/s
+good	exit	运行中
+good	exit	代理 · TW 台湾 01
+good	exit	代理 21 · 直连 16
+good	exit	↓12.4G ↑1.1G
+good	exit	规则 → 节点
+good	exit	AI → 
+good	exit	美国 01
+good	exit	↓820M ↑95M
+good	exit	节点选择 → 
+good	exit	台湾 01
+good	exit	↓640M ↑41M
+good	exit	流媒体 → 
+good	exit	苹果服务 → DIRECT
+good	exit	漏网之鱼 → 
+good	exit	↓1.2M/s ↑45K/s
 abroad	home	国外
-*	charts	CPU
-*	charts	内存
-*	charts	网速
-*	charts	电池
-good	charts	15%
-good	charts	42°C
-good	charts	74%
-good	charts	1184M / 1590M
-good	charts	↓ 1.5 MB/s
-good	charts	↑ 183.6 KB/s
-good	charts	78%
-good	charts	放电中 · 33°C
-good	charts	近 5 分钟
-*	func	WiFi
-*	func	短信
-*	func	信令读取
-*	func	锁频
-*	func	测速
-*	func	CHILL
-*	func	eSIM
-*	func	性能测试
-good	func	U60-Test · 6 台
-good	func	3 条 · 2 未读
-good	func	WL_AND_5G
-good	func	↓ 812 · ↑ 96 Mbps
-good	func	运行中 · 代理
-good	func	中国联通 · 主号
-good	func	调试页
+*	system	CPU
+*	system	内存
+*	system	网速
+*	system	电池
+good	system	15%
+good	system	42°C
+good	system	74%
+good	system	1184M / 1590M
+good	home	↓ 1.5 MB/s
+good	home	↑ 183.6 KB/s
+good	system	78%
+good	system	放电中 · 33°C
+good	system	近 5 分钟
+*	cellular	短信
+*	cellular	小区信息
+*	cellular	锁频
+*	exit	测速
+*	exit	CHILL
+*	cellular	SIM 与 eSIM
+*	system	性能测试
+good	cellular	3 条 · 2 未读
+good	cellular	自动
+good	exit	↓ 812 · ↑ 96 Mbps
+good	exit	运行中 · 代理
+good	cellular	eSIM · 中国联通 · 主号
+good	system	调试页
 *	system	屏幕
 *	system	亮度
 *	system	自动息屏
@@ -172,13 +170,18 @@ good	sms-detail	10000
 good	sms-detail	09-24 09:12
 good	sms-detail	如需帮助请回复 CX。
 good	sms-detail	删除这条
-good	alerts	都已读
+good	alerts	告警记录 · 都已读
+good	alerts	体检
+good	alerts	短信告警
+good	alerts	没配置号码：后台挂了你不会知道
+full-charging	alerts	只剩 12 MB
+empty	alerts	27 项检查都正常
 good	alerts	Wi-Fi 看门狗重新打开了 Wi-Fi
 good	alerts	触屏界面闪退，已自动重新打开
 good	alerts	exit 139 (SIGSEGV)
 good	alerts	开机后1分
-empty	alerts	一切正常，没有告警
-*	cell	5G 服务小区
+empty	alerts	没有告警记录
+!lte	cell	5G 服务小区
 *	cell	频段
 *	cell	ARFCN
 *	cell	PCI
@@ -186,12 +189,13 @@ empty	alerts	一切正常，没有告警
 *	cell	PLMN
 *	cell	RSRP / RSRQ / SINR
 *	cell	LTE
+*	cell	EARFCN
+*	cell	RSSI
 *	cell	网络
-*	cell	选网方式
+*	cell	网络模式
 *	cell	WAN
 *	cell	制式
 *	cell	高铁模式
-*	cell	支持频段
 *	cell	邻小区
 good	cell	n78  100 MHz
 good	cell	627264
@@ -199,18 +203,27 @@ good	cell	603
 good	cell	23960174596
 good	cell	460-11 中国电信
 good	cell	-87 / -11 / 17.7
-good	cell	RSRP -106  RSRQ -17  SINR -4.0  RSSI -71
-good	cell	WL_AND_5G
+good	cell	LTE（现在不用，下面是测量值）
+good	cell	-106 / -17 / -4.0
+good	cell	-71
+lte	cell	LTE 服务小区
+lte	cell	B3  20 MHz
+lte	cell	1850
+lte	cell	120
+lte	cell	45678901
+lte	cell	5G（现在不用，下面是测量值）
+lte	cell	-98 / -10 / 14.5
+nsa	cell	LTE 服务小区
+nsa	cell	B3  20 MHz
+good	cell	自动
 good	cell	ipv4_ipv6_connected
 good	cell	关闭
-good	cell	n1 n28 n41 n78 n79
-good	cell	B1 B3 B5 B8 B34 B38 B39 B40 B41
-*	lock	选网方式
-*	lock	自动
-*	lock	5G SA
-*	lock	5G NSA
-*	lock	4G
-*	lock	切换会短暂断网，需要按两次确认
+*	cellular	网络模式
+*	cellular	自动
+*	cellular	5G NSA
+*	cellular	5G SA
+*	cellular	4G
+*	cellular	切换会短暂断网，需要按两次确认
 *	lock	5G SA 频段
 *	lock	5G NSA 频段
 *	lock	4G 频段
@@ -219,7 +232,7 @@ good	cell	B1 B3 B5 B8 B34 B38 B39 B40 B41
 good	lock	n78
 good	lock	n79
 good	lock	B41
-*	lock-mode-armed	再按一次确认切换
+*	lock-mode-armed	再按一次确认 · 国外和漫游卡常没有 SA
 *	system-vendor-armed	再按一次确认切换
 good	speed	网络测速
 good	speed	812.4
@@ -262,9 +275,20 @@ good	chill-pairs	↓2.1G ↑12M
 good	chill-pairs	Google → 
 good	chill-pairs	↓3M ↑1M
 good	esim	当前配置
+good	esim	使用中 · eSIM
+good	esim	卡信息
+good	esim	+8613800001234
+good	esim	460010123456789
+abroad	esim	使用中 · 实体 SIM 卡
+abroad	esim	8986110000000000077F
+abroad	esim	尾号 0077
+abroad	esim	号码没写在卡里
+abroad	esim	eSIM 配置（现在没在用）
+abroad	esim	已启用
+abroad	cellular	SIM 卡 · 
 good	esim	中国联通 · 主号
 good	esim	就绪
-good	esim	配置列表
+good	esim	eSIM 配置
 good	esim	ICCID 8986 0000 0000 0000 0001
 good	esim	使用中
 good	esim	Chunghwa Telecom
@@ -279,7 +303,15 @@ good	tailscale	DERP
 good	tailscale	hkg
 good	tailscale	子网路由
 good	tailscale	10.0.66.0/24
-good	tailscale	节点
+good	tailscale	节点（和本机之间）
+good	tailscale	fd7a:115c:a1e0::7
+good	tailscale	me@example.com
+good	tailscale	1.102.4 · linux
+good	tailscale	2027-03-01
+good	tailscale	直连 203.0.113.5:41641 · 握手 42 秒前
+good	tailscale	100.64.0.2 · macOS · ↓1.2GB ↑50MB
+good	tailscale	经 DERP hkg 中继 · 握手 1 分钟前
+good	tailscale	100.64.0.4 · linux · 出口节点
 good	tailscale	macbook-pro
 good	tailscale	100.64.0.2
 good	tailscale	直连
@@ -302,20 +334,134 @@ good	tailscale	old-ipad
 *	power-menu	取消
 empty	exit-menu	打开 CHILL
 weak	home	信号偏弱
-nosignal	home	没有信号
-nosignal	home	无服务
-nosignal	home	恢复默认配置
 nosim	home	没有 SIM 卡
 nosim	home	在「功能 → eSIM」启用
 loading	home	正在读取…
 datad-down	home	数据服务掉线 · 数字停在
-empty	home	需要登录
+empty	exit	需要登录
 empty	home	在管理网页打开登录链接
-empty	home	已关闭
+empty	exit	已关闭
 abroad	home	出口节点
 abroad	home	直连·AI 不动
 lowbat	home	电量低，尽快充电
-full-charging	charts	充电中
+full-charging	system	充电中
 !loading,datad-down	charts-collecting	正在收集 · 1 分钟后出现曲线
 empty	wifi	还没有设备连上
-empty	esim	还没有 eSIM 配置 · 用管理网页添加
+empty	esim	现在插的是普通 SIM 卡
+*	cellular	运营商选择
+good	exit	203.0.113.24
+good	exit	198.51.100.7
+good	exit	蜂窝直连
+good	exit	CHILL
+good	exit	中国 广东 深圳 · 电信
+good	exit	日本 东京都 · JP 03
+good	net	中国电信 46011
+good	net	本地
+good	net	自动
+good	net	中国联通
+good	net	46001 · 5G · 中国
+good	net	当前
+good	net	禁止
+good	net	搜索网络
+good	net	恢复自动
+abroad	exit	出口 IP
+abroad	exit	CHILL 直连
+abroad	net	中华电信（中国台湾）46692
+abroad	net	漫游中
+abroad	net	手动
+abroad	net	已注册到 46692
+weak	net	超时没注册上，已回到自动选网
+weak	exit	刷新失败
+datad-down	net	连不上管理后台
+loading	exit	查询中…
+good	scene	选择
+good	scene	自动
+good	scene	现在：在家
+good	scene	外出
+good	scene	其他情景都不符合时（默认）
+good	scene	附近有 Wi-Fi「My-Home-5G」「My-Home」时
+good	scene	关 Wi-Fi · 不休眠，Tailscale 一直连得上
+good	scene	按下面每个情景的条件自己切换
+good	scene	不碰蜂窝网络
+full-charging	scene	已固定
+full-charging	scene	点「自动」才恢复自动判断
+abroad	scene	CHILL 出口
+good	home	网络
+good	exit	203.0.113.24
+good	home	本地
+good	home	CHILL · 日本 东京都
+abroad	home	漫游中
+abroad	exit	中国台湾 台北市 · 中华电信
+abroad	home	CHILL 直连
+abroad	home	漫游中
+abroad	home	按漫游计费，注意流量用量
+good	home	U60-Test · 6 台
+weak	home	换个位置试试，靠窗通常更好
+datad-down	home	读不到数据
+nosignal	home	只能紧急呼叫
+nosignal	home	正在搜网
+nosignal	home	卡没注册上运营商
+nsa	home	中国电信 · 5G NSA · 本地
+nsa	home	4G 锚点 + 5G，3 条载波 · 带宽充足
+nsa	home	n78 100M · B3 20M · B1 20M
+lte	home	中国电信 · 4G LTE · 本地
+lte	home	单载波 · 带宽偏窄
+lte	home	B3 20M
+lte	home	制式被限定为只用 4G
+3g	home	只有 3G
+3g	home	这个制式没有载波聚合
+3g	home	中国电信 · 3G WCDMA · 本地
+3g	home	B1
+3g	home	RSSI -75 dBm
+nodata	home	没连上网
+nodata	home	已注册但数据没拨上
+weak	home	信号较差
+5ga	home	中国电信 · 5G SA · 本地
+5ga	home	3 条载波聚合 · 带宽很宽
+5ga	home	5G-A
+edge	home	只有 2G
+edge	home	只能打电话发短信
+edge	home	中国电信 · 2G EDGE · 本地
+edge	home	GSM 900
+nsa	home	5G
+good	cell	原厂扫描会断网且拿不到数据，已停用
+good	wifi	MacBook
+good	wifi	连上以来 ↓5.0GB ↑300MB
+good	wifi	5 GHz · ↓
+empty	wifi	还没有设备连上
+good	net-sc-already	现在已经是自动 · 按位置和 SIM 判断为「在家」
+good	net-sc-armed	再点一次确认
+good	net-sc-armed	切到「外出」：Wi-Fi 开着
+good	net-sc-pending	切换中…
+good	net-sc-pending	正在切换到「外出」…开关 Wi-Fi 要 10–30 秒
+good	net-auto-already	现在已经是自动选网，不用恢复
+good	esim-current	这张就是正在用的
+good	wifi	信号很好
+good	wifi	2.4 GHz · 速率稍后显示 · 信号一般
+*	exit	Tailscale
+*	cellular	蜂窝
+*	wifi	Wi-Fi
+*	exit	出口
+*	cellular	APN
+*	cellular	网络模式
+*	cellular	5G NSA
+*	cellular	运营商选择
+good	cellular	China Telecom · 自动
+good	cellular	未锁定
+*	apn	正在用
+*	apn	自动
+*	apn	新建或修改 APN
+good	apn	China Telecom
+good	apn	ctiot · IPv4v6 · 自动选择
+good	apn	CTNET
+good	apn	ctnet · IPv4v6
+abroad	apn	ctnet · IPv4v6 · 手动指定
+loading	apn	读取中…
+good	apn-already	现在已经是自动选择
+good	apn-armed	再点一次确认
+good	apn-armed	改用「CTNET」
+good	apn-pending	切换中…
+good	apn-pending	正在切换到「CTNET」
+good	exit	代理与测速
+nosim	esim	没插卡
+nosim	cellular	没插卡

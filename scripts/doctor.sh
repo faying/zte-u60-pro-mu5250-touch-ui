@@ -218,7 +218,12 @@ aps=$($PS 2>/dev/null | awk '/\/hostapd( |$)/ && !/awk/ {n++} END {print n+0}')
 if [ "$aps" -gt 0 ]; then
     report ok wifi "Wi-Fi" "在广播"
 else
-    report warn wifi "Wi-Fi" "没有在广播（在家情景下正常）"
+    # 情景有意关掉的（在家）不算问题：问后台当前情景是不是关 Wi-Fi 的那种
+    pub=$($WGET -q -T 3 -O - http://127.0.0.1:9090/api/public/status 2>/dev/null)
+    case "$pub" in
+        *'"wifi_off":true'*) report ok wifi "Wi-Fi" "当前情景关着 Wi-Fi（按设定）" ;;
+        *) report warn wifi "Wi-Fi" "没有在广播，当前情景也没要求关" ;;
+    esac
 fi
 
 # ── screen ──────────────────────────────────────────────────────────────────
@@ -254,7 +259,12 @@ fi
 
 recent=$(find "$CRASH" -name '*.log' -mtime -1 2>/dev/null | wc -l)
 if [ "$recent" -gt 0 ]; then
-    report warn crashes "崩溃记录" "最近 24 小时 $recent 份（$CRASH）"
+    # 每次崩溃都会记一条告警；告警都读过了，就只记一笔、不再算「注意」
+    if [ "$unread" -gt 0 ]; then
+        report warn crashes "崩溃记录" "最近 24 小时 $recent 份（$CRASH）"
+    else
+        report ok crashes "崩溃记录" "最近 24 小时 $recent 份，对应告警已读"
+    fi
 else
     report ok crashes "崩溃记录" "最近 24 小时没有"
 fi

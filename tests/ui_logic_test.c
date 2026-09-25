@@ -96,6 +96,12 @@ int main(void)
     char *av2[] = { "u60pro-devui", NULL };
     ui_launch_parse(1, av2, &L);
     CHECK("plain start: defaults", L.tab == -1 && L.scroll_y == 0 && !L.screen_off && L.autooff_ms == -1 && L.bright == -1 && L.hist.count == 0 && L.hist.first_s == 0);
+    char *avt4[] = { "x", "--tab=4", NULL };   /* 系统 is the 5th tab since 2026-09-25 */
+    ui_launch_parse(2, avt4, &L);
+    CHECK("tab 4 (系统) accepted", L.tab == 4);
+    char *avt5[] = { "x", "--tab=5", NULL };
+    ui_launch_parse(2, avt5, &L);
+    CHECK("tab 5 rejected", L.tab == -1);
     char *av3[] = { "x", "--tab=9", "--exec-n=abc", "--exec-first=-4", "--junk", "--bright=0", "--bright=999", "--scroll=-3", NULL };
     ui_launch_parse(8, av3, &L);
     CHECK("garbage ignored", L.tab == -1 && L.hist.count == 0 && L.hist.first_s == 0 && L.bright == -1 && L.scroll_y == 0);
@@ -238,6 +244,142 @@ int main(void)
         t += 10;   CHECK("…then normal", STEP(1, 0, 1, 50, 50) == UI_TG_FORWARD);
 #undef STEP
     }
+
+    puts("radio technology names");
+    {
+        char b[32];
+        CHECK("SA → 5G", !strcmp(ui_rat_short("SA"), "5G"));
+        CHECK("NSA → 5G, not cut to 3 chars", !strcmp(ui_rat_short("NSA"), "5G"));
+        CHECK("ENDC → 5G NSA", ui_rat("ENDC") == UI_RAT_5G_NSA);
+        CHECK("LTE → 4G", !strcmp(ui_rat_short("LTE"), "4G"));
+        CHECK("LTE-A → 4G", ui_rat("LTE-A") == UI_RAT_4G);
+        CHECK("HSPA+ → 3G", !strcmp(ui_rat_short("HSPA+"), "3G"));
+        CHECK("WCDMA → 3G", ui_rat("WCDMA") == UI_RAT_3G);
+        CHECK("EDGE → 2G", !strcmp(ui_rat_short("EDGE"), "2G"));
+        CHECK("GSM → 2G", ui_rat("GSM") == UI_RAT_2G);
+        CHECK("empty → empty", !strcmp(ui_rat_short(""), ""));
+        CHECK("LIMITED_SERVICE → nothing", !strcmp(ui_rat_short("LIMITED_SERVICE"), ""));
+        CHECK("UNREGISTERED is not NR", ui_rat("UNREGISTERED") == UI_RAT_NONE);
+        CHECK("LIMITED_SERVICE_SA is not 5G", ui_rat("LIMITED_SERVICE_SA") == UI_RAT_NONE);
+        CHECK("NR5G_SA → 5G SA", ui_rat("NR5G_SA") == UI_RAT_5G_SA);
+        ui_rat_long("NSA", b, sizeof b);   CHECK("long NSA", !strcmp(b, "5G NSA"));
+        ui_rat_long("SA", b, sizeof b);    CHECK("long SA", !strcmp(b, "5G SA"));
+        ui_rat_long("HSPA+", b, sizeof b); CHECK("long HSPA+", !strcmp(b, "3G HSPA+"));
+        ui_rat_long("EDGE", b, sizeof b);  CHECK("long EDGE", !strcmp(b, "2G EDGE"));
+        ui_rat_long("CDMA2000", b, sizeof b); CHECK("long CDMA2000", !strcmp(b, "3G CDMA2000"));
+        ui_rat_long("LIMITED_SERVICE", b, sizeof b); CHECK("long unknown → empty", b[0] == 0);
+        ui_rat_long("LTE", b, sizeof b);   CHECK("long LTE", !strcmp(b, "4G LTE"));
+        ui_rat_long("WCDMA", b, sizeof b); CHECK("long WCDMA", !strcmp(b, "3G WCDMA"));
+        ui_rat_long("GSM", b, sizeof b);   CHECK("long GSM", !strcmp(b, "2G GSM"));
+        ui_band_short("LTE BAND 3", 0, b, sizeof b);   CHECK("LTE BAND 3 → B3", !strcmp(b, "B3"));
+        ui_band_short("NR5G BAND 78", 1, b, sizeof b); CHECK("NR5G BAND 78 → n78", !strcmp(b, "n78"));
+        ui_band_short("n78", 1, b, sizeof b);          CHECK("n78 stays", !strcmp(b, "n78"));
+        ui_band_short("B41", 0, b, sizeof b);          CHECK("B41 stays", !strcmp(b, "B41"));
+        ui_band_short("", 0, b, sizeof b);             CHECK("empty → -", !strcmp(b, "-"));
+        ui_band_short("DCS", 0, b, sizeof b);          CHECK("no digits → raw", !strcmp(b, "DCS"));
+        ui_band_short("GSM 900", 0, b, sizeof b);      CHECK("GSM 900 is a frequency, kept", !strcmp(b, "GSM 900"));
+        ui_band_short("n261", 1, b, sizeof b);         CHECK("n261 is a band", !strcmp(b, "n261"));
+    }
+
+    puts("network story: every situation, in priority order");
+    {
+        ui_net_story_t o;
+        /* a good 5G SA baseline; each row changes what it says */
+        ui_net_in_t b = { .ever_valid = 1, .valid = 1, .sim_state = "sim ready", .net_type = "SA", .bars = 5,
+                          .data_up = 1, .roaming = 0, .n_active = 3, .nr_active = 3, .mhz = 220,
+                          .sinr_valid = 1, .sinr = 17.7, .rsrp_valid = 1, .rsrp = -87, .net_select = "WL_AND_5G" };
+        ui_net_in_t x;
+#define T_(desc, field_edits, head, tone_)                                         \
+        do { x = b; field_edits; ui_net_story(&x, &o);                            \
+             CHECK(desc, !strcmp(o.headline, head) && o.tone == (tone_)); } while (0)
+        T_("good SA", (void)0, "网络正常", UI_NET_OK);
+        ui_net_story(&b, &o);
+        CHECK("SA 3 NR = 5G-A", !strcmp(o.rat, "5G-A") && !strcmp(o.link, "3 条载波聚合 · 带宽很宽"));
+        CHECK("quality words", !strcmp(o.quality, "信号良好") && o.quality_tone == UI_NET_OK);
+        CHECK("no hint when fine", o.hint[0] == 0);
+        T_("loading", x.ever_valid = 0, "正在读取…", UI_NET_NEUTRAL);
+        T_("data service gone", x.valid = 0, "读不到数据", UI_NET_NEUTRAL);
+        T_("no SIM beats everything below", (x.sim_state = "sim absent", x.bars = 0), "无 SIM", UI_NET_BAD);
+        T_("airplane", (x.airplane = 1, x.bars = 0), "移动网络已关", UI_NET_NEUTRAL);
+        T_("limited service", (x.net_type = "LIMITED_SERVICE", x.bars = 0), "只能紧急呼叫", UI_NET_BAD);
+        T_("no service", (x.net_type = "", x.bars = 0), "无服务", UI_NET_BAD);
+        T_("registered, data down", x.data_up = 0, "没连上网", UI_NET_BAD);
+        x = b; x.data_up = 0; x.roaming = 1; ui_net_story(&x, &o);
+        CHECK("data down abroad mentions data roaming", strstr(o.hint, "数据漫游") != NULL);
+        T_("weak by bars", x.bars = 2, "信号偏弱", UI_NET_WARN);
+        T_("weak by SINR", x.sinr = -2.5, "信号偏弱", UI_NET_WARN);
+        T_("weak by RSRP", x.rsrp = -115, "信号偏弱", UI_NET_WARN);
+        T_("weak beats roaming", (x.bars = 1, x.roaming = 1), "信号偏弱", UI_NET_WARN);
+        T_("roaming", x.roaming = 1, "漫游中", UI_NET_WARN);
+        T_("3G", (x.net_type = "WCDMA", x.n_active = 0, x.sinr_valid = 0, x.rsrp_valid = 0), "只有 3G", UI_NET_WARN);
+        T_("2G", (x.net_type = "EDGE", x.n_active = 0, x.sinr_valid = 0, x.rsrp_valid = 0), "只有 2G", UI_NET_WARN);
+        x = b; x.net_type = "WCDMA"; x.n_active = 0; x.sinr_valid = x.rsrp_valid = 0; x.net_select = "Only_WCDMA";
+        ui_net_story(&x, &o);
+        CHECK("3G pinned says so", strstr(o.hint, "限定") != NULL && !strcmp(o.link, "这个制式没有载波聚合"));
+        x = b; x.net_type = "NSA"; x.n_active = 2; x.nr_active = 1; x.lte_active = 1; x.mhz = 120; ui_net_story(&x, &o);
+        CHECK("NSA words", !strcmp(o.headline, "网络正常") && !strcmp(o.rat, "5G") &&
+                           !strcmp(o.link, "4G 锚点 + 5G，2 条载波 · 带宽充足"));
+        x = b; x.net_type = "LTE"; x.n_active = 3; x.nr_active = 0; x.lte_active = 3; x.mhz = 60; ui_net_story(&x, &o);
+        CHECK("LTE CA words", !strcmp(o.rat, "4G+") && !strcmp(o.link, "3 条载波聚合 · 带宽一般"));
+        x = b; x.net_type = "LTE"; x.n_active = 1; x.nr_active = 0; x.lte_active = 1; x.mhz = 20; x.net_select = "Only_LTE"; ui_net_story(&x, &o);
+        CHECK("single LTE, pinned to 4G", !strcmp(o.rat, "4G") && !strcmp(o.link, "单载波 · 带宽偏窄") &&
+                                          strstr(o.hint, "只用 4G") != NULL && o.tone == UI_NET_OK);
+        x = b; x.net_type = "LTE"; x.n_active = 1; x.nr_active = 0; x.lte_active = 1; x.mhz = 0; ui_net_story(&x, &o);
+        CHECK("unknown width: no width word", !strcmp(o.link, "单载波"));
+        x = b; x.net_select = "TCHGWL_5G"; ui_net_story(&x, &o);
+        CHECK("TCHGWL_5G is not a pinned mode", o.hint[0] == 0 || strstr(o.hint, "只用") == NULL);
+        CHECK("net_select words", !strcmp(ui_net_select_word("TCHGWL_5G"), "自动") && !strcmp(ui_net_select_word("WL_AND_5G"), "自动") &&
+                                  !strcmp(ui_net_select_word("Only_5G"), "只用 5G SA") && !strcmp(ui_net_select_word("LTE_AND_5G"), "只用 5G NSA") &&
+                                  !strcmp(ui_net_select_word("Only_GSM_WCDMA"), "只用 3G 和 2G") && !strcmp(ui_net_select_word(""), "-") &&
+                                  !strcmp(ui_net_select_word("SOMETHING_NEW"), "SOMETHING_NEW"));
+        CHECK("auto values", ui_net_select_is_auto("TCHGWL_5G") && ui_net_select_is_auto("WL_AND_5G") && !ui_net_select_is_auto("Only_LTE") &&
+                             !ui_net_select_is_auto(NULL));
+        x = b; x.sinr = 25; ui_net_story(&x, &o);   CHECK("very good", !strcmp(o.quality, "信号很好"));
+        x = b; x.rsrp = -105; ui_net_story(&x, &o); CHECK("RSRP caps it at fair", !strcmp(o.quality, "信号一般"));
+        x = b; x.sinr = -3; ui_net_story(&x, &o);   CHECK("poor", !strcmp(o.quality, "信号较差") && o.quality_tone == UI_NET_BAD);
+#undef T_
+    }
+
+    puts("phone-style labels");
+    {
+        static const struct { const char *raw; int nr, lte; const char *want, *fam; } k[] = {
+            { "GSM", 0, 0, "2G", "GSM" },       { "GPRS", 0, 0, "2G", "GPRS" },
+            { "EDGE", 0, 0, "2G", "EDGE" },     { "CDMA", 0, 0, "2G", "CDMA 1X" },
+            { "1xRTT", 0, 0, "2G", "CDMA 1X" }, { "WCDMA", 0, 0, "3G", "WCDMA" },
+            { "UMTS", 0, 0, "3G", "WCDMA" },    { "HSPA", 0, 0, "3G", "HSPA" },
+            { "HSPA+", 0, 0, "3G+", "HSPA+" },  { "DC-HSPA+", 0, 0, "3G+", "HSPA+" },
+            { "TD-SCDMA", 0, 0, "3G", "TD-SCDMA" }, { "CDMA2000", 0, 0, "3G", "CDMA2000" },
+            { "EVDO", 0, 0, "3G", "CDMA2000" }, { "eHRPD", 0, 0, "3G", "CDMA2000" },
+            { "LTE", 0, 1, "4G", "LTE" },       { "TD-LTE", 0, 1, "4G", "LTE" },
+            { "FDD-LTE", 0, 1, "4G", "LTE" },   { "4G", 0, 1, "4G", "LTE" },
+            { "LTE", 0, 2, "4G+", "LTE" },      { "LTE-A", 0, 1, "4G+", "LTE" },
+            { "LTE_CA", 0, 1, "4G+", "LTE" },   { "4G+", 0, 1, "4G+", "LTE" },
+            { "SA", 1, 0, "5G", "NR" },         { "NSA", 1, 1, "5G", "NR" },
+            { "ENDC", 1, 2, "5G", "NR" },       { "SA", 2, 0, "5G+", "NR" },
+            { "NSA", 2, 1, "5G+", "NR" },       { "SA", 3, 0, "5G-A", "NR" },
+            { "5G-A", 1, 0, "5G-A", "NR" },     { "LIMITED_SERVICE", 0, 0, "", "" },
+            { "LIMITED_SERVICE_SA", 0, 0, "", "" },
+            { "", 0, 0, "", "" },
+        };
+        char b[16], d2[64];
+        for (size_t i = 0; i < sizeof k / sizeof *k; i++) {
+            ui_net_label(k[i].raw, k[i].nr, k[i].lte, b, sizeof b);
+            snprintf(d2, sizeof d2, "%s nr%d lte%d → %s / %s", k[i].raw, k[i].nr, k[i].lte, k[i].want, k[i].fam);
+            CHECK(d2, !strcmp(b, k[i].want) && !strcmp(ui_rat_family(k[i].raw), k[i].fam));
+        }
+    }
+
+    /* which card is in use */
+    CHECK("iccid: trailing F padding ignored", ui_iccid_same("8986000000000000012F", "8986000000000000012"));
+    CHECK("iccid: case-insensitive", ui_iccid_same("8986000000000000a12f", "8986000000000000A12"));
+    CHECK("iccid: different", !ui_iccid_same("8986000000000000012", "8986000000000000013"));
+    CHECK("iccid: empty never matches", !ui_iccid_same("", "") && !ui_iccid_same("FFFF", ""));
+    CHECK("sim: no card", ui_sim_kind("", "", "") == UI_SIM_NONE);
+    CHECK("sim: absent state, no iccid", ui_sim_kind("sim absent", "", "8986") == UI_SIM_NONE);
+    CHECK("sim: plain card (no eSIM list)", ui_sim_kind("sim ready", "8986000000000000012F", "") == UI_SIM_PLAIN);
+    CHECK("sim: plain card (eSIM profile is another)", ui_sim_kind("sim ready", "8986000000000000012F", "8944000000000000003") == UI_SIM_PLAIN);
+    CHECK("sim: eSIM profile in use", ui_sim_kind("sim ready", "8986000000000000012F", "8986000000000000012") == UI_SIM_ESIM);
+    CHECK("sim: iccid known, state not yet ready", ui_sim_kind("", "8986000000000000012", "") == UI_SIM_PLAIN);
 
     printf("passed %d, failed %d\n", pass, fail);
     return fail ? 1 : 0;

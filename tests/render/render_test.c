@@ -320,22 +320,30 @@ static void to_tab(int i)
     bench_gate();
     settle(1100);
 }
+static void click(lv_obj_t *o);
 static void to_sub(int id, int parent)
 {
-    to_tab(TAB_FUNC);
-    if (parent >= 0) { sub_open(parent); settle(200); sub_open_child(id, parent); }
+    to_tab(TAB_HOME);
+    if (id == SUB_ALERT_DETAIL) {
+        /* 详情的内容是点行时拷的：真的点一行（有体检项点体检，否则点第一条告警） */
+        sub_open(parent); settle(200);
+        click(health_count() > 0 ? s_hc_row[0] : s_al_row[0]);
+    }
+    else if (parent >= 0) { sub_open(parent); settle(200); sub_open_child(id, parent); }
     else sub_open(id);
     settle(1100);
 }
 
 static const struct { int id, parent; const char *name; } k_subs[] = {
-    { SUB_WIFI, -1, "wifi" }, { SUB_SMS, -1, "sms" }, { SUB_SMS_DETAIL, SUB_SMS, "sms-detail" },
+    { SUB_SMS, -1, "sms" }, { SUB_SMS_DETAIL, SUB_SMS, "sms-detail" },
     { SUB_CELL, -1, "cell" }, { SUB_LOCK, -1, "lock" }, { SUB_SPEED, -1, "speed" },
     { SUB_CHILL, -1, "chill" }, { SUB_CHILL_NODES, SUB_CHILL, "chill-nodes" },
     { SUB_CHILL_PAIRS, SUB_CHILL, "chill-pairs" }, { SUB_ESIM, -1, "esim" },
-    { SUB_TS, -1, "tailscale" }, { SUB_ALERTS, -1, "alerts" }, { SUB_PERF, -1, "perf" },
+    { SUB_TS, -1, "tailscale" }, { SUB_ALERTS, -1, "alerts" },
+    { SUB_ALERT_DETAIL, SUB_ALERTS, "alert-detail" }, { SUB_PERF, -1, "perf" },
+    { SUB_NET, -1, "net" }, { SUB_SCENE, -1, "scene" }, { SUB_APN, -1, "apn" },
 };
-static const char *const k_tabs[UI_TABS] = { "home", "charts", "func", "system" };
+static const char *const k_tabs[UI_TABS] = { "home", "cellular", "wifi", "exit", "system" };
 
 static void click(lv_obj_t *o) { if (o) lv_obj_send_event(o, LV_EVENT_CLICKED, NULL); }
 
@@ -343,6 +351,16 @@ static void tap_at(int x, int y)
 {
     s_fx = x; s_fy = y; s_fdown = 1;
     settle(100);
+    s_fdown = 0;
+    settle(200);
+}
+
+/* A finger drag from (x0, y) to (x1, y), in 5 moves. */
+static void swipe_at(int x0, int y, int x1)
+{
+    s_fx = x0; s_fy = y; s_fdown = 1;
+    settle(60);
+    for (int k = 1; k <= 5; k++) { s_fx = x0 + (x1 - x0) * k / 5; settle(40); }
     s_fdown = 0;
     settle(200);
 }
@@ -403,14 +421,14 @@ int main(int argc, char **argv)
     if (s_dark != !strcmp(s_theme, "dark")) bad("appearance=%s but dark=%d", s_theme, s_dark);
     settle(4000);
 
-    /* Right after a theme exec the 系统 page is up (--tab=3): a real tap on
+    /* Right after a theme exec the 系统 page is up (--tab=4): a real tap on
      * the other appearance must reach it (device bug 2026-09-24: taps on the
      * page went nowhere until a tab was tapped). */
     if (launched_tab == TAB_SYS) {
         int x, y, other = s_dark ? 0 : 1;
         centre(s_ap_btn[other], &x, &y);
         tap_at(x, y);
-        if (rt_exec_calls != 1) bad("after --tab=3 start, a tap on %s did not switch (exec calls %d)",
+        if (rt_exec_calls != 1) bad("after --tab=4 start, a tap on %s did not switch (exec calls %d)",
                                     other ? "深色" : "浅色", rt_exec_calls);
         else ok("");
         printf("[%s/%s] launched-tab: exec calls %d\n", s_scene_name, s_theme, rt_exec_calls);
@@ -418,9 +436,9 @@ int main(int argc, char **argv)
         return s_fail ? 1 : 0;
     }
 
-    /* 图表 first as it is at start (collecting), then with 5 minutes of history */
-    to_tab(TAB_CHART);
-    shoot_page("charts-collecting", s_tiles[TAB_CHART]);
+    /* 系统 (with the charts) first as it is at start (collecting), then with 5 minutes of history */
+    to_tab(TAB_SYS);
+    shoot_page("charts-collecting", s_tiles[TAB_SYS]);
     page_done("charts-collecting");
     settle(5 * 60 * 1000);
     for (int i = 0; i < UI_TABS; i++) {
@@ -459,11 +477,85 @@ int main(int argc, char **argv)
     page_done("system-vendor-armed");
     if (rt_system_calls && strstr(rt_system_last, "zte_topsw_devui")) bad("vendor switch ran on the first tap");
 
-    to_sub(SUB_LOCK, -1);
-    click(s_lk_mode_btn[1]);
+    to_tab(TAB_CELL);                            /* 网络模式在蜂窝标签上 */
+    click(s_lk_mode_btn[2]);                     /* 5G SA：带国外提醒 */
     settle(100);
-    shoot_page("lock-mode-armed", s_sub_page[SUB_LOCK]);
+    shoot_page("lock-mode-armed", s_tiles[TAB_CELL]);
     page_done("lock-mode-armed");
+
+    /* 情景：每一次点击都要当场看得见（2026-09-25） */
+    to_sub(SUB_SCENE, -1);
+    click(s_net_sc_row[0]);                      /* 已经生效的那个：说一句，不静默 */
+    settle(100);
+    shoot_page("net-sc-already", s_sub_page[SUB_SCENE]);
+    page_done("net-sc-already");
+    s_sc_flash.until = 0;
+    click(s_net_sc_row[2]);                      /* 第一下：整行变色 + 后果 */
+    settle(100);
+    shoot_page("net-sc-armed", s_sub_page[SUB_SCENE]);
+    page_done("net-sc-armed");
+    settle(500);
+    click(s_net_sc_row[2]);                      /* 第二下：切换中，直到真的变过去 */
+    settle(100);
+    shoot_page("net-sc-pending", s_sub_page[SUB_SCENE]);
+    page_done("net-sc-pending");
+    s_sc_pend = -1;
+    s_sc_flash.until = 0;
+    net_paint(1);
+    lv_obj_add_state(s_net_sc_row[3], LV_STATE_PRESSED);   /* 按下：行有底色 */
+    settle(40);
+    shoot_page("net-sc-pressed", s_sub_page[SUB_SCENE]);
+    page_done("net-sc-pressed");
+    lv_obj_remove_state(s_net_sc_row[3], LV_STATE_PRESSED);
+    net_clear_arms();
+    to_sub(SUB_NET, -1);
+    click(s_net_auto_btn);                       /* 已经是自动选网：说一句，不静默 */
+    settle(100);
+    shoot_page("net-auto-already", s_sub_page[SUB_NET]);
+    page_done("net-auto-already");
+    s_ms_flash.until = 0;
+
+    /* APN：点正在生效的说一句；点别的两下确认，切换中 */
+    if (rt_scene != RT_LOADING && rt_scene != RT_DATAD_DOWN && rt_scene != RT_EMPTY) {
+        to_sub(SUB_APN, -1);
+        click(s_apn_row[0]);
+        settle(100);
+        shoot_page("apn-already", s_sub_page[SUB_APN]);
+        page_done("apn-already");
+        s_apn_flash.until = 0;
+        int calls0 = rt_apn_calls, other = rt_scene == RT_ABROAD ? 0 : 1;
+        click(s_apn_row[other]);
+        settle(100);
+        if (rt_apn_calls != calls0) bad("APN switched on the first tap");
+        shoot_page("apn-armed", s_sub_page[SUB_APN]);
+        page_done("apn-armed");
+        settle(500);
+        click(s_apn_row[other]);
+        settle(100);
+        if (rt_apn_calls != calls0 + 1 || strcmp(rt_apn_last, other ? "manu1" : "auto"))
+            bad("APN second tap: calls %d id %s", rt_apn_calls - calls0, rt_apn_last);
+        else ok("");
+        shoot_page("apn-pending", s_sub_page[SUB_APN]);
+        page_done("apn-pending");
+        s_apn_pend = -1;
+        s_apn_arm_idx = -1;
+        s_apn_flash.until = 0;
+    }
+
+    /* 点正在用的那张：说一句，不静默（以前这一行点了连按下效果都没有） */
+    if (esim_profile_count() > 0) {
+        to_sub(SUB_ESIM, -1);
+        for (int k = 0; k < esim_profile_count(); k++) {
+            esim_profile_t ep;
+            esim_get_profile(k, &ep);
+            if (ep.enabled) { click(s_es_row[k]); break; }
+        }
+        settle(100);
+        shoot_page("esim-current", s_sub_page[SUB_ESIM]);
+        page_done("esim-current");
+        s_es_flash.until = 0;
+        s_es_dirty = 1;
+    }
 
     if (esim_profile_count() > 1) {
         to_sub(SUB_ESIM, -1);
@@ -516,6 +608,37 @@ int main(int argc, char **argv)
         if (rt_exec_calls != n0 + 1) bad("after waking, a tap on 深色 did not switch");
         else ok("");
         s_autooff_ms = 0;
+    }
+
+    /* 左边缘右滑 = 返回（放在息屏测试后面：真按下会刷新「最近有操作」）；起点压在一行会断网的选项上，这一行不能被点中 */
+    {
+        int x, y;
+        net_clear_arms();
+        s_sc_flash.until = 0;
+        to_sub(SUB_SCENE, -1);
+        centre(s_net_sc_row[2], &x, &y);
+        swipe_at(12, y, 130);
+        if (s_sub_cur != -1) bad("edge swipe on 情景 did not go back (sub %d)", s_sub_cur);
+        else if (s_net_arm_sc || s_sc_pend >= 0) bad("edge swipe also tapped the row under the finger");
+        else ok("");
+        to_sub(SUB_SCENE, -1);
+        if (lv_obj_is_visible(s_net_sc_row[2])) {   /* 没有情景的场景里这行不在 */
+            tap_at(12, y);                           /* 同一个点，普通点一下：这行确实在那里 */
+            if (!s_net_arm_sc) bad("tap at the swipe start point did not reach the row");
+            else ok("");
+        }
+        net_clear_arms();
+        to_sub(SUB_CHILL_NODES, SUB_CHILL);
+        swipe_at(8, 300, 120);
+        if (s_sub_cur != SUB_CHILL) bad("edge swipe on a child page: sub %d, want CHILL", s_sub_cur);
+        else ok("");
+        to_sub(SUB_SCENE, -1);
+        swipe_at(150, y, 290);                       /* 不是从边缘起：不返回 */
+        if (s_sub_cur != SUB_SCENE) bad("a swipe from mid-screen went back");
+        else ok("");
+        net_clear_arms();
+        s_sc_flash.until = 0;
+        sub_close();
     }
 
     /* ---- hashes ---- */

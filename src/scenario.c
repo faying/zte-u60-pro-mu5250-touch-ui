@@ -221,6 +221,12 @@ int scenario_chill_set(int on)
     return 1;
 }
 
+void scenario_kick(void)
+{
+    s_poll_ms = 0;
+    s_sig = 0;
+}
+
 void agent_health(agent_health_t *out)
 {
     long t = now_ms(), since = s_ok_ms ? s_ok_ms : s_first_ms;

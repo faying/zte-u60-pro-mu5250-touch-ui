@@ -18,6 +18,7 @@
 #include "esim.h"
 #include "speedtest.h"
 #include "alerts.h"
+#include "netinfo.h"
 #include "ui_logic.h"
 #include "ui_theme.h"
 #include "ui_exec.h"
@@ -41,12 +42,15 @@ extern unsigned long g_frame_count;   /* defined in main.c */
  * UI this device already runs (信号 / 图表 / 功能磁贴 / 系统 + 二级页). The
  * previous flat 6-tab layout had no room for 短信/CHILL/信令读取/锁频/测速 and
  * had invented a "网络" page that only duplicated Home's cellular card. */
-#define UI_TABS 4
-enum { TAB_HOME, TAB_CHART, TAB_FUNC, TAB_SYS };
-/* Subpages: reached from the 功能 tile wall, drawn over the tileview on the
+/* 2026-09-25 起按「我想做什么」分 5 个标签（docs/designs/touch-menu-tabs.md，
+ * 在 manager 仓库）：每个功能只有一个家。原「图表」并进系统，原「功能」磁贴墙
+ * 拆到蜂窝 / 出口 / 系统，Wi-Fi 页升为标签。 */
+#define UI_TABS 5
+enum { TAB_HOME, TAB_CELL, TAB_WIFI, TAB_EXIT, TAB_SYS };
+/* Subpages: opened from a tab's › rows, drawn over the tileview on the
  * active screen (so the shared top bar and tab bar, which live on
  * lv_layer_top(), still paint above them). */
-enum { SUB_WIFI, SUB_SMS, SUB_CELL, SUB_LOCK, SUB_SPEED, SUB_CHILL, SUB_ESIM, SUB_PERF,
+enum { SUB_SMS, SUB_CELL, SUB_LOCK, SUB_SPEED, SUB_CHILL, SUB_ESIM, SUB_PERF,
        SUB_TS,   /* not on the tile wall: opened by tapping the Home Tailscale card */
        /* Not on the tile wall either: opened by tapping a nav row on the CHILL
         * page itself (see sub_open_child()/s_sub_parent). Splitting these out
@@ -71,6 +75,14 @@ enum { SUB_WIFI, SUB_SMS, SUB_CELL, SUB_LOCK, SUB_SPEED, SUB_CHILL, SUB_ESIM, SU
        /* Not on the tile wall: opened from the status bar's alert dot or the
         * 系统 page's 健康 row. */
        SUB_ALERTS,
+       /* 网络：出口 IP/运营商/手动选网/邻区（netinfo.c）。放在最后，前面的
+        * 数组都按下标顺序填，插在中间会把磁贴名字整体错位。 */
+       SUB_NET,
+       /* 2026-09-25：情景单独一页（只管 Wi-Fi / CHILL / Tailscale，不碰蜂窝），
+        * APN 在蜂窝标签下 */
+       SUB_SCENE, SUB_APN,
+       /* 健康与告警里点一行：体检项或告警的全文（列表里只放得下一行） */
+       SUB_ALERT_DETAIL,
        SUB_N };
 
 /* ---- shared widget handles ---- */
@@ -84,10 +96,31 @@ typedef struct {
     lv_obj_t *sep;
 } home_ca_t;
 static home_ca_t s_ca[CA_SLOTS];
-static lv_obj_t *s_home_scroll, *s_cell_card, *s_cc_hint, *s_cc_tsep, *s_cc_tkey, *s_cc_traffic;
+static lv_obj_t *s_home_scroll, *s_cell_card, *s_cc_hint;
 static uk_hero_t s_cc_hero;
+/* 首页层级（2026-09-24 评审：Wi-Fi 用户视角 + 设计视角，用户选「结论优先 +
+ * 双磁贴」）：拿起设备先要知道「能不能上网、好不好、会不会多花钱」，所以
+ * 状态卡的大字是一句结论，不是聚合带宽；下面三行是 Wi-Fi 和设备数、流量、
+ * 载波摘要（聚合带宽降到这里，点它滚到载波明细）。情景和 CHILL 两块磁贴
+ * 并排，再下面是出口卡。载波明细、CHILL 明细（规则 → 节点）、Tailscale
+ * 明细都还在首页，往下滚就是，一样没删。 */
+typedef struct { lv_obj_t *box, *key, *val; } home_row_t;
+static home_row_t s_hr_wifi, s_hr_traf, s_hr_ca, s_hr_exit;
+static lv_obj_t *s_ch_net_card;                 /* 网速图（首页，原图表页第一张） */
+static lv_obj_t *s_cell_scroll, *s_cell_rest;  /* 蜂窝标签：载波卡在上，其余跟在下面 */
+static void cell_reflow(void);
+static lv_obj_t *s_hr_ca_link, *s_hr_ca_list;    /* 载波块：解读一行 + 每个在用载波 */
+static lv_obj_t *s_ca_card, *s_ca_qos;          /* 载波明细卡 */
+#define CA_CARD_TOP 34
+static lv_obj_t *s_ct_tile, *s_ct_state, *s_ct_rate, *s_ct_line;   /* CHILL 磁贴 */
+#define HOME_TILE_W 145
+#define HOME_TILE_H 92
 /* 情景 — zte-agent 情景引擎的当前判定，只读。 */
 #define SC_CARD_H 72
+/* 网络：注册运营商 + 漫游（datad）、出口 IP 和归属地（zte-agent 缓存）。
+ * 点开「情景 · 网络」页的网络部分。 */
+static lv_obj_t *s_nh_card, *s_nh_ip, *s_nh_geo, *s_nh_tsrow, *s_nh_tsval;
+static void nh_card_cb(lv_event_t *e);
 static lv_obj_t *s_sc_card, *s_sc_state, *s_sc_note;
 static int s_sc_force;          /* 情景卡片要按新状态重画 */
 /* 国外时点情景卡片弹出的「CHILL 出口」面板（见 build_exit_menu） */
@@ -112,9 +145,17 @@ static lv_obj_t *s_ch_cpu, *s_ch_mem, *s_ch_net, *s_ch_bat;
 static lv_chart_series_t *s_cs_cpu, *s_cs_mem, *s_cs_rx, *s_cs_tx, *s_cs_bat;
 static lv_obj_t *s_ch_net_dn, *s_ch_net_up, *s_ch_cpu_v, *s_ch_cpu_t, *s_ch_mem_v, *s_ch_mem_s,
                 *s_ch_bat_v, *s_ch_bat_s, *s_ch_wait[4];
-/* Function tile wall */
-static lv_obj_t *s_tile_sub[SUB_N];      /* per-tile status subtitle */
-static uk_tile_t s_tile[SUB_N];
+static lv_obj_t *s_net_scroll, *s_net_err;
+/* 网络各块挂在哪一页（build_sub_net 的注释） */
+enum { NH_SCENE, NH_EXIT, NH_OPER, NH_CELL, NH_WIFI, NH_N };
+static const int k_net_host[6] = { NH_SCENE, NH_EXIT, NH_OPER, NH_OPER, NH_CELL, NH_WIFI };
+static lv_obj_t *s_nh_scroll[NH_N];
+static int       s_nh_base[NH_N];              /* 那一页里网络部分从哪开始 */
+static void net_relayout(void);
+static lv_obj_t *s_exit_nav_sec, *s_exit_nav_card;
+
+/* 标签页上「›」行右边的状态字（原功能磁贴的副标题） */
+static lv_obj_t *s_tile_sub[SUB_N];
 /* CHILL — home card shows the real "规则 -> 节点" traffic breakdown directly
  * (top N pairs), not a one-line "X 等 N 个" summary with the actual numbers
  * hidden a scroll away on the detail page (2026-09-22 user feedback: the fix
@@ -174,12 +215,19 @@ static lv_obj_t *s_w_ssid, *s_w_pass, *s_w_enc, *s_w_state;
 static lv_obj_t *s_w_cli_card, *s_w_cli_n, *s_w_dhcp_card, *s_w_gw, *s_w_pool, *s_w_lease;
 static lv_obj_t *s_w_cli[WIFI_MAX_CLI], *s_w_cli_name[WIFI_MAX_CLI],
                 *s_w_cli_ip[WIFI_MAX_CLI], *s_w_cli_mac[WIFI_MAX_CLI];
+static lv_obj_t *s_w_cli_tot[8];   /* 连上以来的总流量（netinfo） */
 static lv_obj_t *s_w_sw[5], *s_w_sw_st[5], *s_w_scroll, *s_w_cli_sec, *s_w_dhcp_sec, *s_w_cli_empty;
 static lv_obj_t *s_w_cli_sep[WIFI_MAX_CLI];
 /* eSIM page */
 #define ESIM_MAX_ROWS 5   /* fits one screen without scrolling; backend caps at 16 */
 static lv_obj_t *s_es_cur, *s_es_state, *s_es_list_card, *s_es_empty, *s_es_row_sep[ESIM_MAX_ROWS];
 static uk_hero_t s_es_hero;
+/* 卡信息（实体 SIM 和 eSIM 都有）：号码 / ICCID / IMSI */
+static lv_obj_t *s_es_info[3], *s_es_list_sec;
+static struct {
+    ui_sim_kind_t kind;
+    char oper[48], iccid[24], imsi[20], msisdn[24];
+} s_sim;
 static lv_obj_t *s_es_row[ESIM_MAX_ROWS], *s_es_row_name[ESIM_MAX_ROWS],
                 *s_es_row_sub[ESIM_MAX_ROWS], *s_es_row_tag[ESIM_MAX_ROWS];
 /* System page */
@@ -192,10 +240,11 @@ static lv_obj_t *s_sy_dps_sw, *s_sy_dps_st;
 static lv_obj_t *s_sy_speedunit_sw, *s_sy_speedunit_st;
 /* Tailscale subpage */
 static lv_obj_t *s_tp_sep[TS_PEER_MAX];
-static lv_obj_t *s_tp_self[4], *s_tp_card, *s_tp_row[TS_PEER_MAX],
-                *s_tp_name[TS_PEER_MAX], *s_tp_ip[TS_PEER_MAX], *s_tp_tag[TS_PEER_MAX];
+#define TS_SELF_ROWS 8
+static lv_obj_t *s_tp_self[TS_SELF_ROWS], *s_tp_card, *s_tp_row[TS_PEER_MAX],
+                *s_tp_name[TS_PEER_MAX], *s_tp_ip[TS_PEER_MAX], *s_tp_tag[TS_PEER_MAX], *s_tp_link[TS_PEER_MAX];
 /* 信令读取 subpage */
-static lv_obj_t *s_sg_nr[6], *s_sg_lte, *s_sg_net[4], *s_sg_nrb, *s_sg_lteb;
+static lv_obj_t *s_sg_nr[6], *s_sg_lt[6], *s_sg_lte_sec, *s_sg_nr_sec, *s_sg_net[4], *s_sg_nrb, *s_sg_lteb;
 /* 锁频 subpage */
 #define BAND_MAX 28
 #define BG_SA 0
@@ -273,8 +322,12 @@ static lv_obj_t   *s_top_alert;   /* ▲ — badT: admin backend lost; warnT: un
 static int         s_alert_st;    /* 0 none, 1 unread, 2 agent lost */
 static uk_battery_t s_top_batt;
 static void statusbar_layout(const char *full, const char *shrt, const char *down, int pct, int chg, int alert, uint32_t alert_col);
+static char s_top_label[32];   /* 顶栏制式：信号卡算出来的 5G-A / 5G+ / 4G+ … */
 /* Alerts subpage */
-static lv_obj_t   *s_al_count, *s_al_allread_btn, *s_al_empty;
+static lv_obj_t   *s_al_count, *s_al_allread_btn, *s_al_empty, *s_al_body, *s_al_scroll;
+static lv_obj_t   *s_ald_title, *s_ald_meta, *s_ald_body, *s_ald_scroll;
+static lv_obj_t   *s_hc_card, *s_hc_row[HEALTH_MAX], *s_hc_mark[HEALTH_MAX], *s_hc_label[HEALTH_MAX],
+                  *s_hc_detail[HEALTH_MAX], *s_hc_none;
 static lv_obj_t   *s_al_row[ALERTS_MAX], *s_al_label[ALERTS_MAX], *s_al_time[ALERTS_MAX],
                   *s_al_text[ALERTS_MAX], *s_al_mark[ALERTS_MAX];
 
@@ -426,16 +479,8 @@ static int cur_tab(void)
     return 0;
 }
 
-/* The page's scroll body (uk_scroll), or NULL for a page that doesn't scroll. */
-static lv_obj_t *tab_scroller(int tab)
-{
-    lv_obj_t *t = s_tiles[tab];
-    for (uint32_t i = 0; t && i < lv_obj_get_child_count(t); i++) {
-        lv_obj_t *c = lv_obj_get_child(t, (int32_t)i);
-        if (lv_obj_has_flag(c, LV_OBJ_FLAG_SCROLLABLE)) return c;
-    }
-    return NULL;
-}
+static lv_obj_t *obj_scroller(lv_obj_t *t);
+static lv_obj_t *tab_scroller(int tab) { return obj_scroller(s_tiles[tab]); }
 
 /* Returns only if the exec failed (this process carries on unchanged). */
 static int theme_exec(int automatic)
@@ -698,10 +743,12 @@ static void sub_open(int id);
 static void sub_open_child(int id, int parent);
 static void sub_close(void);
 static void sub_back(void);
-static void tile_click_cb(lv_event_t *e);   /* also used by the Home Tailscale card */
+static void tile_click_cb(lv_event_t *e);   /* › rows and Home cards: open a subpage */
+static void tab_go_cb(lv_event_t *e);       /* Home summary rows: jump to a tab */
 static void chill_nav_cb(lv_event_t *e);    /* CHILL page's 策略组/节点/规则→节点 rows */
 static void open_alerts_cb(lv_event_t *e);  /* status-bar alert dot, 系统 page's 健康 row */
-static void sc_card_cb(lv_event_t *e);      /* Home 情景 card: abroad, opens the CHILL exit menu */
+static void sc_card_cb(lv_event_t *e);      /* Home 情景 card: opens the 情景 page */
+static void tab_go(int idx);
 static void bench_gate(void);
 static void update_tabs(void);
 
@@ -713,20 +760,27 @@ static void bench_gate(void)
     else                       lv_timer_pause(s_bench_timer);
 }
 
-static void sub_open(int id)
+/* The page's scroll body (uk_scroll), or NULL for a page that doesn't scroll. */
+static lv_obj_t *obj_scroller(lv_obj_t *t)
 {
+    for (uint32_t i = 0; t && i < lv_obj_get_child_count(t); i++) {
+        lv_obj_t *c = lv_obj_get_child(t, (int32_t)i);
+        if (lv_obj_has_flag(c, LV_OBJ_FLAG_SCROLLABLE)) return c;
+    }
+    return NULL;
+}
+
+/* Show a subpage as it was left (返回 from a child page lands here). */
+static void sub_show(int id)
+{
+    /* 标题 = 入口上的字。按下标写，插页不会错位。 */
     static const char *const k_sub_title[SUB_N] = {
-        "WiFi", "\xE7\x9F\xAD\xE4\xBF\xA1" /* 短信 */,
-        "\xE4\xBF\xA1\xE4\xBB\xA4\xE8\xAF\xBB\xE5\x8F\x96" /* 信令读取 */,
-        "\xE9\x94\x81\xE9\xA2\x91" /* 锁频 */,
-        "\xE6\xB5\x8B\xE9\x80\x9F" /* 测速 */,
-        "CHILL", "eSIM",
-        "\xE6\x80\xA7\xE8\x83\xBD\xE6\xB5\x8B\xE8\xAF\x95" /* 性能测试 */,
-        "Tailscale",
-        "\xE8\x8A\x82\xE7\x82\xB9" /* 节点 */,
-        "\xE8\xA7\x84\xE5\x88\x99 \xE2\x86\x92 \xE8\x8A\x82\xE7\x82\xB9" /* 规则 → 节点 */,
-        "短信详情",
-        "告警",
+        [SUB_SMS] = "短信", [SUB_CELL] = "小区信息", [SUB_LOCK] = "锁频",
+        [SUB_SPEED] = "测速", [SUB_CHILL] = "CHILL", [SUB_ESIM] = "SIM 与 eSIM",
+        [SUB_PERF] = "性能测试", [SUB_TS] = "Tailscale", [SUB_CHILL_NODES] = "节点",
+        [SUB_CHILL_PAIRS] = "规则 → 节点", [SUB_SMS_DETAIL] = "短信详情",
+        [SUB_ALERTS] = "健康与告警", [SUB_NET] = "运营商选择", [SUB_SCENE] = "情景", [SUB_APN] = "APN",
+        [SUB_ALERT_DETAIL] = "详情",
     };
     if (id < 0 || id >= SUB_N) return;
     for (int i = 0; i < SUB_N; i++)
@@ -741,6 +795,16 @@ static void sub_open(int id)
     s_sub_parent = -1;
     bench_gate();
     update_tabs();
+}
+
+/* Open a subpage fresh: always from its top (2026-09-25: a page reopened
+ * half-way down read as a different page). */
+static void sub_open(int id)
+{
+    if (id < 0 || id >= SUB_N) return;
+    sub_show(id);
+    lv_obj_t *sc = obj_scroller(s_sub_page[id]);
+    if (sc) lv_obj_scroll_to_y(sc, 0, LV_ANIM_OFF);
 }
 
 static void sub_close(void)
@@ -766,7 +830,7 @@ static void sub_open_child(int id, int parent)
  * closes the subpage layer entirely, same as before. */
 static void sub_back(void)
 {
-    if (s_sub_parent >= 0) sub_open(s_sub_parent);
+    if (s_sub_parent >= 0) sub_show(s_sub_parent);
     else                   sub_close();
 }
 static void sub_back_cb(lv_event_t *e) { LV_UNUSED(e); sub_back(); }
@@ -802,21 +866,139 @@ static int sub_visible(int id)
  * spectrum is currently aggregated, not which band the PCC happens to be. */
 static void home_reflow(void);
 
+#define NET_EXIT_ROW_H 50
+/* One 40 px row inside the status card; the box carries its labels so the
+ * whole row moves with one lv_obj_set_y. cb = tappable with a chevron. */
+static void home_row(home_row_t *r, lv_obj_t *c, const char *key, lv_event_cb_t cb, void *user)
+{
+    r->box = uk_box(c, 0, 0, UK_CARD_W, UK_ROW_H, T->card, 0);
+    lv_obj_set_style_bg_opa(r->box, LV_OPA_TRANSP, 0);
+    uk_sep(r->box, 0);
+    r->key = uk_label(r->box, UF.cj14, T->t2, UK_PAD, 11, key);
+    r->val = uk_label_r(r->box, UF.n15, T->t1, UK_CARD_W - UK_PAD - (cb ? 16 : 0), 10, "");
+    if (cb) {
+        uk_chevron(r->box, 0);
+        uk_tappable(r->box, cb, user);
+    }
+}
+
+/* 磁贴底部的说明：最多两行，放不下末尾「…」（节点名可以很长） */
+static lv_obj_t *home_tile_note(lv_obj_t *tile)
+{
+    lv_obj_t *l = uk_label_w(tile, UF.cj12, T->t2, 12, 52, HOME_TILE_W - 24, 1, "");
+    lv_obj_set_height(l, 34);
+    lv_label_set_long_mode(l, LV_LABEL_LONG_MODE_DOTS);
+    return l;
+}
+
+/* 「国家 省 市」只留国家和最后一段（城市）；两段以内原样 */
+static const char *geo_short(const char *geo, char *out, size_t n)
+{
+    const char *first_sp = strchr(geo, ' ');
+    const char *last_sp = strrchr(geo, ' ');
+    if (!first_sp || first_sp == last_sp) { snprintf(out, n, "%s", geo); return out; }
+    snprintf(out, n, "%.*s%s", (int)(first_sp - geo), geo, last_sp);
+    return out;
+}
+
+static int sim_usable_ui(const char *st) { return !st || !*st || strstr(st, "ready") != NULL; }
+
+
 static void build_home(lv_obj_t *t)
 {
     /* Worst case (5 active carriers, 5 CHILL pairs, 5 Tailscale rows) is
      * ~1010; the spacer is moved by home_reflow to the real height. */
     t = s_home_scroll = uk_scroll(t, 0, UI_VIEW_H, 1100);
 
-    /* signal card */
-    s_cell_card = uk_card(t, UK_MARGIN, 4, UK_CARD_W, UK_HERO_H + 40);
+    /* status card: the conclusion, then Wi-Fi · traffic · carrier summary */
+    s_cell_card = uk_card(t, UK_MARGIN, 4, UK_CARD_W, UK_HERO_H + 4 * UK_ROW_H);
     lv_obj_t *c = s_cell_card;
-    uk_hero(&s_cc_hero, c, UF.n32);
-    lv_label_set_text(s_cc_hero.unit, "MHz");
+    uk_hero(&s_cc_hero, c, UF.cj24b);
+    uk_show(s_cc_hero.unit, 0);
     s_cc_hint = uk_label_w(c, UF.cj13, T->t2, UK_PAD, UK_HERO_H + 10, UK_CARD_W - 2 * UK_PAD, 1, "");
+    /* 顶行（运营商 · 制式 · 本地/漫游）名字可能很长：限宽，末尾「…」 */
+    lv_obj_set_size(s_cc_hero.st, UK_CARD_W - 26 - UK_PAD, 18);
+    lv_label_set_long_mode(s_cc_hero.st, LV_LABEL_LONG_MODE_DOTS);
+    /* 摘要行（2026-09-25 按任务分标签）：蜂窝 / Wi-Fi / 出口 各一行，点了跳到
+     * 那个标签；流量只读，没有 ›、没有按下态。 */
+    home_row(&s_hr_ca, c, "蜂窝", tab_go_cb, (void *)(intptr_t)TAB_CELL);
+    home_row(&s_hr_wifi, c, "Wi-Fi", tab_go_cb, (void *)(intptr_t)TAB_WIFI);
+    home_row(&s_hr_exit, c, "出口", tab_go_cb, (void *)(intptr_t)TAB_EXIT);
+    home_row(&s_hr_traf, c, "流量", NULL, NULL);
+    /* 载波块：第一行「制式 · N 载波 · 总带宽」，下面逐个列在用的载波，
+     * 放不下就折行（NSA 的 LTE 锚点 + NR、4G 多载波聚合都要列得下）。 */
+    uk_text_color(s_hr_ca.val, T->t2);
+    s_hr_ca_link = uk_label_w(s_hr_ca.box, UF.cj14, T->t1, UK_PAD, 34, UK_CARD_W - 2 * UK_PAD - 16, 1, "");
+    s_hr_ca_list = uk_label_w(s_hr_ca.box, UF.n12, T->t3, UK_PAD, 56, UK_CARD_W - 2 * UK_PAD - 16, 1, "");
+    /* 第一次有数据之前也要排好（refresh_cb 之后按提示行重排） */
+    lv_obj_set_y(s_hr_ca.box, UK_HERO_H);
+    lv_obj_set_y(s_hr_wifi.box, UK_HERO_H + UK_ROW_H);
+    lv_obj_set_y(s_hr_exit.box, UK_HERO_H + 2 * UK_ROW_H);
+    lv_obj_set_y(s_hr_traf.box, UK_HERO_H + 3 * UK_ROW_H);
+    lv_label_set_text(s_hr_wifi.val, "—");
+    lv_label_set_text(s_hr_exit.val, "—");
+    lv_obj_set_width(s_hr_exit.val, 210);
+    lv_obj_set_style_text_align(s_hr_exit.val, LV_TEXT_ALIGN_RIGHT, 0);
+    lv_label_set_long_mode(s_hr_exit.val, LV_LABEL_LONG_MODE_DOTS);
+    lv_obj_set_style_text_font(s_hr_exit.val, UF.cj14, 0);
+    lv_obj_set_height(s_hr_exit.val, 20);    /* 一行：放不下末尾「…」，不折行 */
+    lv_obj_align(s_hr_exit.val, LV_ALIGN_TOP_RIGHT, -(UK_PAD + 16), 11);
+    lv_label_set_text(s_hr_traf.val, "—");
+    lv_label_set_text(s_hr_ca_link, "—");
+
+    /* 情景 | CHILL, side by side: the two things you change from here */
+    s_sc_card = uk_card(t, UK_MARGIN, 0, HOME_TILE_W, HOME_TILE_H);
+    uk_label(s_sc_card, UF.cj12, T->t3, 12, 10, "情景");
+    s_sc_state = uk_label_w(s_sc_card, UF.cj17b, T->t1, 12, 27, HOME_TILE_W - 24, 0, "");
+    s_sc_note = home_tile_note(s_sc_card);
+    uk_label_r(s_sc_card, UF.cj15, T->t3, HOME_TILE_W - 12, 6, "›");   /* 开页：有 ›（DESIGN.md §4 导航） */
+    uk_tappable(s_sc_card, sc_card_cb, NULL);
+    uk_show(s_sc_card, 0);
+    s_ct_tile = uk_card(t, UK_MARGIN + HOME_TILE_W + 10, 0, HOME_TILE_W, HOME_TILE_H);
+    uk_label(s_ct_tile, UF.cj12, T->t3, 12, 10, "CHILL");
+    s_ct_state = uk_label_r(s_ct_tile, UF.cj12, T->okT, HOME_TILE_W - 12, 10, "");
+    s_ct_rate = uk_label_w(s_ct_tile, UF.n15, T->t1, 12, 28, HOME_TILE_W - 24, 0, "");
+    s_ct_line = home_tile_note(s_ct_tile);
+    uk_tappable(s_ct_tile, tile_click_cb, (void *)(intptr_t)SUB_CHILL);
+    uk_show(s_ct_tile, 0);
+
+    /* 出口: the public IP and where it is; Tailscale's one-line summary */
+    s_nh_card = uk_card(t, UK_MARGIN, 0, UK_CARD_W, NET_EXIT_ROW_H);
+    {
+        lv_obj_t *r = uk_box(s_nh_card, 0, 0, UK_CARD_W, NET_EXIT_ROW_H, T->card, 0);
+        lv_obj_set_style_bg_opa(r, LV_OPA_TRANSP, 0);
+        uk_label(r, UF.cj14, T->t2, UK_PAD, 7, "出口");
+        s_nh_ip  = uk_label_r(r, UF.n15, T->t1, UK_CARD_W - UK_PAD - 16, 6, "");
+        s_nh_geo = uk_label_w(r, UF.cj12, T->t3, UK_PAD, 29, UK_CARD_W - 2 * UK_PAD - 16, 0, "");
+        uk_label_r(r, UF.cj15, T->t3, UK_CARD_W - UK_PAD, 14, "›");
+        uk_tappable(r, nh_card_cb, NULL);
+        r = s_nh_tsrow = uk_box(s_nh_card, 0, NET_EXIT_ROW_H, UK_CARD_W, UK_ROW_H, T->card, 0);
+        lv_obj_set_style_bg_opa(r, LV_OPA_TRANSP, 0);
+        uk_sep(r, 0);
+        uk_label(r, UF.cj14, T->t2, UK_PAD, 11, "Tailscale");
+        s_nh_tsval = uk_label_r(r, UF.n15, T->t1, UK_CARD_W - UK_PAD - 16, 10, "");
+        uk_chevron(r, 0);
+        uk_tappable(r, tile_click_cb, (void *)(intptr_t)SUB_TS);
+        uk_show(r, 0);
+    }
+
+    {
+        lv_obj_t *gone = lv_obj_create(t);
+        lv_obj_remove_style_all(gone);
+        lv_obj_add_flag(gone, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_parent(s_ct_tile, gone);
+        lv_obj_set_parent(s_nh_card, gone);
+    }
+
+    /* 载波明细: every carrier row (moved to the top of 蜂窝 by build_cellular) */
+    s_ca_card = uk_card(t, UK_MARGIN, 0, UK_CARD_W, CA_CARD_TOP + 40);
+    uk_show(s_ca_card, 0);
+    uk_label(s_ca_card, UF.cj12, T->t3, UK_PAD, 10, "载波");
+    s_ca_qos = uk_label_r(s_ca_card, UF.n12, T->t2, UK_CARD_W - UK_PAD, 9, "");
+    c = s_ca_card;
     for (int i = 0; i < CA_SLOTS; i++) {
         home_ca_t *k = &s_ca[i];
-        k->box = uk_box(c, 0, UK_HERO_H + i * 40, UK_CARD_W, 40, T->card, 0);
+        k->box = uk_box(c, 0, CA_CARD_TOP + i * 40, UK_CARD_W, 40, T->card, 0);
         lv_obj_set_style_bg_opa(k->box, LV_OPA_TRANSP, 0);
         k->sep = uk_sep(k->box, 0);
         k->band   = uk_label(k->box, UF.n17, T->t1, UK_PAD, 10, "");
@@ -832,19 +1014,7 @@ static void build_home(lv_obj_t *t)
         k->ina_info = uk_label_r(k->box, UF.n11, T->t3, UK_CARD_W - UK_PAD, 9, "");
         uk_show(k->box, 0);
     }
-    s_cc_tsep = uk_box(c, 0, UK_HERO_H, UK_CARD_W, 1, T->sep, 0);
-    s_cc_tkey = uk_label(c, UF.cj12, T->t3, UK_PAD, UK_HERO_H + 10, "流量");
-    s_cc_traffic = uk_label_r(c, UF.n12, T->t2, UK_CARD_W - UK_PAD, UK_HERO_H + 9, "");
 
-    /* 情景: answers "why is Wi-Fi off?". Abroad, a tap opens the CHILL exit
-     * sheet (sc_card_cb); otherwise its settings live in the admin web. */
-    s_sc_card = uk_card(t, UK_MARGIN, 200, UK_CARD_W, SC_CARD_H);
-    uk_label(s_sc_card, UF.cj12, T->t3, UK_PAD, 10, "情景");
-    s_sc_state = uk_label_w(s_sc_card, UF.cj17b, T->t1, UK_PAD, 27, UK_CARD_W - 2 * UK_PAD - 16, 0, "");
-    s_sc_note = uk_label_w(s_sc_card, UF.cj12, T->t2, UK_PAD, 50, UK_CARD_W - 2 * UK_PAD - 16, 0, "");
-    uk_chevron(s_sc_card, 16);
-    uk_tappable(s_sc_card, sc_card_cb, NULL);
-    uk_show(s_sc_card, 0);
 
     /* CHILL: status, live rate, exit · node · delay, connections, traffic,
      * and the real top rule → node pairs (one list keyed by the pair, so
@@ -876,9 +1046,10 @@ static void build_home(lv_obj_t *t)
     for (int i = 0; i < TS_HOME_ROWS; i++) {
         if (i) s_ts_sep[i] = uk_sep(s_ts_card, i * UK_ROW_H);
         s_ts_key[i] = uk_label(s_ts_card, UF.cj14, i ? T->t2 : T->t1, UK_PAD, i * UK_ROW_H + 11, ts_keys[i]);
-        s_ts_val[i] = uk_label_r(s_ts_card, i ? UF.n15 : UF.cj14, T->t1, UK_CARD_W - UK_PAD, i * UK_ROW_H + (i ? 10 : 11), "");
+        s_ts_val[i] = uk_label_r(s_ts_card, i ? UF.n15 : UF.cj14, T->t1, UK_CARD_W - UK_PAD - (i ? 0 : 16), i * UK_ROW_H + (i ? 10 : 11), "");
     }
     s_ts_dot = uk_dot(s_ts_card, 0, 17, 7, T->green);
+    uk_chevron(s_ts_card, 0);   /* 整张卡开 Tailscale 页 */
     uk_tappable(s_ts_card, tile_click_cb, (void *)(intptr_t)SUB_TS);
     uk_show(s_ts_card, 0);
     home_reflow();
@@ -891,14 +1062,27 @@ static int home_visible_h(lv_obj_t *o) { return lv_obj_has_flag(o, LV_OBJ_FLAG_H
 static void home_reflow(void)
 {
     int y = 4;
-    lv_obj_t *order[4] = { s_cell_card, s_sc_card, s_chill_card, s_ts_card };
-    for (int i = 0; i < 4; i++) {
-        int hgt = home_visible_h(order[i]);
-        if (hgt < 0) continue;
-        lv_obj_set_y(order[i], y);
-        y += hgt + UK_MARGIN;
+    lv_obj_set_y(s_cell_card, y);
+    y += home_visible_h(s_cell_card) + UK_MARGIN;
+    /* 情景：独立的一块，整行 */
+    if (home_visible_h(s_sc_card) >= 0) {
+        lv_obj_set_width(s_sc_card, UK_CARD_W);
+        lv_obj_set_y(s_sc_card, y);
+        y += HOME_TILE_H + UK_MARGIN;
+    }
+    /* Tailscale：2026-09-25 用户要回首页（离家时靠它连回来，一眼要看到） */
+    if (!lv_obj_has_flag(s_ts_card, LV_OBJ_FLAG_HIDDEN)) {
+        lv_obj_set_y(s_ts_card, y);
+        y += (int)lv_obj_get_style_height(s_ts_card, 0) + UK_MARGIN;
+    }
+    if (s_ch_net_card) {
+        lv_obj_set_y(s_ch_net_card, y);
+        y += (int)lv_obj_get_style_height(s_ch_net_card, 0) + UK_MARGIN;
     }
     uk_scroll_extent(s_home_scroll, y + UK_TAB_PAD);
+    /* 载波、CHILL、Tailscale 卡在别的标签上，显隐变了那边也要重排 */
+    cell_reflow();
+    net_relayout();
 }
 
 /* No snapshot from the data service. Before the first one: 「正在读取…」.
@@ -906,7 +1090,7 @@ static void home_reflow(void)
  * they stopped — a data-service outage is not "no signal". */
 static int  s_ever_valid;
 static long s_last_valid_wall;
-static int  s_cc_tone = -1, s_cc_words = -1;
+static int  s_cc_tone = -1;
 static void home_signal_down(void)
 {
     static char c_st[64];
@@ -915,8 +1099,6 @@ static void home_signal_down(void)
     if (!s_ever_valid) {
         set_label_fmt(s_cc_hero.st, c_st, sizeof c_st, "%s", "正在读取…");
         lv_label_set_text(s_cc_hero.big, "--");
-        uk_show(s_cc_hero.unit, 0);
-        s_cc_words = -1;
         lv_label_set_text(s_cc_hero.rtop, "");
         lv_label_set_text(s_cc_hero.r1, "");
         lv_label_set_text(s_cc_hero.r2, "");
@@ -928,13 +1110,23 @@ static void home_signal_down(void)
         if (localtime_r(&tt, &tm)) strftime(hm, sizeof hm, "%H:%M", &tm);
         set_label_fmt(s_cc_hero.st, c_st, sizeof c_st, "数据服务掉线 · 数字停在 %s", hm);
         lv_label_set_text(s_cc_hero.rtop, "");
+        lv_label_set_text(s_cc_hero.big, "读不到数据");
     }
     for (int i = 0; i < CA_SLOTS; i++) {
         uk_text_color(s_ca[i].band, T->t3);
         uk_text_color(s_ca[i].rsrp, T->t3);
         uk_text_color(s_ca[i].sinr, T->t3);
     }
-    uk_text_color(s_cc_traffic, T->t3);
+    /* 数字停住了：下面凡是跟着网络走的都调淡，别让人当成实时 */
+    uk_text_color(s_hr_wifi.val, T->t3);
+    uk_text_color(s_hr_traf.val, T->t3);
+    uk_text_color(s_hr_exit.val, T->t3);
+    uk_text_color(s_hr_ca.val, T->t3);
+    uk_text_color(s_hr_ca_list, T->t3);
+    uk_text_color(s_hr_ca_link, T->t3);
+    uk_text_color(s_cc_hero.r1, T->t3);
+    uk_text_color(s_nh_ip, T->t3);
+    uk_text_color(s_ct_rate, T->t3);
     home_reflow();
 }
 
@@ -1065,10 +1257,10 @@ static lv_obj_t *toggle_row(lv_obj_t *c, int y, const char *name, int first, lv_
 }
 
 #define WIFI_CLI_H 50
-static void build_sub_wifi(lv_obj_t *t)
+static void build_wifi(lv_obj_t *t)
 {
     int y = 4;
-    t = s_w_scroll = uk_scroll(t, 0, UI_SUB_VIEW, 1000);
+    t = s_w_scroll = uk_scroll(t, 0, UI_VIEW_H, 1000);
 
     uk_section(t, y, "热点"); y += 20;
     lv_obj_t *ap = uk_card(t, UK_MARGIN, y, UK_CARD_W, 3 * UK_ROW_H);
@@ -1096,8 +1288,9 @@ static void build_sub_wifi(lv_obj_t *t)
         lv_obj_set_style_bg_opa(s_w_cli[i], LV_OPA_TRANSP, 0);
         s_w_cli_sep[i] = i ? uk_sep(s_w_cli[i], 0) : NULL;
         s_w_cli_name[i] = uk_label_w(s_w_cli[i], UF.cj14, T->t1, UK_PAD, 8, 160, 0, "");
-        s_w_cli_mac[i] = uk_label(s_w_cli[i], UF.n11, T->t3, UK_PAD, 29, "");
-        s_w_cli_ip[i] = uk_label_r(s_w_cli[i], UF.n15, T->t1, UK_CARD_W - UK_PAD, 15, "");
+        s_w_cli_mac[i] = uk_label_w(s_w_cli[i], UF.cj12, T->t3, UK_PAD, 29, UK_CARD_W - 2 * UK_PAD, 0, "");
+        s_w_cli_ip[i] = uk_label_r(s_w_cli[i], UF.n15, T->t1, UK_CARD_W - UK_PAD, 7, "");
+        s_w_cli_tot[i] = uk_label(s_w_cli[i], UF.cj12, T->t3, UK_PAD, 47, "");
         uk_show(s_w_cli[i], 0);
     }
     y += WIFI_MAX_CLI * WIFI_CLI_H + 10;
@@ -1107,20 +1300,60 @@ static void build_sub_wifi(lv_obj_t *t)
     s_w_gw = uk_row(s_w_dhcp_card, 0, "网关", 1);
     s_w_pool = uk_row(s_w_dhcp_card, UK_ROW_H, "地址池", 0);
     s_w_lease = uk_row(s_w_dhcp_card, 2 * UK_ROW_H, "租期", 0);
+    s_nh_scroll[NH_WIFI] = t;
+    s_nh_base[NH_WIFI] = y + 3 * UK_ROW_H + 10;   /* 设备流量（build_sub_net）从这里起 */
     lv_obj_scroll_to_y(t, 0, LV_ANIM_OFF);
 }
 
 /* ---- eSIM subpage ---- */
+/* 一句几秒后消失的提示。点击的结果（「已经是…」「正忙」「没执行：…」）
+ * 在 eSIM 页写在右上状态行（150 宽，约 12 个字），要短
+ * 用它说出来，不静默忽略（2026-09-25）。 */
+typedef struct { char txt[140]; uint32_t col, until; } net_flash_t;
+
+static void net_flash(net_flash_t *f, uint32_t col, int ms, const char *fmt, ...)
+{
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(f->txt, sizeof f->txt, fmt, ap);
+    va_end(ap);
+    f->col = col;
+    f->until = lv_tick_get() + (uint32_t)ms;
+    if (!f->until) f->until = 1;
+}
+static int net_flash_on(const net_flash_t *f) { return f->until && (int32_t)(f->until - lv_tick_get()) > 0; }
+
+static net_flash_t s_es_flash;
+static int         s_es_dirty;     /* 点了一下：下一轮一定重画 eSIM 列表 */
+static void esim_paint(void);
+
 static void esim_row_cb(lv_event_t *e)
 {
     int idx = (int)(intptr_t)lv_event_get_user_data(e);
-    esim_select(idx);
+    int r = esim_select(idx);
+    switch (r) {
+    case ESIM_SEL_CURRENT:
+        net_flash(&s_es_flash, T->accT, 3000, "这张就是正在用的");
+        break;
+    case ESIM_SEL_BUSY:
+        net_flash(&s_es_flash, T->t2, 3000, "正在切换，等它做完");
+        break;
+    case ESIM_SEL_COOLDOWN:
+    case ESIM_SEL_FAIL:
+        net_flash(&s_es_flash, T->badT, 8000, "%s", esim_state());   /* 状态行本身就写着原因，标红 */
+        break;
+    default:   /* ARMED / STARTED：行本身会变色、写「再点一次确认」/「切换中…」 */
+        s_es_flash.until = 0;
+        break;
+    }
+    s_es_dirty = 1;
+    esim_paint();
 }
 
 #define ESIM_ROW_H 50
 static void build_sub_esim(lv_obj_t *t)
 {
-    t = uk_scroll(t, 0, UI_SUB_VIEW, 4 + 20 + UK_HERO_H + 10 + 20 + ESIM_MAX_ROWS * ESIM_ROW_H + 16);
+    t = uk_scroll(t, 0, UI_SUB_VIEW, 4 + 20 + UK_HERO_H + 10 + 20 + 3 * UK_ROW_H + 10 + 20 + ESIM_MAX_ROWS * ESIM_ROW_H + 16);
     uk_section(t, 4, "当前配置");
     lv_obj_t *cur = uk_card(t, UK_MARGIN, 24, UK_CARD_W, UK_HERO_H);
     uk_hero(&s_es_hero, cur, UF.cj22b);
@@ -1129,8 +1362,14 @@ static void build_sub_esim(lv_obj_t *t)
     s_es_state = s_es_hero.r2;
     lv_label_set_text(s_es_hero.st, "使用中");
 
+    /* 卡信息：实体 SIM 和 eSIM 都列（2026-09-25：插普通 SIM 时这页原来只有「-」） */
     int y = 24 + UK_HERO_H + 10;
-    uk_section(t, y, "配置列表");
+    uk_section(t, y, "卡信息");
+    lv_obj_t *info = uk_card(t, UK_MARGIN, y + 20, UK_CARD_W, 3 * UK_ROW_H);
+    static const char *const k_info[3] = { "号码", "ICCID", "IMSI" };
+    for (int i = 0; i < 3; i++) s_es_info[i] = uk_row(info, i * UK_ROW_H, k_info[i], i == 0);
+    y += 20 + 3 * UK_ROW_H + 10;
+    s_es_list_sec = uk_section(t, y, "eSIM 配置");
     s_es_list_card = uk_card(t, UK_MARGIN, y + 20, UK_CARD_W, ESIM_MAX_ROWS * ESIM_ROW_H);
     lv_obj_set_style_clip_corner(s_es_list_card, true, 0);
     s_es_empty = uk_label_w(s_es_list_card, UF.cj14, T->t3, UK_PAD, 11, UK_CARD_W - 2 * UK_PAD, 0, "读取中…");
@@ -1261,6 +1500,8 @@ static void appearance_btn_cb(lv_event_t *e)
     appearance_set(k_ap_val[(int)(intptr_t)lv_event_get_user_data(e)]);
 }
 
+static int build_charts(lv_obj_t *t, int y0);
+
 static void build_system(lv_obj_t *t)
 {
     static const char *const off_lbl[3] = { "常亮", "30秒", "2分钟" };
@@ -1300,6 +1541,9 @@ static void build_system(lv_obj_t *t)
     for (int i = 0; i < 5; i++) *load_val[i] = uk_row(c, i * UK_ROW_H, k_load_cap[i], i == 0);
     y += 5 * UK_ROW_H + 10;
 
+    uk_section(t, y, "近 5 分钟"); y += 20;
+    y += build_charts(t, y) + 10;
+
     uk_section(t, y, "设备"); y += 20;
     c = uk_card(t, UK_MARGIN, y, UK_CARD_W, 5 * UK_ROW_H);
     s_set_ver  = uk_row(c, 0, "版本", 1);
@@ -1325,6 +1569,13 @@ static void build_system(lv_obj_t *t)
     s_sy_speedunit_sw = uk_toggle(c, UK_CARD_W - UK_PAD, UK_ROW_H + 7, speedunit_cb, NULL);
     y += 2 * UK_ROW_H + 10;
 
+    uk_section(t, y, "调试"); y += 20;
+    c = uk_card(t, UK_MARGIN, y, UK_CARD_W, UK_ROW_H);
+    s_tile_sub[SUB_PERF] = uk_row_nav(c, 0, "性能测试", 1, tile_click_cb, (void *)(intptr_t)SUB_PERF);
+    lv_label_set_text(s_tile_sub[SUB_PERF], "调试页");
+    uk_text_color(s_tile_sub[SUB_PERF], T->t3);
+    y += UK_ROW_H + 10;
+
     uk_section(t, y, "系统"); y += 20;
     c = uk_card(t, UK_MARGIN, y, UK_CARD_W, 100);
     s_vendor_btn = uk_button(c, UK_PAD, 12, UK_CARD_W - 2 * UK_PAD, 40, "切换到原厂界面", UK_BTN_PLAIN,
@@ -1332,7 +1583,7 @@ static void build_system(lv_obj_t *t)
     uk_label_w(c, UF.cj12, T->t3, UK_PAD, 62, UK_CARD_W - 2 * UK_PAD, 1,
                "电源键：短按 亮屏/息屏  长按 电源菜单\n回到这里：长按屏幕右下角 3 秒");
     y += 100;
-    uk_scroll_extent(t, y + UK_TAB_PAD);
+    uk_scroll_extent(t, y + UK_TAB_PAD);   /* build_system: 屏幕 … 系统 */
     lv_obj_scroll_to_y(t, 0, LV_ANIM_OFF);
 }
 
@@ -1345,12 +1596,14 @@ static lv_obj_t *chart_wait(lv_obj_t *card, int x, int y)
     return uk_label(card, UF.cj12, T->t3, x, y, "正在收集 · 1 分钟后出现曲线");
 }
 
-static void build_charts(lv_obj_t *t)
+/* 原「图表」标签（2026-09-25 并进系统，放在电池与负载下面）。y0 = 第一张卡的
+ * 位置，返回占的高度。 */
+static int build_charts(lv_obj_t *t, int y0)
 {
-    t = uk_scroll(t, 0, UI_VIEW_H, 4 + 116 + 10 + 110 + 10 + 110 + UK_TAB_PAD);
     /* 网速: log scale (bytes/s spans five orders of magnitude here), two
      * lines told apart by colour and dash, legend in text colours. */
-    lv_obj_t *c = uk_card(t, UK_MARGIN, 4, UK_CARD_W, 116);
+    /* 网速这张在首页（2026-09-25），CPU / 内存 / 电池留在系统 */
+    lv_obj_t *c = s_ch_net_card = uk_card(s_home_scroll, UK_MARGIN, 0, UK_CARD_W, 116);
     uk_label(c, UF.cj12, T->t3, 12, 9, "网速 · 对数刻度");
     s_ch_net_up = uk_label_r(c, UF.n12, T->warnT, 288, 8, "");
     s_ch_net_dn = uk_label_r(c, UF.n12, T->accT, 200, 8, "");
@@ -1363,7 +1616,7 @@ static void build_charts(lv_obj_t *t)
     uk_label_r(c, UF.cj12, T->t3, 288, 94, "近 5 分钟");
     s_ch_wait[0] = chart_wait(c, 60, 52);
 
-    lv_obj_t *a = uk_card(t, UK_MARGIN, 130, 145, 110), *m = uk_card(t, UK_MARGIN + 155, 130, 145, 110);
+    lv_obj_t *a = uk_card(t, UK_MARGIN, y0, 145, 110), *m = uk_card(t, UK_MARGIN + 155, y0, 145, 110);
     uk_label(a, UF.cj12, T->t3, 12, 9, "CPU");
     s_ch_cpu_t = uk_label_r(a, UF.cj12, T->t2, 133, 9, "");
     s_ch_cpu_v = uk_label(a, UF.n20, T->t1, 12, 26, "");
@@ -1375,13 +1628,15 @@ static void build_charts(lv_obj_t *t)
     s_ch_mem = uk_chart(m, 12, 60, 121, 40, CHART_PTS, T->blue, 0, &s_cs_mem, NULL);
     s_ch_wait[2] = uk_label(m, UF.cj12, T->t3, 12, 72, "正在收集…");
 
-    lv_obj_t *b = uk_card(t, UK_MARGIN, 250, UK_CARD_W, 110);
+    lv_obj_t *b = uk_card(t, UK_MARGIN, y0 + 120, UK_CARD_W, 110);
     uk_label(b, UF.cj12, T->t3, 12, 9, "电池");
     s_ch_bat_s = uk_label_r(b, UF.cj12, T->t2, 288, 9, "");
     s_ch_bat_v = uk_label(b, UF.n20, T->t1, 12, 26, "");
     s_ch_bat = uk_chart(b, 12, 56, 276, 36, CHART_PTS, T->green, 0, &s_cs_bat, NULL);
     uk_label_r(b, UF.cj12, T->t3, 288, 92, "近 5 分钟");
     s_ch_wait[3] = chart_wait(b, 12, 66);
+    home_reflow();
+    return 120 + 110;
 }
 
 /* ---- perf test subpage ---- */
@@ -1490,24 +1745,127 @@ static void open_alerts_cb(lv_event_t *e)
     sub_open(SUB_ALERTS);
 }
 
+/* 页面上半是体检（doctor.sh）里不正常的项，下半是告警记录。系统页「健康」
+ * 行的「N 项注意」数的是体检，不是未读告警——以前这页只列告警，点进去全是
+ * 已读，看不出注意的是什么（2026-09-25）。 */
+#define HC_ROW_H 58
+#define HC_TOP 24
+#define AL_CHEV_W 16   /* 行尾「›」占的宽度 */
+
+/* 点开一行看全文：列表里体检说明、告警原文都只放得下一行（2026-09-25 用户：
+ * 「点进去看不了详情，只能看到预览」）。内容在点的那一刻拷下来。 */
+static void alert_detail_open(const char *title, const char *meta, const char *body)
+{
+    static char c_t[96], c_m[64], c_b[320];
+    set_label_fmt(s_ald_title, c_t, sizeof c_t, "%s", title);
+    set_label_fmt(s_ald_meta, c_m, sizeof c_m, "%s", meta);
+    set_label_fmt(s_ald_body, c_b, sizeof c_b, "%s", body[0] ? body : "（没有更多说明）");
+    lv_obj_scroll_to_y(s_ald_scroll, 0, LV_ANIM_OFF);
+    sub_open_child(SUB_ALERT_DETAIL, SUB_ALERTS);
+}
+
+static void hc_row_click_cb(lv_event_t *e)
+{
+    int idx = (int)(intptr_t)lv_event_get_user_data(e);
+    health_item_t h;
+    if (idx >= health_count()) return;
+    health_get(idx, &h);
+    alert_detail_open(h.label, h.bad ? "■ 体检：异常" : "▲ 体检：需要注意", h.detail);
+}
+
+static void al_row_click_cb(lv_event_t *e)
+{
+    int idx = (int)(intptr_t)lv_event_get_user_data(e);
+    alert_item_t a;
+    char meta[64];
+    if (idx >= alerts_count()) return;
+    alerts_get(idx, &a);
+    if (a.time > 0) {
+        /* Device clock = local wall time under TZ=UTC: localtime gives the right digits. */
+        time_t tt = (time_t)a.time;
+        struct tm tm;
+        localtime_r(&tt, &tm);
+        strftime(meta, sizeof meta, "告警 · %Y-%m-%d %H:%M:%S", &tm);
+    } else {
+        snprintf(meta, sizeof meta, "告警 · 开机后 %ld 分钟", a.uptime / 60);
+    }
+    alert_detail_open(a.label, meta, a.text);
+}
+
 static void build_sub_alerts(lv_obj_t *t)
 {
-    t = uk_scroll(t, 0, UI_SUB_VIEW, SMS_TOOLBAR_H + ALERTS_MAX * AL_ROW_H + 16);
+    t = s_al_scroll = uk_scroll(t, 0, UI_SUB_VIEW,
+                                HC_TOP + HEALTH_MAX * HC_ROW_H + 30 + SMS_TOOLBAR_H + ALERTS_MAX * AL_ROW_H + 16);
+    uk_section(t, 4, "体检");
+    s_hc_card = uk_card(t, UK_MARGIN, HC_TOP, UK_CARD_W, UK_ROW_H);
+    s_hc_none = uk_label_w(s_hc_card, UF.cj14, T->t2, UK_PAD, 11, UK_CARD_W - 2 * UK_PAD, 0, "读取中…");
+    for (int i = 0; i < HEALTH_MAX; i++) {
+        lv_obj_t *c = uk_box(s_hc_card, 0, i * HC_ROW_H, UK_CARD_W, HC_ROW_H, T->card, 0);
+        lv_obj_set_style_bg_opa(c, LV_OPA_TRANSP, 0);
+        uk_tappable(c, hc_row_click_cb, (void *)(intptr_t)i);
+        s_hc_row[i] = c;
+        if (i) uk_sep(c, 0);
+        s_hc_mark[i] = uk_label(c, UF.cj12, T->warnT, UK_PAD, 11, "▲");
+        s_hc_label[i] = uk_label_w(c, UF.cj14, T->t1, UK_PAD + 18, 9, UK_CARD_W - 2 * UK_PAD - 18 - AL_CHEV_W, 0, "");
+        s_hc_detail[i] = uk_label_w(c, UF.cj12, T->t2, UK_PAD + 18, 31, UK_CARD_W - 2 * UK_PAD - 18 - AL_CHEV_W, 0, "");
+        uk_label_r(c, UF.cj15, T->t3, UK_CARD_W - UK_PAD, 18, "›");
+        lv_obj_set_height(s_hc_detail[i], lv_font_get_line_height(UF.cj12));
+        lv_label_set_long_mode(s_hc_detail[i], LV_LABEL_LONG_MODE_DOTS);
+        uk_show(c, 0);
+    }
+    /* 告警记录：整块随体检的高度上下移 */
+    s_al_body = uk_box(t, 0, HC_TOP + UK_ROW_H + 10, UI_W, SMS_TOOLBAR_H + ALERTS_MAX * AL_ROW_H, T->bg, 0);
+    lv_obj_set_style_bg_opa(s_al_body, LV_OPA_TRANSP, 0);
+    t = s_al_body;
     list_toolbar(t, &s_al_count, &s_al_allread_btn, al_allread_cb);
     s_al_empty = uk_label_w(t, UF.cj14, T->t3, UK_MARGIN + 6, SMS_TOOLBAR_H + 4, UK_CARD_W - 12, 1, "");
     s_al_list = uk_card(t, UK_MARGIN, SMS_TOOLBAR_H, UK_CARD_W, ALERTS_MAX * AL_ROW_H);
     for (int i = 0; i < ALERTS_MAX; i++) {
         lv_obj_t *c = uk_box(s_al_list, 0, i * AL_ROW_H, UK_CARD_W, AL_ROW_H, T->card, 0);
         lv_obj_set_style_bg_opa(c, LV_OPA_TRANSP, 0);
+        uk_tappable(c, al_row_click_cb, (void *)(intptr_t)i);
         s_al_row[i] = c;
         if (i) uk_sep(c, 0);
         s_al_mark[i] = uk_label(c, UF.cj12, T->warnT, UK_PAD, 12, "▲");
-        s_al_label[i] = uk_label_w(c, UF.cj14, T->t1, UK_PAD + 18, 10, UK_CARD_W - 2 * UK_PAD - 18, 0, "");
-        s_al_time[i] = uk_label_r(c, UF.n12, T->t3, UK_CARD_W - UK_PAD, 36, "");
-        s_al_text[i] = uk_label_w(c, UF.n11, T->t3, UK_PAD + 18, 37, UK_CARD_W - 2 * UK_PAD - 18 - 90, 0, "");
+        s_al_label[i] = uk_label_w(c, UF.cj14, T->t1, UK_PAD + 18, 10, UK_CARD_W - 2 * UK_PAD - 18 - AL_CHEV_W, 0, "");
+        s_al_time[i] = uk_label_r(c, UF.n12, T->t3, UK_CARD_W - UK_PAD - AL_CHEV_W, 36, "");
+        s_al_text[i] = uk_label_w(c, UF.n11, T->t3, UK_PAD + 18, 37, UK_CARD_W - 2 * UK_PAD - 18 - 90 - AL_CHEV_W, 0, "");
+        lv_obj_set_height(s_al_text[i], lv_font_get_line_height(UF.n11));
+        lv_label_set_long_mode(s_al_text[i], LV_LABEL_LONG_MODE_DOTS);
+        uk_label_r(c, UF.cj15, T->t3, UK_CARD_W - UK_PAD, 20, "›");
         uk_show(c, 0);
     }
-    lv_obj_scroll_to_y(t, 0, LV_ANIM_OFF);
+    lv_obj_scroll_to_y(s_al_scroll, 0, LV_ANIM_OFF);
+}
+
+/* 同短信详情：一张卡，标题 + 类别/时间 + 全文 */
+static void build_sub_alert_detail(lv_obj_t *t)
+{
+    lv_obj_t *sc = lv_obj_create(t);
+    lv_obj_remove_style_all(sc);
+    lv_obj_set_size(sc, UI_W, UI_SUB_VIEW);
+    lv_obj_set_scroll_dir(sc, LV_DIR_VER);
+    lv_obj_set_scrollbar_mode(sc, LV_SCROLLBAR_MODE_ACTIVE);
+    lv_obj_set_flex_flow(sc, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(sc, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_top(sc, 4, 0);
+    lv_obj_set_style_pad_bottom(sc, 24, 0);
+    s_ald_scroll = sc;
+
+    lv_obj_t *c = uk_card(sc, 0, 0, UK_CARD_W, 10);
+    lv_obj_set_height(c, LV_SIZE_CONTENT);
+    lv_obj_set_style_pad_all(c, UK_PAD, 0);
+    lv_obj_set_style_pad_bottom(c, 18, 0);
+    lv_obj_set_flex_flow(c, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(c, 6, 0);
+    s_ald_title = uk_label(c, UF.cj17b, T->t1, 0, 0, "");
+    lv_obj_set_width(s_ald_title, lv_pct(100));
+    lv_label_set_long_mode(s_ald_title, LV_LABEL_LONG_MODE_WRAP);
+    s_ald_meta = uk_label(c, UF.cj13, T->t3, 0, 0, "");
+    s_ald_body = uk_label(c, UF.cj15, T->t1, 0, 0, "");
+    lv_obj_set_width(s_ald_body, lv_pct(100));
+    lv_obj_set_style_text_line_space(s_ald_body, 6, 0);
+    lv_label_set_long_mode(s_ald_body, LV_LABEL_LONG_MODE_WRAP);
 }
 
 static void build_sub_sms_detail(lv_obj_t *t)
@@ -1550,13 +1908,17 @@ static void chill_mode_cb(lv_event_t *e)
 static void chill_node_cb(lv_event_t *e)
 {
     int idx = (int)(intptr_t)lv_event_get_user_data(e);
-    chill_select_node(idx);
+    /* 对勾当场挪过去；mihomo 回来后下一轮刷新按真实结果画（没切成就挪回去） */
+    if (chill_select_node(idx))
+        for (int i = 0; i < CHILL_MAX_NODES; i++) uk_show(s_cp_node_ok[i], i == idx);
 }
 
 static void chill_group_cb(lv_event_t *e)
 {
     int idx = (int)(intptr_t)lv_event_get_user_data(e);
-    chill_select_group(idx);
+    /* 选中的分组当场高亮；节点列表等下一轮读到新组再画 */
+    if (chill_select_group(idx))
+        for (int i = 0; i < CHILL_MAX_GROUPS; i++) uk_chip_set(s_cp_grp_btn[i], s_cp_grp_lbl[i], i == idx);
 }
 
 static void chill_delay_cb(lv_event_t *e) { LV_UNUSED(e); chill_test_delay(); }
@@ -1683,12 +2045,12 @@ static void build_exit_menu(void)
     }
 }
 
+/* 情景卡：任何时候都能点，进「情景」页（手动固定情景；在国外时那里有
+ * 「CHILL 出口」一行，就是以前点卡片弹出的那个面板）。 */
 static void sc_card_cb(lv_event_t *e)
 {
     LV_UNUSED(e);
-    scenario_status_t sc;
-    scenario_get_status(&sc);
-    if (sc.abroad && sc.chill_on >= 0) exit_menu_set(1);
+    sub_open(SUB_SCENE);
 }
 
 /* CHILL 页总开关。agent 拒绝或连不上就把开关拨回去。 */
@@ -1820,28 +2182,47 @@ static void build_sub_chill_pairs(lv_obj_t *t)
     lv_obj_scroll_to_y(t, 0, LV_ANIM_OFF);
 }
 
-#define TS_PEER_H 50
+/* Tailscale 页（2026-09-25 加详）：本机一块，每台节点三行——名字和怎么连着、
+ * IP 和系统、跟本机之间的连接（直连地址或经哪个 DERP、上次握手、收发了多少）。 */
+#define TS_PEER_H 70
 static void build_sub_ts(lv_obj_t *t)
 {
-    t = uk_scroll(t, 0, UI_SUB_VIEW, 24 + 4 * UK_ROW_H + 10 + 20 + TS_PEER_MAX * TS_PEER_H + 16);
+    t = uk_scroll(t, 0, UI_SUB_VIEW, 24 + TS_SELF_ROWS * UK_ROW_H + 10 + 20 + TS_PEER_MAX * TS_PEER_H + 16);
     uk_section(t, 4, "本机");
-    lv_obj_t *self = uk_card(t, UK_MARGIN, 24, UK_CARD_W, 4 * UK_ROW_H);
-    static const char *const k_self_cap[4] = { "主机名", "IP", "DERP", "子网路由" };
-    for (int i = 0; i < 4; i++) s_tp_self[i] = uk_row(self, i * UK_ROW_H, k_self_cap[i], i == 0);
+    lv_obj_t *self = uk_card(t, UK_MARGIN, 24, UK_CARD_W, TS_SELF_ROWS * UK_ROW_H);
+    static const char *const k_self_cap[TS_SELF_ROWS] = {
+        "主机名", "IP", "IPv6", "DERP 中继", "子网路由", "Tailnet", "版本", "密钥到期" };
+    for (int i = 0; i < TS_SELF_ROWS; i++) s_tp_self[i] = uk_row(self, i * UK_ROW_H, k_self_cap[i], i == 0);
     lv_obj_set_style_text_font(s_tp_self[0], UF.cj14, 0);
-    int y = 24 + 4 * UK_ROW_H + 10;
-    uk_section(t, y, "节点");
+    lv_obj_set_style_text_font(s_tp_self[5], UF.cj14, 0);
+    lv_obj_set_style_text_font(s_tp_self[7], UF.cj14, 0);
+    int y = 24 + TS_SELF_ROWS * UK_ROW_H + 10;
+    uk_section(t, y, "节点（和本机之间）");
     s_tp_card = uk_card(t, UK_MARGIN, y + 20, UK_CARD_W, TS_PEER_MAX * TS_PEER_H);
     for (int i = 0; i < TS_PEER_MAX; i++) {
         s_tp_row[i] = uk_box(s_tp_card, 0, i * TS_PEER_H, UK_CARD_W, TS_PEER_H, T->card, 0);
         lv_obj_set_style_bg_opa(s_tp_row[i], LV_OPA_TRANSP, 0);
         s_tp_sep[i] = i ? uk_sep(s_tp_row[i], 0) : NULL;
-        s_tp_name[i] = uk_label_w(s_tp_row[i], UF.cj14, T->t1, UK_PAD, 8, 190, 0, "");
-        s_tp_ip[i] = uk_label(s_tp_row[i], UF.n11, T->t3, UK_PAD, 29, "");
-        s_tp_tag[i] = uk_label_r(s_tp_row[i], UF.cj13, T->t3, UK_CARD_W - UK_PAD, 16, "");
+        s_tp_name[i] = uk_label_w(s_tp_row[i], UF.cj14, T->t1, UK_PAD, 8, 170, 0, "");
+        lv_label_set_long_mode(s_tp_name[i], LV_LABEL_LONG_MODE_DOTS);
+        lv_obj_set_height(s_tp_name[i], lv_font_get_line_height(UF.cj14));
+        s_tp_ip[i] = uk_label(s_tp_row[i], UF.n11, T->t3, UK_PAD, 30, "");
+        s_tp_tag[i] = uk_label_r(s_tp_row[i], UF.cj13, T->t3, UK_CARD_W - UK_PAD, 9, "");
+        s_tp_link[i] = uk_label_w(s_tp_row[i], UF.cj12, T->t2, UK_PAD, 47, UK_CARD_W - 2 * UK_PAD, 0, "");
+        lv_label_set_long_mode(s_tp_link[i], LV_LABEL_LONG_MODE_DOTS);
+        lv_obj_set_height(s_tp_link[i], lv_font_get_line_height(UF.cj12));
         uk_show(s_tp_row[i], 0);
     }
     lv_obj_scroll_to_y(t, 0, LV_ANIM_OFF);
+}
+
+/* "42 秒前" / "5 分钟前" / "3 小时前" / "2 天前" */
+static void fmt_ago(char *out, size_t n, long s)
+{
+    if (s < 60)         snprintf(out, n, "%ld 秒前", s);
+    else if (s < 3600)  snprintf(out, n, "%ld 分钟前", s / 60);
+    else if (s < 86400) snprintf(out, n, "%ld 小时前", s / 3600);
+    else                snprintf(out, n, "%ld 天前", s / 86400);
 }
 
 static void build_sub_cell(lv_obj_t *t)
@@ -1849,39 +2230,39 @@ static void build_sub_cell(lv_obj_t *t)
     int y = 4;
     t = uk_scroll(t, 0, UI_SUB_VIEW, 1000);
 
-    uk_section(t, y, "5G 服务小区"); y += 20;
+    s_sg_nr_sec = uk_section(t, y, "5G 服务小区"); y += 20;
     lv_obj_t *nr = uk_card(t, UK_MARGIN, y, UK_CARD_W, 6 * UK_ROW_H);
     static const char *const k_nr_cap[6] = { "频段", "ARFCN", "PCI", "Cell ID", "PLMN", "RSRP / RSRQ / SINR" };
     for (int i = 0; i < 6; i++) s_sg_nr[i] = uk_row(nr, i * UK_ROW_H, k_nr_cap[i], i == 0);
     y += 6 * UK_ROW_H + 10;
 
-    uk_section(t, y, "LTE"); y += 20;
-    lv_obj_t *lte = uk_card(t, UK_MARGIN, y, UK_CARD_W, UK_ROW_H);
-    s_sg_lte = uk_label_w(lte, UF.n12, T->t1, UK_PAD, 12, UK_CARD_W - 2 * UK_PAD, 0, "");
-    y += UK_ROW_H + 10;
+    /* LTE 和 5G 一样逐行列（2026-09-25：原来挤成一行看不懂） */
+    s_sg_lte_sec = uk_section(t, y, "LTE 服务小区"); y += 20;
+    lv_obj_t *lte = uk_card(t, UK_MARGIN, y, UK_CARD_W, 6 * UK_ROW_H);
+    static const char *const k_lt_cap[6] = { "频段", "EARFCN", "PCI", "Cell ID", "RSRP / RSRQ / SINR", "RSSI" };
+    for (int i = 0; i < 6; i++) s_sg_lt[i] = uk_row(lte, i * UK_ROW_H, k_lt_cap[i], i == 0);
+    y += 6 * UK_ROW_H + 10;
 
     uk_section(t, y, "网络"); y += 20;
     lv_obj_t *net = uk_card(t, UK_MARGIN, y, UK_CARD_W, 4 * UK_ROW_H);
-    static const char *const k_net_cap[4] = { "选网方式", "WAN", "制式", "高铁模式" };
+    static const char *const k_net_cap[4] = { "网络模式", "WAN", "制式", "高铁模式" };
     for (int i = 0; i < 4; i++) s_sg_net[i] = uk_row(net, i * UK_ROW_H, k_net_cap[i], i == 0);
     lv_obj_set_style_text_font(s_sg_net[3], UF.cj14, 0);
     y += 4 * UK_ROW_H + 10;
 
-    uk_section(t, y, "支持频段"); y += 20;
-    lv_obj_t *cap = uk_card(t, UK_MARGIN, y, UK_CARD_W, 150);
-    uk_label(cap, UF.cj13, T->t2, UK_PAD, 11, "5G");
-    s_sg_nrb = uk_label_w(cap, UF.n12, T->t1, UK_PAD + 40, 11, UK_CARD_W - 2 * UK_PAD - 40, 1, "");
-    uk_sep(cap, 74);
-    uk_label(cap, UF.cj13, T->t2, UK_PAD, 85, "LTE");
-    s_sg_lteb = uk_label_w(cap, UF.n12, T->t1, UK_PAD + 40, 85, UK_CARD_W - 2 * UK_PAD - 40, 1, "");
-    y += 150 + 10;
+    /* 支持频段不在这页列（2026-09-25）：锁频页的频段按钮就是同一份清单。
+     * 标签还建着、挂在隐藏的父对象下，刷新代码不用改。 */
+    {
+        lv_obj_t *gone = lv_obj_create(t);
+        lv_obj_remove_style_all(gone);
+        lv_obj_add_flag(gone, LV_OBJ_FLAG_HIDDEN);
+        s_sg_nrb = uk_label(gone, UF.n12, T->t1, 0, 0, "");
+        s_sg_lteb = uk_label(gone, UF.n12, T->t1, 0, 0, "");
+    }
 
-    uk_section(t, y, "邻小区 / 调度明细"); y += 20;
-    lv_obj_t *note = uk_card(t, UK_MARGIN, y, UK_CARD_W, 70);
-    uk_label_w(note, UF.cj13, T->t2, UK_PAD, 12, UK_CARD_W - 2 * UK_PAD, 1,
-               "拿不到：本机的 zwrt-datad 没有 /modem/latest-signals 接口，MIMO/层数/RB/BLER 和邻小区列表都读不到。");
-    y += 70;
-    uk_scroll_extent(t, y + 16);
+    /* 邻小区一块由 build_sub_net 挂在这下面（net_reflow 定位置和滚动范围） */
+    s_nh_scroll[NH_CELL] = t;
+    s_nh_base[NH_CELL] = y;
     lv_obj_scroll_to_y(t, 0, LV_ANIM_OFF);
 }
 
@@ -1979,7 +2360,7 @@ static void band_apply_cb(lv_event_t *e)
 
 static void lk_mode_cb(lv_event_t *e)
 {
-    static const char *const k_mode_v[4] = { "WL_AND_5G", "Only_5G", "LTE_AND_5G", "Only_LTE" };
+    static const char *const k_mode_v[4] = { "WL_AND_5G", "LTE_AND_5G", "Only_5G", "Only_LTE" };
     int idx = (int)(intptr_t)lv_event_get_user_data(e);
     uint32_t now = lv_tick_get();
     char cmd[200];
@@ -1997,7 +2378,10 @@ static void lk_mode_cb(lv_event_t *e)
     }
     s_lk_mode_arm = now ? now : 1;
     s_lk_mode_pending = idx;
-    lv_label_set_text(s_lk_mode_lbl, "再按一次确认切换");
+    /* 5G SA only: many countries have no SA and roaming SIMs often can't use
+     * it; with no 2G to fall back on that is no signal at all. */
+    lv_label_set_text(s_lk_mode_lbl, idx == 2 ? "再按一次确认 · 国外和漫游卡常没有 SA"
+                                              : "再按一次确认切换");
     uk_seg_set(&s_lk_seg, -1);
     uk_seg_arm(&s_lk_seg, idx);
 }
@@ -2040,7 +2424,7 @@ static int band_group_layout(int gi)
 
 static void lock_reflow(void)
 {
-    int y = 4 + 20 + 84 + 10;
+    int y = 4;   /* 网络模式 2026-09-25 搬到蜂窝标签，这页只剩频段 */
     for (int gi = 0; gi < 3; gi++) {
         lv_obj_set_y(s_bg[gi].sec, y);
         lv_obj_set_y(s_bg[gi].card, y + 20);
@@ -2071,13 +2455,6 @@ static void band_group_build(lv_obj_t *t, int gi, const char *title, char prefix
 static void build_sub_lock(lv_obj_t *t)
 {
     t = s_lk_scroll = uk_scroll(t, 0, UI_SUB_VIEW, 1400);
-    uk_section(t, 4, "选网方式");
-    lv_obj_t *md = uk_card(t, UK_MARGIN, 24, UK_CARD_W, 84);
-    static const char *const k_mode_lab[4] = { "自动", "5G SA", "5G NSA", "4G" };
-    uk_seg(&s_lk_seg, md, UK_PAD, 12, UK_CARD_W - 2 * UK_PAD, k_mode_lab, 4, lk_mode_cb);
-    for (int i = 0; i < 4; i++) s_lk_mode_btn[i] = s_lk_seg.item[i];
-    s_lk_mode_lbl = uk_label_w(md, UF.cj12, T->t3, UK_PAD, 54, UK_CARD_W - 2 * UK_PAD, 0, "切换会短暂断网，需要按两次确认");
-
     band_group_build(t, BG_SA,  "5G SA 频段", 'n');
     band_group_build(t, BG_NSA, "5G NSA 频段", 'n');
     band_group_build(t, BG_LTE, "4G 频段", 'B');
@@ -2132,6 +2509,8 @@ static void speedtest_srv_cb(lv_event_t *e)
 {
     int idx = (int)(intptr_t)lv_event_get_user_data(e);
     speedtest_select_server(idx - 1);   /* row 0 = 自动 = index -1 */
+    for (int i = 0; i < ST_SRV_ROWS; i++)   /* 对勾当场挪过去，不等 1 秒的刷新 */
+        if (s_st_srv_ok[i]) uk_show(s_st_srv_ok[i], i == idx);
 }
 
 static void build_sub_speed(lv_obj_t *t)
@@ -2173,6 +2552,943 @@ static void build_sub_speed(lv_obj_t *t)
  * a generic 开发中 box. */
 
 /* ---- 功能 tile wall ---- */
+/* ---- 网络 subpage ----
+ * 出口 IP 和归属地、原始/注册运营商、漫游、手动选网、邻小区。数据全来自
+ * zte-agent 的 /api/netinfo（netinfo.c）；慢的事都在 agent 的后台线程里，
+ * 这里只发起动作再轮询。碰模组的动作（搜网、注册、恢复自动）和换情景都是
+ * 两步：点一下整行 / 按钮变色并写出后果，4 秒内再点才发。
+ *
+ * 每一次点击都要当场看得见（2026-09-25 用户：点了毫无反应）：
+ * - 按下：行有底色（uk_tappable）；
+ * - 第一下：当场重画，不等 1 秒的刷新；
+ * - 点了已经生效的选项：一句「已经是…」，不静默忽略；
+ * - 发出后：「切换中…」一直显示到真的变过去，或者超时说明原因；
+ * - 被拒：原因写在这张卡片里，不只写在页顶。 */
+#define NET_EXIT_H   50
+#define NET_STAT_H   48
+#define NET_OP_H     44
+#define NET_BTN_H    52
+#define NET_NBR_HDR  40
+#define NET_NBR_H    28
+#define NET_NOTE_H   64
+#define NET_CL_H     50
+static lv_obj_t *s_net_cl_state, *s_net_cl_row[NI_MAX_CLIENTS], *s_net_cl_name[NI_MAX_CLIENTS],
+                *s_net_cl_tot[NI_MAX_CLIENTS], *s_net_cl_sub[NI_MAX_CLIENTS];
+#define NET_SCENE_ROWS (1 + NI_MAX_SCENES + 1)   /* 自动 + 各情景 + CHILL 出口 */
+#define NET_SC_NOTE_H  44
+
+static lv_obj_t *s_net_sec[6], *s_net_card[6];
+static lv_obj_t *s_net_sc_row[NET_SCENE_ROWS], *s_net_sc_name[NET_SCENE_ROWS], *s_net_sc_tag[NET_SCENE_ROWS];
+static lv_obj_t *s_net_sc_note;
+static uint32_t  s_net_arm_sc;
+static int       s_net_arm_sc_idx = -1;        /* 0 = 自动，1.. = scenes[i-1] */
+static lv_obj_t *s_net_ex_row[2], *s_net_ex_key[2], *s_net_ex_ip[2], *s_net_ex_sub[2];
+static lv_obj_t *s_net_op[4];
+static lv_obj_t *s_net_status;
+static lv_obj_t *s_net_opr[NI_MAX_OPS], *s_net_opr_name[NI_MAX_OPS], *s_net_opr_det[NI_MAX_OPS], *s_net_opr_tag[NI_MAX_OPS];
+static lv_obj_t *s_net_btns, *s_net_scan_btn, *s_net_scan_lbl, *s_net_auto_btn, *s_net_auto_lbl;
+static lv_obj_t *s_net_nbr_state, *s_net_nbr_btn, *s_net_nbr_lbl, *s_net_nbr_row[NI_MAX_CELLS], *s_net_nbr_l[NI_MAX_CELLS], *s_net_nbr_r[NI_MAX_CELLS];
+static uint32_t  s_net_arm_scan, s_net_arm_auto, s_net_arm_op, s_net_arm_nbr;
+static int       s_net_arm_idx = -1;
+static int       s_net_painted_arm = -2;   /* 上次画的界面状态（待确认 / 切换中 / 提示），变了就重画 */
+static lv_obj_t *s_net_sc_mark[NET_SCENE_ROWS];  /* 单选圈：实心 = 现在生效的那个 */
+/* 每个情景下面两行小字：什么时候进入、进入后改什么（2026-09-25 用户：光有名字看不懂） */
+static lv_obj_t *s_net_sc_when[NET_SCENE_ROWS], *s_net_sc_does[NET_SCENE_ROWS];
+#define NET_SC_ROW3_H 70
+/* 情景切换：发出后等到真的切过去（或超时） */
+static int       s_sc_pend = -1;               /* 0 = 自动，1.. = scenes[i-1] */
+static uint32_t  s_sc_pend_at;
+static char      s_sc_pend_id[24], s_sc_pend_name[48];
+static int       s_sc_pend_wifi_off;
+#define SC_PEND_MS 45000
+/* 临时提示：情景卡片一条，手动选网卡片一条（类型在 eSIM 页前面） */
+static net_flash_t s_sc_flash, s_ms_flash;
+
+static void net_paint(int changed);
+
+static const char *net_scene_name(const netinfo_t *n, const char *id)
+{
+    for (int i = 0; i < n->nscenes; i++)
+        if (!strcmp(n->scenes[i].id, id)) return n->scenes[i].name[0] ? n->scenes[i].name : id;
+    return id;
+}
+
+static int net_armed(uint32_t at) { return at && lv_tick_get() - at < 4000; }
+static int net_confirm(uint32_t at) { uint32_t d = lv_tick_get() - at; return at && d > 300 && d < 4000; }
+
+static void net_clear_arms(void)
+{
+    s_net_arm_scan = s_net_arm_auto = s_net_arm_nbr = s_net_arm_op = s_net_arm_sc = 0;
+    s_net_arm_idx = s_net_arm_sc_idx = -1;
+}
+
+static int net_busy(const netinfo_t *n)
+{
+    return !strcmp(n->scan_state, "scanning") ||
+           !strcmp(n->guard_phase, "registering") || !strcmp(n->guard_phase, "reverting");
+}
+
+/* 发一个会碰模组的动作：先把「已发送」画出来再发（发的时候界面会停一下），
+ * 被拒就把原因写回这张卡片 */
+static void net_send(void (*fn)(void))
+{
+    net_flash(&s_ms_flash, T->t2, 2500, "已发送，等设备回应…");
+    net_paint(1);
+    lv_refr_now(NULL);
+    fn();
+    const char *err = netinfo_action_error();
+    if (err[0]) net_flash(&s_ms_flash, T->badT, 8000, "没执行：%s", err);
+    else netinfo_hurry(15);
+    net_paint(1);
+}
+
+static const char *net_busy_what(const netinfo_t *n)
+{
+    return !strcmp(n->scan_state, "scanning") ? "正在搜索网络" :
+           !strcmp(n->guard_phase, "reverting") ? "正在恢复自动选网" :
+           !strcmp(n->guard_phase, "registering") ? "正在注册" : "正在忙";
+}
+
+static void net_scan_cb(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    const netinfo_t *n = netinfo_get();
+    if (net_busy(n)) {
+        net_flash(&s_ms_flash, T->t2, 3000, "%s，等它做完再操作", net_busy_what(n));
+        net_paint(1);
+        return;
+    }
+    if (net_confirm(s_net_arm_scan)) { net_clear_arms(); net_send(netinfo_scan); return; }
+    net_clear_arms();
+    s_net_arm_scan = lv_tick_get();
+    net_paint(1);
+}
+
+static void net_auto_cb(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    const netinfo_t *n = netinfo_get();
+    if (net_busy(n)) {
+        net_flash(&s_ms_flash, T->t2, 3000, "%s，等它做完再操作", net_busy_what(n));
+        net_paint(1);
+        return;
+    }
+    if (!strcmp(n->selection, "auto")) {
+        net_clear_arms();
+        net_flash(&s_ms_flash, T->t2, 3000, "现在已经是自动选网，不用恢复");
+        net_paint(1);
+        return;
+    }
+    if (net_confirm(s_net_arm_auto)) { net_clear_arms(); net_send(netinfo_auto); return; }
+    net_clear_arms();
+    s_net_arm_auto = lv_tick_get();
+    net_paint(1);
+}
+
+static int s_net_reg_op;
+static void net_register_armed(void) { netinfo_register(s_net_reg_op); }
+
+static void net_op_cb(lv_event_t *e)
+{
+    int i = (int)(intptr_t)lv_event_get_user_data(e);
+    const netinfo_t *n = netinfo_get();
+    if (net_busy(n)) {
+        net_flash(&s_ms_flash, T->t2, 3000, "%s，等它做完再操作", net_busy_what(n));
+        net_paint(1);
+        return;
+    }
+    if (i >= n->nops) return;
+    if (!strcmp(n->ops[i].status, "2")) {
+        net_clear_arms();
+        net_flash(&s_ms_flash, T->t2, 3000, "现在就在 %s 上", n->ops[i].name[0] ? n->ops[i].name : n->ops[i].plmn);
+        net_paint(1);
+        return;
+    }
+    if (s_net_arm_idx == i && net_confirm(s_net_arm_op)) {
+        net_clear_arms();
+        s_net_reg_op = i;
+        net_send(net_register_armed);
+        return;
+    }
+    net_clear_arms();
+    s_net_arm_idx = i;
+    s_net_arm_op = lv_tick_get();
+    net_paint(1);
+}
+
+static void net_nbr_cb(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    if (!strcmp(netinfo_get()->nbr_state, "scanning")) return;
+    if (net_confirm(s_net_arm_nbr)) { net_clear_arms(); net_send(netinfo_nbr_scan); return; }
+    net_clear_arms();
+    s_net_arm_nbr = lv_tick_get();
+    net_paint(1);
+}
+
+/* 情景行：0 = 自动，1..n = 固定到 scenes[i-1]，最后一行 = CHILL 出口。
+ * 换情景可能开关 Wi-Fi，所以两步：第一下整行变色、写出后果，4 秒内再点才发；
+ * 发出后显示「切换中…」直到真的切过去。 */
+static void net_sc_cb(lv_event_t *e)
+{
+    int i = (int)(intptr_t)lv_event_get_user_data(e);
+    const netinfo_t *n = netinfo_get();
+    if (i == NET_SCENE_ROWS - 1) { exit_menu_set(1); return; }
+    if (i > n->nscenes) return;
+    if (s_sc_pend >= 0) {
+        net_flash(&s_sc_flash, T->t2, 3000, "正在切换到「%s」，稍等", s_sc_pend_name);
+        net_paint(1);
+        return;
+    }
+    int already = i == 0 ? !n->scene_pin[0] : !strcmp(n->scene_pin, n->scenes[i - 1].id);
+    if (already) {
+        net_clear_arms();
+        if (i == 0)
+            net_flash(&s_sc_flash, T->t2, 4000, "现在已经是自动 · 按位置和 SIM 判断为「%s」",
+                      n->scene_current[0] ? net_scene_name(n, n->scene_current) : "判定中");
+        else
+            net_flash(&s_sc_flash, T->t2, 4000, "已经固定在「%s」。要恢复自动判断，点「自动」",
+                      net_scene_name(n, n->scene_pin));
+        net_paint(1);
+        return;
+    }
+    if (s_net_arm_sc_idx == i && net_confirm(s_net_arm_sc)) {
+        net_clear_arms();
+        s_sc_pend = i;
+        s_sc_pend_at = lv_tick_get();
+        snprintf(s_sc_pend_id, sizeof s_sc_pend_id, "%s", i ? n->scenes[i - 1].id : "");
+        snprintf(s_sc_pend_name, sizeof s_sc_pend_name, "%s", i ? net_scene_name(n, n->scenes[i - 1].id) : "自动");
+        s_sc_pend_wifi_off = i ? n->scenes[i - 1].wifi_off : 0;
+        s_sc_flash.until = 0;
+        net_paint(1);
+        lv_refr_now(NULL);
+        netinfo_pin(i == 0 ? NULL : n->scenes[i - 1].id);
+        const char *err = netinfo_action_error();
+        if (err[0]) {
+            s_sc_pend = -1;
+            net_flash(&s_sc_flash, T->badT, 8000, "没切成：%s", err);
+        } else {
+            scenario_kick();
+            netinfo_hurry(SC_PEND_MS / 1000);
+        }
+        net_paint(1);
+        return;
+    }
+    net_clear_arms();
+    s_net_arm_sc_idx = i;
+    s_net_arm_sc = lv_tick_get();
+    net_paint(1);
+}
+
+static void net_reflow(int err_h, int scene_rows, int exits, int ops, int cells);
+
+/* 原「情景 · 网络」页的六块，2026-09-25 起各回各家（k_net_host）：情景 → 情景页，
+ * 出口 IP → 出口标签，运营商 + 手动选网 → 运营商选择页，邻小区 → 小区信息页，
+ * 设备流量 → Wi-Fi 标签。数据和画法没变（netinfo + net_paint），只是卡片挂在
+ * 不同的页上，net_reflow 按页各自排。 */
+static void build_sub_net(lv_obj_t *t)
+{
+    static const char *const k_sec[6] = { "选择", "出口 IP", "运营商", "手动选网", "邻小区", "已连接设备流量" };
+    static const char *const k_op_cap[4] = { "原始运营商", "注册运营商", "漫游", "选网" };
+    lv_obj_t *c, *host[6];
+
+    t = s_net_scroll = s_nh_scroll[NH_OPER] = uk_scroll(t, 0, UI_SUB_VIEW, 1400);
+    s_nh_scroll[NH_SCENE] = uk_scroll(s_sub_page[SUB_SCENE], 0, UI_SUB_VIEW, 600);
+    s_nh_base[NH_SCENE] = s_nh_base[NH_OPER] = 4;
+    for (int i = 0; i < 6; i++) host[i] = s_nh_scroll[k_net_host[i]];
+    s_net_err = uk_label_w(t, UF.cj13, T->badT, UK_MARGIN + 6, 4, UK_CARD_W - 12, 1, "");
+    for (int i = 0; i < 6; i++) s_net_sec[i] = uk_section(host[i], 0, k_sec[i]);
+
+    c = s_net_card[0] = uk_card(host[0], UK_MARGIN, 0, UK_CARD_W, UK_ROW_H + NET_SC_NOTE_H);
+    for (int i = 0; i < NET_SCENE_ROWS; i++) {
+        lv_obj_t *r = s_net_sc_row[i] = uk_box(c, 0, i * UK_ROW_H, UK_CARD_W, UK_ROW_H, T->card, 0);
+        lv_obj_set_style_bg_opa(r, LV_OPA_TRANSP, 0);
+        if (i) uk_sep(r, 0);
+        s_net_sc_mark[i] = uk_box(r, UK_PAD, (UK_ROW_H - 16) / 2, 16, 16, T->card, 8);
+        lv_obj_set_style_border_width(s_net_sc_mark[i], 2, 0);
+        s_net_sc_name[i] = uk_label_w(r, UF.cj14, T->t1, UK_PAD + 26, 11, 140, 0, "");
+        s_net_sc_tag[i]  = uk_label_r(r, UF.cj13, T->t3, UK_CARD_W - UK_PAD, 12, "");
+        s_net_sc_when[i] = uk_label_w(r, UF.cj12, T->t2, UK_PAD + 26, 32, UK_CARD_W - 2 * UK_PAD - 26, 1, "");
+        s_net_sc_does[i] = uk_label_w(r, UF.cj12, T->t3, UK_PAD + 26, 50, UK_CARD_W - 2 * UK_PAD - 26, 0, "");
+        for (int k = 0; k < 2; k++) {
+            lv_obj_t *l = k ? s_net_sc_does[i] : s_net_sc_when[i];
+            lv_obj_set_height(l, lv_font_get_line_height(UF.cj12));
+            lv_label_set_long_mode(l, LV_LABEL_LONG_MODE_DOTS);
+        }
+        uk_tappable(r, net_sc_cb, (void *)(intptr_t)i);
+        uk_show(r, i == 0);
+    }
+    s_net_sc_note = uk_label_w(c, UF.cj12, T->t3, UK_PAD, UK_ROW_H + 8, UK_CARD_W - 2 * UK_PAD, 1, "");
+
+    c = s_net_card[1] = uk_card(host[1], UK_MARGIN, 0, UK_CARD_W, 2 * NET_EXIT_H);
+    for (int i = 0; i < 2; i++) {
+        lv_obj_t *r = s_net_ex_row[i] = uk_box(c, 0, i * NET_EXIT_H, UK_CARD_W, NET_EXIT_H, T->card, 0);
+        lv_obj_set_style_bg_opa(r, LV_OPA_TRANSP, 0);
+        if (i) uk_sep(r, 0);
+        s_net_ex_key[i] = uk_label(r, UF.cj14, T->t2, UK_PAD, 7, "");
+        s_net_ex_ip[i]  = uk_label_r(r, UF.n15, T->t1, UK_CARD_W - UK_PAD, 6, "");
+        s_net_ex_sub[i] = uk_label_w(r, UF.cj12, T->t3, UK_PAD, 29, UK_CARD_W - 2 * UK_PAD, 0, "");
+    }
+
+    c = s_net_card[2] = uk_card(host[2], UK_MARGIN, 0, UK_CARD_W, 4 * UK_ROW_H);
+    for (int i = 0; i < 4; i++) {
+        s_net_op[i] = uk_row(c, i * UK_ROW_H, k_op_cap[i], i == 0);
+        lv_obj_set_style_text_font(s_net_op[i], UF.cj14, 0);
+    }
+
+    c = s_net_card[3] = uk_card(host[3], UK_MARGIN, 0, UK_CARD_W, NET_STAT_H + NET_BTN_H);
+    s_net_status = uk_label_w(c, UF.cj13, T->t2, UK_PAD, 8, UK_CARD_W - 2 * UK_PAD, 1, "");
+    for (int i = 0; i < NI_MAX_OPS; i++) {
+        lv_obj_t *r = s_net_opr[i] = uk_box(c, 0, NET_STAT_H + i * NET_OP_H, UK_CARD_W, NET_OP_H, T->card, 0);
+        lv_obj_set_style_bg_opa(r, LV_OPA_TRANSP, 0);
+        uk_sep(r, 0);
+        s_net_opr_name[i] = uk_label_w(r, UF.cj14, T->t1, UK_PAD, 5, UK_CARD_W - 2 * UK_PAD - 70, 0, "");
+        s_net_opr_det[i]  = uk_label_w(r, UF.cj12, T->t3, UK_PAD, 25, UK_CARD_W - 2 * UK_PAD - 70, 0, "");
+        s_net_opr_tag[i]  = uk_label_r(r, UF.cj13, T->t3, UK_CARD_W - UK_PAD, 13, "");
+        uk_tappable(r, net_op_cb, (void *)(intptr_t)i);
+        uk_show(r, 0);
+    }
+    s_net_btns = uk_box(c, 0, NET_STAT_H, UK_CARD_W, NET_BTN_H, T->card, 0);
+    lv_obj_set_style_bg_opa(s_net_btns, LV_OPA_TRANSP, 0);
+    uk_sep(s_net_btns, 0);
+    s_net_scan_btn = uk_button(s_net_btns, UK_PAD, 10, (UK_CARD_W - 2 * UK_PAD - 8) / 2, 32, "搜索网络",
+                               UK_BTN_PLAIN, net_scan_cb, NULL, &s_net_scan_lbl);
+    s_net_auto_btn = uk_button(s_net_btns, UK_PAD + (UK_CARD_W - 2 * UK_PAD - 8) / 2 + 8, 10,
+                               (UK_CARD_W - 2 * UK_PAD - 8) / 2, 32, "恢复自动",
+                               UK_BTN_PLAIN, net_auto_cb, NULL, &s_net_auto_lbl);
+
+    c = s_net_card[4] = uk_card(host[4], UK_MARGIN, 0, UK_CARD_W, NET_NBR_HDR);
+    s_net_nbr_state = uk_label_w(c, UF.cj13, T->t2, UK_PAD, 12, UK_CARD_W - 2 * UK_PAD - 80, 0, "");
+    s_net_nbr_btn = uk_button(c, UK_CARD_W - UK_PAD - 72, 6, 72, 28, "扫描", UK_BTN_PLAIN, net_nbr_cb, NULL, &s_net_nbr_lbl);
+    for (int i = 0; i < NI_MAX_CELLS; i++) {
+        lv_obj_t *r = s_net_nbr_row[i] = uk_box(c, 0, NET_NBR_HDR + i * NET_NBR_H, UK_CARD_W, NET_NBR_H, T->card, 0);
+        lv_obj_set_style_bg_opa(r, LV_OPA_TRANSP, 0);
+        if (!i) uk_sep(r, 0);
+        s_net_nbr_l[i] = uk_label(r, UF.n12, T->t1, UK_PAD, 7, "");
+        s_net_nbr_r[i] = uk_label_r(r, UF.n12, T->t2, UK_CARD_W - UK_PAD, 7, "");
+        uk_show(r, 0);
+    }
+
+    /* 每台 Wi-Fi 设备：名字、连上以来的总流量、此刻的速率和信号 */
+    c = s_net_card[5] = uk_card(host[5], UK_MARGIN, 0, UK_CARD_W, NET_NOTE_H);
+    s_net_cl_state = uk_label_w(c, UF.cj13, T->t3, UK_PAD, 11, UK_CARD_W - 2 * UK_PAD, 1, "读取中…");
+    for (int i = 0; i < NI_MAX_CLIENTS; i++) {
+        lv_obj_t *r = s_net_cl_row[i] = uk_box(c, 0, i * NET_CL_H, UK_CARD_W, NET_CL_H, T->card, 0);
+        lv_obj_set_style_bg_opa(r, LV_OPA_TRANSP, 0);
+        if (i) uk_sep(r, 0);
+        s_net_cl_name[i] = uk_label_w(r, UF.cj14, T->t1, UK_PAD, 7, 130, 0, "");
+        s_net_cl_tot[i]  = uk_label_r(r, UF.n12, T->t2, UK_CARD_W - UK_PAD, 9, "");
+        s_net_cl_sub[i]  = uk_label_w(r, UF.n12, T->t3, UK_PAD, 29, UK_CARD_W - 2 * UK_PAD, 0, "");
+        uk_show(r, 0);
+    }
+    /* 设备流量已并进 Wi-Fi 标签的设备列表（refresh_wifi 按 MAC/IP 对上）：这块不显示 */
+    uk_show(s_net_sec[5], 0);
+    uk_show(s_net_card[5], 0);
+    net_reflow(0, UK_ROW_H, 1, 0, 0);
+    lv_obj_scroll_to_y(t, 0, LV_ANIM_OFF);
+}
+
+/* Cards move with the lists above them: lay each page out from its base. */
+static int s_net_ncl;   /* 设备流量卡里显示几行（net_paint 定） */
+static int s_nr_last[5] = { 0, UK_ROW_H, 1, 0, 0 };
+/* scene_px：情景各行加起来的高度（行高不一样，2026-09-25 起按像素传） */
+static void net_reflow(int err_h, int scene_rows, int exits, int ops, int cells)
+{
+    int a[5] = { err_h, scene_rows, exits, ops, cells };
+    memcpy(s_nr_last, a, sizeof a);
+    int y[NH_N];
+    for (int k = 0; k < NH_N; k++) y[k] = s_nh_base[k];
+    y[NH_OPER] += err_h;
+    int h[6] = {
+        scene_rows + NET_SC_NOTE_H,
+        exits * NET_EXIT_H,
+        4 * UK_ROW_H,
+        NET_STAT_H + ops * NET_OP_H + NET_BTN_H,
+        NET_NBR_HDR + cells * NET_NBR_H + (cells ? 6 : 0),
+        s_net_ncl ? s_net_ncl * NET_CL_H : NET_NOTE_H,
+    };
+    for (int i = 0; i < 6; i++) {
+        if (lv_obj_has_flag(s_net_card[i], LV_OBJ_FLAG_HIDDEN)) continue;
+        int *yy = &y[k_net_host[i]];
+        lv_obj_set_y(s_net_sec[i], *yy);
+        lv_obj_set_y(s_net_card[i], *yy + 20);
+        lv_obj_set_height(s_net_card[i], h[i]);
+        *yy += 20 + h[i] + 10;
+    }
+    lv_obj_set_y(s_net_btns, NET_STAT_H + ops * NET_OP_H);
+    lv_obj_set_y(s_net_sc_note, scene_rows + 8);
+    /* 出口标签：出口 IP 下面是 CHILL 卡，再是 › 行 */
+    lv_obj_t *cards[1] = { s_chill_card };
+    for (int i = 0; i < 1; i++) {
+        if (lv_obj_has_flag(cards[i], LV_OBJ_FLAG_HIDDEN)) continue;
+        lv_obj_set_y(cards[i], y[NH_EXIT]);
+        y[NH_EXIT] += (int)lv_obj_get_style_height(cards[i], 0) + 10;
+    }
+    lv_obj_set_y(s_exit_nav_sec, y[NH_EXIT]);
+    lv_obj_set_y(s_exit_nav_card, y[NH_EXIT] + 20);
+    y[NH_EXIT] += 20 + (int)lv_obj_get_style_height(s_exit_nav_card, 0) + 10;
+    for (int k = 0; k < NH_N; k++)
+        uk_scroll_extent(s_nh_scroll[k], y[k] - 10 + (k == NH_EXIT || k == NH_WIFI ? UK_TAB_PAD : 16));
+}
+
+/* 某一页上面的内容高度变了（Wi-Fi 设备列表）：按上次的参数重排 */
+static void net_relayout(void)
+{
+    if (!s_net_card[0]) return;   /* 还没建好 */
+    net_reflow(s_nr_last[0], s_nr_last[1], s_nr_last[2], s_nr_last[3], s_nr_last[4]);
+}
+
+/* 首页出口卡 → 出口标签（出口 IP 在最上面） */
+static void nh_card_cb(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    tab_go(TAB_EXIT);
+}
+
+static const char *net_rat_name(const char *rat)
+{
+    if (!strcmp(rat, "12") || !strcmp(rat, "11") || !strcmp(rat, "13")) return "5G";
+    if (!strcmp(rat, "7")) return "4G";
+    if (!strcmp(rat, "2") || !strcmp(rat, "4") || !strcmp(rat, "5") || !strcmp(rat, "6")) return "3G";
+    if (!strcmp(rat, "0") || !strcmp(rat, "1") || !strcmp(rat, "3")) return "2G";
+    return rat;
+}
+
+/* "中国联通 46001"；国外的带上国家："SoftBank（日本）44020" */
+static void net_oper_text(char *out, size_t n, const ni_oper_t *o)
+{
+    const char *name = o->name[0] ? o->name : "未知";
+    if (!o->mcc[0] && !o->name[0]) { snprintf(out, n, "—"); return; }
+    if (o->country[0] && strcmp(o->country, "中国"))
+        snprintf(out, n, "%s（%s）%s%s", name, o->country, o->mcc, o->mnc);
+    else
+        snprintf(out, n, "%s %s%s", name, o->mcc, o->mnc);
+}
+
+/* 第二行：归属地 · 运营商或节点；查不到时写原因，旧结果刷新失败时标一下 */
+static void net_exit_sub(char *out, size_t n, const ni_exit_t *e, const char *extra)
+{
+    if (!e->ip[0] && e->err[0]) { snprintf(out, n, "查不到：%s", e->err); return; }
+    snprintf(out, n, "%s%s%s%s", e->geo, e->geo[0] && extra[0] ? " · " : "", extra,
+             e->err[0] ? " · 刷新失败" : "");
+}
+
+/* ---- APN（蜂窝 → APN，2026-09-25）----
+ * 看得到数据连接正在拨哪条 APN；在「自动」和已存的手动 APN 之间切（两下确认，
+ * 切换中直到读回来）。新建、修改要打字，在管理网页做。 */
+#define APN_ROWS    (1 + NI_MAX_APNS)
+#define APN_ROW_H   UK_ROW2_H
+#define APN_NOTE_H  44
+#define APN_PEND_MS 45000
+static lv_obj_t *s_apn_now, *s_apn_now_sub, *s_apn_sec, *s_apn_card, *s_apn_note, *s_apn_foot, *s_apn_scroll;
+static lv_obj_t *s_apn_row[APN_ROWS], *s_apn_mark[APN_ROWS], *s_apn_name[APN_ROWS], *s_apn_sub[APN_ROWS], *s_apn_tag[APN_ROWS];
+static uint32_t  s_apn_arm;
+static int       s_apn_arm_idx = -1;
+static int       s_apn_pend = -1;             /* 0 = 自动，1.. = apns[i-1] */
+static uint32_t  s_apn_pend_at;
+static char      s_apn_pend_id[24], s_apn_pend_name[48];
+static net_flash_t s_apn_flash;
+
+static const char *apn_pdp(int pdp) { return pdp == 1 ? "IPv4" : pdp == 2 ? "IPv6" : pdp == 3 ? "IPv4v6" : ""; }
+
+/* 这一行是不是现在生效的选择（自动模式 = 第 0 行；手动 = 手动模式选中的那条） */
+static int apn_row_current(const netinfo_t *n, int i)
+{
+    if (!n->apn_known) return 0;
+    if (i == 0) return !n->apn_manual;
+    return i <= n->napns && n->apn_manual && n->apns[i - 1].selected;
+}
+
+static void apn_paint(int changed);
+
+static void apn_row_cb(lv_event_t *e)
+{
+    int i = (int)(intptr_t)lv_event_get_user_data(e);
+    const netinfo_t *n = netinfo_get();
+    if (!n->apn_known) {
+        net_flash(&s_apn_flash, T->t2, 3000, "还没读到 APN，稍等");
+    } else if (s_apn_pend >= 0) {
+        net_flash(&s_apn_flash, T->t2, 3000, "正在切换到「%s」，稍等", s_apn_pend_name);
+    } else if (apn_row_current(n, i)) {
+        s_apn_arm_idx = -1;
+        if (i == 0) net_flash(&s_apn_flash, T->t2, 4000, "现在已经是自动选择");
+        else        net_flash(&s_apn_flash, T->t2, 4000, "已经在用「%s」", n->apns[i - 1].name);
+    } else if (i > n->napns) {
+        return;
+    } else if (s_apn_arm_idx == i && net_confirm(s_apn_arm)) {
+        s_apn_arm_idx = -1;
+        s_apn_pend = i;
+        s_apn_pend_at = lv_tick_get();
+        snprintf(s_apn_pend_id, sizeof s_apn_pend_id, "%s", i ? n->apns[i - 1].id : "auto");
+        snprintf(s_apn_pend_name, sizeof s_apn_pend_name, "%s", i ? n->apns[i - 1].name : "自动");
+        s_apn_flash.until = 0;
+        apn_paint(1);
+        lv_refr_now(NULL);
+        netinfo_apn_use(s_apn_pend_id);
+        const char *err = netinfo_action_error();
+        if (err[0]) {
+            s_apn_pend = -1;
+            net_flash(&s_apn_flash, T->badT, 8000, "没切成：%s", err);
+        } else {
+            netinfo_hurry(APN_PEND_MS / 1000);
+        }
+    } else {
+        s_apn_arm_idx = i;
+        s_apn_arm = lv_tick_get();
+        s_apn_flash.until = 0;
+    }
+    apn_paint(1);
+}
+
+static void build_sub_apn(lv_obj_t *t)
+{
+    t = s_apn_scroll = uk_scroll(t, 0, UI_SUB_VIEW, 800);
+    uk_section(t, 4, "正在用");
+    lv_obj_t *c = uk_card(t, UK_MARGIN, 24, UK_CARD_W, UK_HERO_H);
+    s_apn_now = uk_label_w(c, UF.cj17b, T->t1, UK_PAD, 12, UK_CARD_W - 2 * UK_PAD, 0, "读取中…");
+    s_apn_now_sub = uk_label_w(c, UF.cj13, T->t2, UK_PAD, 42, UK_CARD_W - 2 * UK_PAD, 0, "");
+    int y = 24 + UK_HERO_H + 10;
+    s_apn_sec = uk_section(t, y, "选择");
+    c = s_apn_card = uk_card(t, UK_MARGIN, y + 20, UK_CARD_W, APN_ROW_H + APN_NOTE_H);
+    for (int i = 0; i < APN_ROWS; i++) {
+        lv_obj_t *r = s_apn_row[i] = uk_box(c, 0, i * APN_ROW_H, UK_CARD_W, APN_ROW_H, T->card, 0);
+        lv_obj_set_style_bg_opa(r, LV_OPA_TRANSP, 0);
+        if (i) uk_sep(r, 0);
+        s_apn_mark[i] = uk_box(r, UK_PAD, (APN_ROW_H - 16) / 2, 16, 16, T->card, 8);
+        lv_obj_set_style_border_width(s_apn_mark[i], 2, 0);
+        s_apn_name[i] = uk_label_w(r, UF.cj14, T->t1, UK_PAD + 26, 6, 170, 0, "");
+        s_apn_sub[i]  = uk_label_w(r, UF.cj12, T->t3, UK_PAD + 26, 27, 170, 0, "");
+        s_apn_tag[i]  = uk_label_r(r, UF.cj13, T->t3, UK_CARD_W - UK_PAD, 16, "");
+        uk_tappable(r, apn_row_cb, (void *)(intptr_t)i);
+        uk_show(r, i == 0);
+    }
+    s_apn_note = uk_label_w(c, UF.cj12, T->t3, UK_PAD, APN_ROW_H + 8, UK_CARD_W - 2 * UK_PAD, 1, "");
+    s_apn_foot = uk_label_w(t, UF.cj12, T->t3, UK_MARGIN + 6, 0, UK_CARD_W - 12, 1,
+                            "新建或修改 APN 请用管理网页的「APN」页");
+    lv_obj_scroll_to_y(t, 0, LV_ANIM_OFF);
+}
+
+static void apn_paint(int changed)
+{
+    static char c_now[64], c_nsub[96], c_n[APN_ROWS][48], c_s[APN_ROWS][64], c_t[APN_ROWS][32], c_note[160], c_row[64];
+    static int painted = -2;
+    const netinfo_t *n = netinfo_get();
+    int arm = (s_apn_arm_idx >= 0 && net_armed(s_apn_arm)) ? s_apn_arm_idx : -1;
+    char buf[160];
+
+    if (s_apn_pend >= 0) {
+        int done = s_apn_pend == 0 ? (n->apn_known && !n->apn_manual)
+                                   : (n->apn_manual && !strcmp(n->apn_in_use.id, s_apn_pend_id));
+        if (done) {
+            net_flash(&s_apn_flash, T->okT, 6000, "已切换：现在用「%s」",
+                      n->apn_in_use.name[0] ? n->apn_in_use.name : s_apn_pend_name);
+            s_apn_pend = -1;
+        } else if (lv_tick_get() - s_apn_pend_at > APN_PEND_MS) {
+            net_flash(&s_apn_flash, T->warnT, 10000, "设备没确认这次切换，看一下上面「正在用」再试");
+            s_apn_pend = -1;
+        }
+    }
+    int key = arm + (s_apn_pend >= 0 ? 1000 + s_apn_pend : 0) + (net_flash_on(&s_apn_flash) ? 10000 : 0);
+    if (!changed && key == painted) return;
+    painted = key;
+
+    /* 蜂窝标签上那一行 */
+    if (s_tile_sub[SUB_APN]) {
+        if (!n->apn_known) snprintf(buf, sizeof buf, "%s", n->err[0] ? "—" : "");
+        else snprintf(buf, sizeof buf, "%s · %s", n->apn_in_use.name[0] ? n->apn_in_use.name : "未拨号",
+                      n->apn_manual ? "手动" : "自动");
+        set_label_fmt(s_tile_sub[SUB_APN], c_row, sizeof c_row, "%s", buf);
+    }
+
+    if (!n->apn_known) snprintf(buf, sizeof buf, "%s", n->err[0] ? "读不到 APN" : "读取中…");
+    else snprintf(buf, sizeof buf, "%s", n->apn_in_use.name[0] ? n->apn_in_use.name : "没有拨号");
+    set_label_fmt(s_apn_now, c_now, sizeof c_now, "%s", buf);
+    if (!n->apn_known) buf[0] = 0;
+    else if (n->apn_in_use.id[0])
+        snprintf(buf, sizeof buf, "%s%s%s · %s", n->apn_in_use.apn, n->apn_in_use.pdp ? " · " : "",
+                 apn_pdp(n->apn_in_use.pdp), n->apn_manual ? "手动指定" : "自动选择");
+    else snprintf(buf, sizeof buf, "%s", n->apn_manual ? "手动模式" : "自动模式");
+    set_label_fmt(s_apn_now_sub, c_nsub, sizeof c_nsub, "%s", buf);
+
+    int rows = 0;
+    for (int i = 0; i < APN_ROWS; i++) {
+        int show = i == 0 || (n->apn_known && i <= n->napns);
+        uk_show(s_apn_row[i], show);
+        if (!show) continue;
+        const ni_apn_t *a = i ? &n->apns[i - 1] : NULL;
+        int sel = apn_row_current(n, i);
+        const char *tag = "";
+        uint32_t tag_col = T->t3;
+        if (i == 0) {
+            set_label_fmt(s_apn_name[i], c_n[i], sizeof c_n[i], "%s", "自动");
+            set_label_fmt(s_apn_sub[i], c_s[i], sizeof c_s[i], "%s", "按 SIM 卡自动选");
+        } else {
+            set_label_fmt(s_apn_name[i], c_n[i], sizeof c_n[i], "%s", a->name[0] ? a->name : a->id);
+            snprintf(buf, sizeof buf, "%s%s%s", a->apn, a->pdp ? " · " : "", apn_pdp(a->pdp));
+            set_label_fmt(s_apn_sub[i], c_s[i], sizeof c_s[i], "%s", buf);
+            if (a->in_use) { tag = "在用"; tag_col = T->okT; }
+        }
+        if (i == 0 && sel && n->apn_in_use.id[0]) { tag = "在用"; tag_col = T->okT; }
+        if (s_apn_pend == i) { tag = "切换中…"; tag_col = T->accT; }
+        if (arm == i) { tag = "再点一次确认"; tag_col = T->warnT; }
+        uk_bg(s_apn_row[i], T->washW);
+        lv_obj_set_style_bg_opa(s_apn_row[i], arm == i ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
+        uk_bg(s_apn_mark[i], T->fillBlue);
+        lv_obj_set_style_bg_opa(s_apn_mark[i], sel ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_color(s_apn_mark[i], lv_color_hex(sel ? T->fillBlue : T->t3), 0);
+        lv_obj_set_y(s_apn_row[i], rows * APN_ROW_H);
+        rows++;
+        set_label_fmt(s_apn_tag[i], c_t[i], sizeof c_t[i], "%s", tag);
+        uk_text_color(s_apn_tag[i], tag_col);
+    }
+
+    uint32_t col = T->t3;
+    if (s_apn_pend >= 0)
+        { snprintf(buf, sizeof buf, "正在切换到「%s」…数据连接会重拨，断几秒", s_apn_pend_name); col = T->accT; }
+    else if (net_flash_on(&s_apn_flash))
+        { snprintf(buf, sizeof buf, "%s", s_apn_flash.txt); col = s_apn_flash.col; }
+    else if (arm == 0)
+        { snprintf(buf, sizeof buf, "回到自动：按 SIM 卡选 APN，会断网几秒"); col = T->warnT; }
+    else if (arm > 0 && arm <= n->napns)
+        { snprintf(buf, sizeof buf, "改用「%s」：会断网几秒，之后换卡也一直用它，点「自动」才恢复",
+                   n->apns[arm - 1].name); col = T->warnT; }
+    else if (!n->apn_known)
+        snprintf(buf, sizeof buf, "%s", n->err[0] ? n->err : "读取中…");
+    else if (!n->napns)
+        snprintf(buf, sizeof buf, "还没有手动 APN。要用自定义 APN，先在管理网页里新建");
+    else if (n->apn_manual)
+        snprintf(buf, sizeof buf, "手动：一直用选中的这条，换卡也不变");
+    else
+        snprintf(buf, sizeof buf, "点一条手动 APN 可以改用它（两下确认）");
+    set_label_fmt(s_apn_note, c_note, sizeof c_note, "%s", buf);
+    uk_text_color(s_apn_note, col);
+
+    int ch = rows * APN_ROW_H + APN_NOTE_H;
+    lv_obj_set_height(s_apn_card, ch);
+    lv_obj_set_y(s_apn_note, rows * APN_ROW_H + 8);
+    int y = 24 + UK_HERO_H + 10 + 20 + ch + 10;
+    lv_obj_set_y(s_apn_foot, y);
+    uk_scroll_extent(s_apn_scroll, y + 40 + 16);
+}
+
+static void net_paint(int changed)
+{
+    static char c_err[100], c_key[2][24], c_ip[2][48], c_sub[2][160], c_op[4][96], c_st[200];
+    static char c_on[NI_MAX_OPS][64], c_od[NI_MAX_OPS][64], c_ot[NI_MAX_OPS][24];
+    static char c_ns[64], c_nl[NI_MAX_CELLS][48], c_nr[NI_MAX_CELLS][24], c_sb[24], c_ab[24], c_nb[24];
+    const netinfo_t *n = netinfo_get();
+    const char *aerr = netinfo_action_error();
+    int arm = net_armed(s_net_arm_scan) ? 100 : net_armed(s_net_arm_auto) ? 101 :
+              net_armed(s_net_arm_nbr) ? 102 :
+              (s_net_arm_sc_idx >= 0 && net_armed(s_net_arm_sc)) ? 200 + s_net_arm_sc_idx :
+              (s_net_arm_idx >= 0 && net_armed(s_net_arm_op)) ? s_net_arm_idx : -1;
+    int busy = net_busy(n);
+    char buf[256];
+
+    apn_paint(changed);
+
+    /* 情景切换有没有真的过去 */
+    if (s_sc_pend >= 0) {
+        int done = s_sc_pend == 0 ? !n->scene_pin[0]
+                                  : !strcmp(n->scene_pin, s_sc_pend_id) && !strcmp(n->scene_current, s_sc_pend_id);
+        if (done) {
+            if (s_sc_pend == 0)
+                net_flash(&s_sc_flash, T->okT, 6000, "已恢复自动判断 · 现在是「%s」",
+                          n->scene_current[0] ? net_scene_name(n, n->scene_current) : "判定中");
+            else
+                net_flash(&s_sc_flash, T->okT, 6000, "已切换到「%s」，一直保持到你点「自动」", s_sc_pend_name);
+            s_sc_pend = -1;
+        } else if (lv_tick_get() - s_sc_pend_at > SC_PEND_MS) {
+            if (s_sc_pend && !strcmp(n->scene_pin, s_sc_pend_id))
+                net_flash(&s_sc_flash, T->warnT, 10000, "已固定「%s」，但设备还没切过去；Wi-Fi 看门狗可能正在接管，过一会再看",
+                          s_sc_pend_name);
+            else
+                net_flash(&s_sc_flash, T->warnT, 10000, "设备没确认这次切换，再试一次");
+            s_sc_pend = -1;
+        }
+    }
+    /* 画的依据不只是数据：待确认、切换中、临时提示变了也要重画 */
+    int key = arm + (s_sc_pend >= 0 ? 1000 + s_sc_pend : 0) +
+              (net_flash_on(&s_sc_flash) ? 10000 : 0) + (net_flash_on(&s_ms_flash) ? 20000 : 0);
+    if (!changed && key == s_net_painted_arm) return;
+    s_net_painted_arm = key;
+    if (arm < 0) { s_net_arm_idx = -1; s_net_arm_sc_idx = -1; }
+
+    set_label_fmt(s_net_err, c_err, sizeof c_err, "%s", n->err);
+
+    /* 情景：自动 + 各情景（可固定）+ 在国外时的 CHILL 出口 */
+    static char c_scn[NET_SCENE_ROWS][48], c_sct[NET_SCENE_ROWS][32], c_scnote[160];
+    static char c_scw[NET_SCENE_ROWS][120], c_scd[NET_SCENE_ROWS][120];
+    int scene_px = 0;
+    {
+        const char *cur_name = "";
+        int cur_abroad = 0;
+        for (int i = 0; i < n->nscenes; i++)
+            if (!strcmp(n->scenes[i].id, n->scene_current)) { cur_name = n->scenes[i].name; cur_abroad = n->scenes[i].abroad; }
+        int usable = n->scene_known && n->scene_enabled && n->nscenes > 0;
+        for (int i = 0; i < NET_SCENE_ROWS; i++) {
+            int show = 0;
+            const char *name = "", *tag = "", *when = "", *does = "";
+            uint32_t tag_col = T->t3;
+            char buf2[48];
+            if (i == 0) {
+                show = 1;
+                name = "自动";
+                if (usable) { when = "按下面每个情景的条件自己切换"; does = "条件变了，1–2 分钟内跟着换"; }
+                if (!usable) tag = "—";
+                else if (!n->scene_pin[0]) {
+                    snprintf(buf2, sizeof buf2, "现在：%s", cur_name[0] ? cur_name : "判定中");
+                    tag = buf2; tag_col = T->accT;
+                }
+            } else if (i <= n->nscenes && usable) {
+                const ni_scene_t *sc = &n->scenes[i - 1];
+                show = 1;
+                name = sc->name[0] ? sc->name : sc->id;
+                when = sc->when;
+                does = sc->does;
+                if (!strcmp(n->scene_pin, sc->id)) { tag = "已固定"; tag_col = T->accT; }
+                else if (!strcmp(n->scene_current, sc->id)) { tag = "现在"; tag_col = T->accT; }
+                else if (sc->wifi_off && !does[0]) tag = "会关 Wi-Fi";
+            } else if (i == NET_SCENE_ROWS - 1 && usable && cur_abroad) {
+                show = 1;
+                name = "CHILL 出口";
+                snprintf(buf2, sizeof buf2, "%s ›", chill_mode());
+                tag = buf2;
+            }
+            int is_exit = i == NET_SCENE_ROWS - 1;
+            int sel = usable && !is_exit &&
+                      (i == 0 ? !n->scene_pin[0] : i <= n->nscenes && !strcmp(n->scene_pin, n->scenes[i - 1].id));
+            if (s_sc_pend == i) { tag = "切换中…"; tag_col = T->accT; }
+            if (arm == 200 + i) { tag = "再点一次确认"; tag_col = T->warnT; }
+            uk_show(s_net_sc_row[i], show);
+            if (!show) continue;
+            /* 待确认：整行浅黄底（不用彩色左边框，DESIGN.md §6） */
+            uk_bg(s_net_sc_row[i], T->washW);
+            lv_obj_set_style_bg_opa(s_net_sc_row[i], arm == 200 + i ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
+            /* 单选圈：实心 = 现在生效的那个（没固定时是「自动」） */
+            uk_show(s_net_sc_mark[i], usable && !is_exit);
+            uk_bg(s_net_sc_mark[i], T->fillBlue);
+            lv_obj_set_style_bg_opa(s_net_sc_mark[i], sel ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
+            lv_obj_set_style_border_color(s_net_sc_mark[i], lv_color_hex(sel ? T->fillBlue : T->t3), 0);
+            lv_obj_set_x(s_net_sc_name[i], usable && !is_exit ? UK_PAD + 26 : UK_PAD);
+            /* 有说明的行三行高，圈对齐第一行；没说明的（CHILL 出口、读不到时）一行高 */
+            /* 条件那行放不下就折成两行（Wi-Fi 名可以很长），再长末尾「…」 */
+            int lh = lv_font_get_line_height(UF.cj12), wl = 1;
+            if (when[0]) {
+                lv_point_t sz;
+                lv_text_get_size(&sz, when, UF.cj12, 0, 0, UK_CARD_W - 2 * UK_PAD - 26, LV_TEXT_FLAG_NONE);
+                if (sz.y > lh) wl = 2;
+            }
+            int rh = !when[0] && !does[0] ? UK_ROW_H : 32 + (when[0] ? wl * lh : 0) + (does[0] ? lh + 2 : 0) + 8;
+            lv_obj_set_height(s_net_sc_row[i], rh);
+            lv_obj_set_y(s_net_sc_mark[i], rh == UK_ROW_H ? (UK_ROW_H - 16) / 2 : 12);
+            lv_obj_set_height(s_net_sc_when[i], wl * lh);
+            lv_obj_set_y(s_net_sc_does[i], 32 + wl * lh + 2);
+            set_label_fmt(s_net_sc_when[i], c_scw[i], sizeof c_scw[i], "%s", when);
+            set_label_fmt(s_net_sc_does[i], c_scd[i], sizeof c_scd[i], "%s", does[0] ? does : "");
+            uk_show(s_net_sc_when[i], when[0] != 0);
+            uk_show(s_net_sc_does[i], does[0] != 0);
+            lv_obj_set_y(s_net_sc_row[i], scene_px);
+            scene_px += rh;
+            set_label_fmt(s_net_sc_name[i], c_scn[i], sizeof c_scn[i], "%s", name);
+            set_label_fmt(s_net_sc_tag[i], c_sct[i], sizeof c_sct[i], "%s", tag);
+            uk_text_color(s_net_sc_tag[i], tag_col);
+        }
+        uint32_t note_col = T->t3;
+        if (!n->scene_known)
+            snprintf(buf, sizeof buf, "%s", n->err[0] ? "读不到情景" : "读取中…");
+        else if (!n->scene_enabled)
+            snprintf(buf, sizeof buf, "情景引擎已停用，在管理网页的「情景」页打开");
+        else if (!n->nscenes)
+            snprintf(buf, sizeof buf, "还没配置情景，在管理网页的「情景」页设置");
+        else if (s_sc_pend > 0)
+            { snprintf(buf, sizeof buf, "正在切换到「%s」…%s", s_sc_pend_name,
+                       s_sc_pend_wifi_off ? "会关掉 Wi-Fi" : "开关 Wi-Fi 要 10–30 秒"); note_col = T->accT; }
+        else if (s_sc_pend == 0)
+            { snprintf(buf, sizeof buf, "正在恢复自动判断…"); note_col = T->accT; }
+        else if (net_flash_on(&s_sc_flash))
+            { snprintf(buf, sizeof buf, "%s", s_sc_flash.txt); note_col = s_sc_flash.col; }
+        else if (n->scene_takeover && n->scene_pin[0])
+            { snprintf(buf, sizeof buf, "Wi-Fi 看门狗接管中，固定暂时不生效，先按「外出」"); note_col = T->warnT; }
+        else if (arm == 200)
+            { snprintf(buf, sizeof buf, "恢复自动：按位置和 SIM 重新判断\n可能会开关 Wi-Fi"); note_col = T->warnT; }
+        else if (arm > 200 && arm - 200 <= n->nscenes) {
+            const ni_scene_t *sc = &n->scenes[arm - 201];
+            snprintf(buf, sizeof buf, "切到「%s」：%s\n之后一直固定，点「自动」才恢复",
+                     sc->name[0] ? sc->name : sc->id,
+                     sc->wifi_off ? "会关掉 Wi-Fi" : sc->abroad ? "按国外设置" : "Wi-Fi 开着");
+            note_col = T->warnT;
+        }
+        else if (n->scene_pin[0])
+            snprintf(buf, sizeof buf, "手动固定后一直保持（重启也是），点「自动」才恢复自动判断");
+        else
+            snprintf(buf, sizeof buf, "情景只管 Wi-Fi、CHILL 这些，不碰蜂窝网络。点一个情景就固定在它，点「自动」恢复");
+        set_label_fmt(s_net_sc_note, c_scnote, sizeof c_scnote, "%s", buf);
+        uk_text_color(s_net_sc_note, note_col);
+    }
+
+    /* 出口：CHILL 没开 → 一行；开着但出口一样（主组直连）→ 一行标注；不一样 → 两行 */
+    int two = n->proxy.present && strcmp(n->proxy.ip, n->direct.ip);
+    int same = n->proxy.present && !two;
+    for (int i = 0; i < 2; i++) {
+        const ni_exit_t *e = i ? &n->proxy : &n->direct;
+        const char *key = i ? "CHILL" : two ? "蜂窝直连" : "出口 IP";
+        char extra[80] = "";
+        if (i) snprintf(extra, sizeof extra, "%s", e->node);
+        else if (same) snprintf(extra, sizeof extra, "%s%sCHILL 直连", e->isp, e->isp[0] ? " · " : "");
+        else snprintf(extra, sizeof extra, "%s", e->isp);
+        net_exit_sub(buf, sizeof buf, e, extra);
+        set_label_fmt(s_net_ex_key[i], c_key[i], sizeof c_key[i], "%s", key);
+        set_label_fmt(s_net_ex_ip[i], c_ip[i], sizeof c_ip[i], "%s",
+                      e->ip[0] ? e->ip : (e->present || n->err[0]) ? "—" : "查询中…");
+        set_label_fmt(s_net_ex_sub[i], c_sub[i], sizeof c_sub[i], "%s", buf);
+    }
+    uk_show(s_net_ex_row[1], two);
+
+    /* 运营商 */
+    net_oper_text(buf, sizeof buf, &n->home);
+    set_label_fmt(s_net_op[0], c_op[0], sizeof c_op[0], "%s", buf);
+    net_oper_text(buf, sizeof buf, &n->serving);
+    set_label_fmt(s_net_op[1], c_op[1], sizeof c_op[1], "%s", buf);
+    set_label_fmt(s_net_op[2], c_op[2], sizeof c_op[2], "%s", n->roaming > 0 ? "漫游中" : n->roaming == 0 ? "本地" : "—");
+    uk_text_color(s_net_op[2], n->roaming > 0 ? T->warnT : T->t1);
+    if (!strcmp(n->guard_phase, "registering"))
+        snprintf(buf, sizeof buf, "正在注册 %s…", n->guard_target);
+    else if (!strcmp(n->guard_phase, "reverting"))
+        snprintf(buf, sizeof buf, "正在恢复自动…");
+    else
+        snprintf(buf, sizeof buf, "%s", !strcmp(n->selection, "auto") ? "自动" : !strcmp(n->selection, "manual") ? "手动" : "—");
+    set_label_fmt(s_net_op[3], c_op[3], sizeof c_op[3], "%s", buf);
+
+    /* 手动选网：状态一句话，按「正在发生的事」优先 */
+    uint32_t st_col = T->t2;
+    if (net_flash_on(&s_ms_flash))
+        { snprintf(buf, sizeof buf, "%s", s_ms_flash.txt); st_col = s_ms_flash.col; }
+    else if (!strcmp(n->guard_phase, "registering"))
+        snprintf(buf, sizeof buf, "正在注册到 %s。没注册上会自动回到自动选网。", n->guard_target);
+    else if (!strcmp(n->guard_phase, "reverting"))
+        snprintf(buf, sizeof buf, "正在回到自动选网…");
+    else if (!strcmp(n->scan_state, "scanning"))
+        snprintf(buf, sizeof buf, "正在搜索，数据连接会断 1–3 分钟…");
+    else if (arm == 100)
+        { snprintf(buf, sizeof buf, "搜索时会断网 1–3 分钟，再点一次开始。"); st_col = T->warnT; }
+    else if (arm == 101)
+        { snprintf(buf, sizeof buf, "回到自动选网，可能短暂断网，再点一次确认。"); st_col = T->warnT; }
+    else if (arm >= 0 && arm < n->nops)   /* 只有运营商行；情景（200+）、按钮（100+）不是 */
+        { snprintf(buf, sizeof buf, "再点一次注册到 %s。没注册上会自动回到自动选网。",
+                   n->ops[arm].name[0] ? n->ops[arm].name : n->ops[arm].plmn); st_col = T->warnT; }
+    else if (aerr[0])
+        { snprintf(buf, sizeof buf, "%s", aerr); st_col = T->badT; }
+    else if (!strcmp(n->guard_phase, "revert_failed"))
+        { snprintf(buf, sizeof buf, "%s。重启设备也会回到自动选网。", n->guard_reason); st_col = T->badT; }
+    else if (!strcmp(n->guard_phase, "reverted"))
+        snprintf(buf, sizeof buf, !strcmp(n->guard_reason, "手动恢复自动") ? "已回到自动选网。" : "%s，已回到自动选网。",
+                 n->guard_reason);
+    else if (!strcmp(n->guard_phase, "ok"))
+        { snprintf(buf, sizeof buf, "已注册到 %s。要回自动选网点「恢复自动」。", n->guard_target); st_col = T->okT; }
+    else if (!strcmp(n->scan_state, "error"))
+        { snprintf(buf, sizeof buf, "搜索失败：%s", n->scan_err); st_col = T->badT; }
+    else if (!strcmp(n->scan_state, "done"))
+        snprintf(buf, sizeof buf, "点一个网络，再点一次确认注册。");
+    else
+        snprintf(buf, sizeof buf, "手动指定注册的网络。搜索会断网 1–3 分钟。");
+    /* 一句话放不下时，句号会单独掉到第二行：不要句号 */
+    size_t bl = strlen(buf);
+    if (bl >= 3 && !strcmp(buf + bl - 3, "。")) buf[bl - 3] = 0;
+    set_label_fmt(s_net_status, c_st, sizeof c_st, "%s", buf);
+    uk_text_color(s_net_status, st_col);
+
+    int ops = (!strcmp(n->scan_state, "done") && !busy) ? n->nops : 0;
+    for (int i = 0; i < NI_MAX_OPS; i++) {
+        const ni_scan_op_t *o = &n->ops[i];
+        if (i >= ops) { uk_show(s_net_opr[i], 0); continue; }
+        uk_show(s_net_opr[i], 1);
+        set_label_fmt(s_net_opr_name[i], c_on[i], sizeof c_on[i], "%s", o->name[0] ? o->name : o->plmn);
+        snprintf(buf, sizeof buf, "%s · %s%s%s", o->plmn, net_rat_name(o->rat),
+                 o->country[0] ? " · " : "", o->country);
+        set_label_fmt(s_net_opr_det[i], c_od[i], sizeof c_od[i], "%s", buf);
+        const char *tag = arm == i ? "再点一次确认" : !strcmp(o->status, "2") ? "当前" : !strcmp(o->status, "3") ? "禁止" : "";
+        uk_bg(s_net_opr[i], T->washW);
+        lv_obj_set_style_bg_opa(s_net_opr[i], arm == i ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
+        set_label_fmt(s_net_opr_tag[i], c_ot[i], sizeof c_ot[i], "%s", tag);
+        uk_text_color(s_net_opr_tag[i], arm == i ? T->warnT : T->t3);
+        uk_text_color(s_net_opr_name[i], !strcmp(o->status, "3") ? T->t3 : T->t1);
+    }
+    set_label_fmt(s_net_scan_lbl, c_sb, sizeof c_sb, "%s", arm == 100 ? "再点开始" : "搜索网络");
+    uk_button_kind(s_net_scan_btn, s_net_scan_lbl, arm == 100 ? UK_BTN_ARMED : UK_BTN_PLAIN);
+    set_label_fmt(s_net_auto_lbl, c_ab, sizeof c_ab, "%s", arm == 101 ? "再点确认" : "恢复自动");
+    uk_button_kind(s_net_auto_btn, s_net_auto_lbl, arm == 101 ? UK_BTN_ARMED : UK_BTN_PLAIN);
+
+    /* 邻小区。原厂扫描会断网且拿不到数据（2026-09-25 实测），agent 报
+     * unsupported：不给按钮，写明原因 */
+    int nbr_off = !strcmp(n->nbr_state, "unsupported");
+    uk_show(s_net_nbr_btn, !nbr_off);
+    lv_obj_set_width(s_net_nbr_state, UK_CARD_W - 2 * UK_PAD - (nbr_off ? 0 : 80));
+    if (nbr_off)
+        snprintf(buf, sizeof buf, "%s", n->nbr_err[0] ? n->nbr_err : "本机暂时读不到邻区");
+    else if (!strcmp(n->nbr_state, "scanning"))
+        snprintf(buf, sizeof buf, "扫描中…");
+    else if (arm == 102)
+        snprintf(buf, sizeof buf, "可能短暂影响网速");
+    else if (!strcmp(n->nbr_state, "error"))
+        snprintf(buf, sizeof buf, "扫描失败");
+    else if (n->nbr_at > 0) {
+        time_t tt = (time_t)n->nbr_at;   /* 设备时钟 = 当地时间标成 UTC，localtime 给出对的数字 */
+        struct tm tm;
+        char hm[8];
+        localtime_r(&tt, &tm);
+        strftime(hm, sizeof hm, "%H:%M", &tm);
+        snprintf(buf, sizeof buf, "%s 扫描 · %d 个", hm, n->ncells);
+    } else
+        snprintf(buf, sizeof buf, "还没扫过，点「扫描」读一次");
+    set_label_fmt(s_net_nbr_state, c_ns, sizeof c_ns, "%s", buf);
+    uk_text_color(s_net_nbr_state, arm == 102 ? T->warnT : T->t2);
+    set_label_fmt(s_net_nbr_lbl, c_nb, sizeof c_nb, "%s", arm == 102 ? "再点开始" : "扫描");
+    uk_button_kind(s_net_nbr_btn, s_net_nbr_lbl, arm == 102 ? UK_BTN_ARMED : UK_BTN_PLAIN);
+    for (int i = 0; i < NI_MAX_CELLS; i++) {
+        const ni_cell_t *cl = &n->cells[i];
+        if (i >= n->ncells) { uk_show(s_net_nbr_row[i], 0); continue; }
+        uk_show(s_net_nbr_row[i], 1);
+        set_label_fmt(s_net_nbr_l[i], c_nl[i], sizeof c_nl[i], "%-3s PCI %s  %s", cl->rat, cl->pci, cl->arfcn);
+        set_label_fmt(s_net_nbr_r[i], c_nr[i], sizeof c_nr[i], "%s%s", cl->rsrp[0] ? cl->rsrp : "-", cl->rsrp[0] ? " dBm" : "");
+    }
+
+    /* 已连接设备流量 */
+    {
+        static char c_cls[96], c_cn[NI_MAX_CLIENTS][48], c_ct[NI_MAX_CLIENTS][40], c_cs[NI_MAX_CLIENTS][96];
+        int k = n->nclients;
+        s_net_ncl = k;
+        uk_show(s_net_cl_state, k == 0);
+        set_label_fmt(s_net_cl_state, c_cls, sizeof c_cls, "%s",
+                      !n->clients_known ? "读取中…" : "现在没有 Wi-Fi 设备连着（网线和 USB 连的设备不在这里）");
+        for (int i = 0; i < NI_MAX_CLIENTS; i++) {
+            const ni_client_t *cl = &n->clients[i];
+            char a[16], b[16], ra[16], rb[16];
+            if (i >= k) { uk_show(s_net_cl_row[i], 0); continue; }
+            uk_show(s_net_cl_row[i], 1);
+            set_label_fmt(s_net_cl_name[i], c_cn[i], sizeof c_cn[i], "%s", cl->name[0] ? cl->name : cl->ip[0] ? cl->ip : cl->mac);
+            fmt_bytes_total(a, sizeof a, (long)cl->down);
+            fmt_bytes_total(b, sizeof b, (long)cl->up);
+            set_label_fmt(s_net_cl_tot[i], c_ct[i], sizeof c_ct[i], "\xE2\x86\x93%s \xE2\x86\x91%s", a, b);
+            if (cl->down_rate >= 0) fmt_rate_top(ra, sizeof ra, cl->down_rate, s_cf_speed_bits, 0); else snprintf(ra, sizeof ra, "-");
+            if (cl->up_rate >= 0)   fmt_rate_top(rb, sizeof rb, cl->up_rate, s_cf_speed_bits, 0);   else snprintf(rb, sizeof rb, "-");
+            /* 「5 GHz · ↓12K/s ↑3K/s · 信号很好」：频段在前（2.4 还是 5，2026-09-25 用户要的），
+             * 信号说成话；Wi-Fi 几代和协商速率放不下，管理网页的已连设备页有 */
+            char band[16] = "", sig[24] = "";
+            if (cl->band[0]) snprintf(band, sizeof band, "%s · ", cl->band);
+            if (cl->signal)
+                snprintf(sig, sizeof sig, " · %s", cl->signal >= -55 ? "信号很好" : cl->signal >= -67 ? "信号好" :
+                                                   cl->signal >= -75 ? "信号一般" : "信号弱");
+            if (cl->down_rate < 0 && cl->up_rate < 0)
+                set_label_fmt(s_net_cl_sub[i], c_cs[i], sizeof c_cs[i], "%s速率稍后显示%s", band, sig);
+            else
+                set_label_fmt(s_net_cl_sub[i], c_cs[i], sizeof c_cs[i], "%s\xE2\x86\x93%s/s \xE2\x86\x91%s/s%s", band, ra, rb, sig);
+        }
+    }
+
+    net_reflow(n->err[0] ? 22 : 0, scene_px, two ? 2 : 1, ops, n->ncells);
+}
+
 static void tile_click_cb(lv_event_t *e)
 {
     sub_open((int)(intptr_t)lv_event_get_user_data(e));
@@ -2183,51 +3499,71 @@ static void chill_nav_cb(lv_event_t *e)
     sub_open_child((int)(intptr_t)lv_event_get_user_data(e), SUB_CHILL);
 }
 
-static void build_func(lv_obj_t *t)
+/* 标签页上的一张「›」行卡片：每行开一个二级页，右边是 refresh_cb 写的状态字。 */
+static lv_obj_t *s_nav_sec, *s_nav_card;   /* 最近一张（出口标签要跟着出口 IP 挪） */
+static int nav_card(lv_obj_t *t, int y, const char *section, const int *ids, const char *const *names, int n)
 {
-    static const char *const k_tile_name[SUB_N] = {
-        "WiFi", "\xE7\x9F\xAD\xE4\xBF\xA1" /* 短信 */,
-        "\xE4\xBF\xA1\xE4\xBB\xA4\xE8\xAF\xBB\xE5\x8F\x96" /* 信令读取 */,
-        "\xE9\x94\x81\xE9\xA2\x91" /* 锁频 */, "\xE6\xB5\x8B\xE9\x80\x9F" /* 测速 */,
-        "CHILL", "eSIM", "\xE6\x80\xA7\xE8\x83\xBD\xE6\xB5\x8B\xE8\xAF\x95" /* 性能测试 */,
-        "Tailscale",
-        "\xE8\x8A\x82\xE7\x82\xB9" /* 节点 */,
-        "\xE8\xA7\x84\xE5\x88\x99 \xE2\x86\x92 \xE8\x8A\x82\xE7\x82\xB9" /* 规则 → 节点 */,
-    };
-    static const char *const k_tile_static[SUB_N] = {
-        NULL, NULL,
-        "\xE5\xB0\x8F\xE5\x8C\xBA/\xE9\x82\xBB\xE5\x8C\xBA/\xE6\x94\xAF\xE6\x8C\x81\xE9\xA2\x91\xE6\xAE\xB5", /* 小区/邻区/支持频段 */
-        NULL,   /* 锁频: refresh_cb writes the live 选网方式 */
-        /* 2026-09-22: this used to be a hardcoded "插件未安装" — stale as
-         * soon as speedtest.c stopped depending on that plugin. Now NULL,
-         * refresh_cb writes a live status same as the other dynamic tiles. */
-        NULL,
-        NULL, NULL,
-        "\xE8\xB0\x83\xE8\xAF\x95\xE9\xA1\xB5", /* 调试页 */
-        NULL, NULL, NULL,   /* SUB_TS/NODES/PAIRS: 不在磁贴墙上 */
-        NULL,               /* SUB_SMS_DETAIL: 从短信列表点进去 */
-        NULL,               /* SUB_ALERTS: 顶栏圆点 / 系统页「健康」 */
-    };
-    /* Explicit list, not 0..SUB_N: SUB_TS has a subpage but no tile (it is
-     * opened from the Tailscale card on Home). */
-    static const int k_tiles[] = { SUB_WIFI, SUB_SMS, SUB_CELL, SUB_LOCK,
-                                   SUB_SPEED, SUB_CHILL, SUB_ESIM, SUB_PERF };
-    static const char *const k_icon[SUB_N] = {
-        [SUB_WIFI] = LV_SYMBOL_WIFI, [SUB_SMS] = LV_SYMBOL_ENVELOPE, [SUB_CELL] = LV_SYMBOL_LIST,
-        [SUB_LOCK] = LV_SYMBOL_GPS, [SUB_SPEED] = LV_SYMBOL_CHARGE, [SUB_CHILL] = LV_SYMBOL_SHUFFLE,
-        [SUB_ESIM] = LV_SYMBOL_SD_CARD, [SUB_PERF] = LV_SYMBOL_SETTINGS,
-    };
-    int ntile = (int)(sizeof k_tiles / sizeof k_tiles[0]);
-    t = uk_scroll(t, 0, UI_VIEW_H, 4 + 4 * 88 + UK_TAB_PAD);
-    for (int k = 0; k < ntile; k++) {
-        int i = k_tiles[k];
-        uk_tile(&s_tile[i], t, UK_MARGIN + (k % 2) * 155, 4 + (k / 2) * 88, k_icon[i], k_tile_name[i],
-                tile_click_cb, (void *)(intptr_t)i);
-        s_tile_sub[i] = s_tile[i].sub;
-        /* 性能测试 is a debug page: its title in t3 says so */
-        uk_tile_set(&s_tile[i], 0, i == SUB_PERF, 0);
-        if (k_tile_static[i]) lv_label_set_text(s_tile_sub[i], k_tile_static[i]);
-    }
+    lv_obj_t *c;
+    s_nav_sec = uk_section(t, y, section);
+    s_nav_card = c = uk_card(t, UK_MARGIN, y + 20, UK_CARD_W, n * UK_ROW_H);
+    for (int k = 0; k < n; k++)
+        s_tile_sub[ids[k]] = uk_row_nav(c, k * UK_ROW_H, names[k], k == 0, tile_click_cb, (void *)(intptr_t)ids[k]);
+    return y + 20 + n * UK_ROW_H + 10;
+}
+
+/* 蜂窝：跟这张卡、这个运营商有关的都在这里。网络模式直接在标签上切（两下确认）。 */
+static void build_cellular(lv_obj_t *t)
+{
+    static const int ids1[] = { SUB_ESIM, SUB_APN };
+    static const char *const names1[] = { "SIM 与 eSIM", "APN" };
+    static const int ids2[] = { SUB_NET, SUB_LOCK, SUB_CELL };
+    static const char *const names2[] = { "运营商选择", "锁频", "小区信息" };
+    static const int ids3[] = { SUB_SMS };
+    static const char *const names3[] = { "短信" };
+    t = s_cell_scroll = uk_scroll(t, 0, UI_VIEW_H, 1000);
+    lv_obj_set_parent(s_ca_card, t);      /* 当前连接：每个载波（原首页载波明细） */
+    lv_obj_set_pos(s_ca_card, UK_MARGIN, 4);
+    t = s_cell_rest = lv_obj_create(t);
+    lv_obj_remove_style_all(t);
+    lv_obj_remove_flag(t, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_width(t, UK_W);
+    int y = nav_card(t, 4, "SIM 卡", ids1, names1, 2);
+
+    uk_section(t, y, "网络模式");
+    lv_obj_t *md = uk_card(t, UK_MARGIN, y + 20, UK_CARD_W, 84);
+    /* 顺序和取值照原厂网页（config.js AUTO_MODES）：5G NSA = LTE_AND_5G */
+    static const char *const k_mode_lab[4] = { "自动", "5G NSA", "5G SA", "4G" };
+    uk_seg(&s_lk_seg, md, UK_PAD, 12, UK_CARD_W - 2 * UK_PAD, k_mode_lab, 4, lk_mode_cb);
+    for (int i = 0; i < 4; i++) s_lk_mode_btn[i] = s_lk_seg.item[i];
+    s_lk_mode_lbl = uk_label_w(md, UF.cj12, T->t3, UK_PAD, 54, UK_CARD_W - 2 * UK_PAD, 0, "切换会短暂断网，需要按两次确认");
+    y += 20 + 84 + 10;
+
+    y = nav_card(t, y, "网络", ids2, names2, 3);
+    y = nav_card(t, y, "消息", ids3, names3, 1);
+    lv_obj_set_height(t, y);
+    cell_reflow();
+}
+
+static void cell_reflow(void)
+{
+    if (!s_cell_rest) return;
+    int y = 0, h = (int)lv_obj_get_style_height(s_ca_card, 0);
+    if (!lv_obj_has_flag(s_ca_card, LV_OBJ_FLAG_HIDDEN)) y = 4 + h + UK_MARGIN - 4;
+    lv_obj_set_y(s_cell_rest, y);
+    uk_scroll_extent(s_cell_scroll, y + (int)lv_obj_get_style_height(s_cell_rest, 0) - 10 + UK_TAB_PAD);
+}
+
+/* 出口：流量从哪出去（CHILL、Tailscale）、出去有多快。 */
+static void build_exit(lv_obj_t *t)
+{
+    static const int ids[] = { SUB_CHILL, SUB_TS, SUB_SPEED };
+    static const char *const names[] = { "CHILL", "Tailscale", "测速" };
+    t = s_nh_scroll[NH_EXIT] = uk_scroll(t, 0, UI_VIEW_H, 1000);
+    lv_obj_set_parent(s_chill_card, t);   /* 原首页的 CHILL 卡；Tailscale 卡 9-25 回到首页 */
+    s_nh_base[NH_EXIT] = 4;   /* 出口 IP（build_sub_net）在最上面，这张卡跟在后面（net_reflow） */
+    nav_card(t, 4, "代理与测速", ids, names, 3);
+    s_exit_nav_sec = s_nav_sec;
+    s_exit_nav_card = s_nav_card;
 }
 
 static void bench_cb(lv_timer_t *t)
@@ -2245,11 +3581,37 @@ static void bench_cb(lv_timer_t *t)
 static void perf_bench_jump_cb(lv_timer_t *t)
 {
     LV_UNUSED(t);
-    lv_tileview_set_tile_by_index(s_tv, TAB_FUNC, 0, LV_ANIM_OFF);
+    lv_tileview_set_tile_by_index(s_tv, TAB_SYS, 0, LV_ANIM_OFF);
     sub_open(SUB_PERF);
     lv_timer_resume(s_bench_timer);
 }
 #endif
+
+/* netinfo 里这台设备的 Wi-Fi 读数（按 MAC，没有 MAC 时按 IP） */
+static const ni_client_t *wifi_station_for(const char *mac, const char *ip)
+{
+    const netinfo_t *n = netinfo_get();
+    for (int k = 0; k < n->nclients; k++)
+        if (mac[0] && n->clients[k].mac[0] && !strcasecmp(mac, n->clients[k].mac)) return &n->clients[k];
+    for (int k = 0; k < n->nclients; k++)
+        if (ip[0] && !strcmp(ip, n->clients[k].ip)) return &n->clients[k];
+    return NULL;
+}
+
+/* 「5 GHz · ↓12K/s ↑3K/s · 信号很好」：频段在前（2.4 还是 5，2026-09-25 用户要的），
+ * 信号说成话；Wi-Fi 几代和协商速率放不下，管理网页的已连设备页有 */
+static void ni_client_line(char *out, size_t n, const ni_client_t *cl)
+{
+    char ra[16], rb[16], band[16] = "", sig[24] = "";
+    if (cl->down_rate >= 0) fmt_rate_top(ra, sizeof ra, cl->down_rate, s_cf_speed_bits, 0); else snprintf(ra, sizeof ra, "-");
+    if (cl->up_rate >= 0)   fmt_rate_top(rb, sizeof rb, cl->up_rate, s_cf_speed_bits, 0);   else snprintf(rb, sizeof rb, "-");
+    if (cl->band[0]) snprintf(band, sizeof band, "%s · ", cl->band);
+    if (cl->signal)
+        snprintf(sig, sizeof sig, " · %s", cl->signal >= -55 ? "信号很好" : cl->signal >= -67 ? "信号好" :
+                                           cl->signal >= -75 ? "信号一般" : "信号弱");
+    if (cl->down_rate < 0 && cl->up_rate < 0) snprintf(out, n, "%s速率稍后显示%s", band, sig);
+    else snprintf(out, n, "%s\xE2\x86\x93%s/s \xE2\x86\x91%s/s%s", band, ra, rb, sig);
+}
 
 static void refresh_wifi(const devui_data_t *d)
 {
@@ -2285,22 +3647,43 @@ static void refresh_wifi(const devui_data_t *d)
         set_label_fmt(s_w_cli_n, c_cli_n, sizeof c_cli_n, "%d/%d \xE5\x8F\xB0" /* 台 */, n, d->client_n);
     else
         set_label_fmt(s_w_cli_n, c_cli_n, sizeof c_cli_n, "%d \xE5\x8F\xB0", d->client_n);
+    int cli_y = 0;
     for (int i = 0; i < WIFI_MAX_CLI; i++) {
         if (i >= n) { uk_show(s_w_cli[i], 0); continue; }
         lv_obj_remove_flag(s_w_cli[i], LV_OBJ_FLAG_HIDDEN);
         set_label_fmt(s_w_cli_name[i], c_cli_name[i], sizeof c_cli_name[i], "%s",
                       d->client[i].name[0] ? d->client[i].name : "?");
         set_label_fmt(s_w_cli_ip[i], c_cli_ip[i], sizeof c_cli_ip[i], "%s", d->client[i].ip);
-        set_label_fmt(s_w_cli_mac[i], c_cli_mac[i], sizeof c_cli_mac[i], "%s", d->client[i].mac);
+        /* 这台是 Wi-Fi 设备：第二行换成「5 GHz · ↓… ↑… · 信号很好」，右下是总流量
+         * （原情景·网络页的设备流量，2026-09-25 并到这里）；网线 / USB 设备照旧写 MAC */
+        const ni_client_t *w = wifi_station_for(d->client[i].mac, d->client[i].ip);
+        static char c_tot[WIFI_MAX_CLI][40];
+        if (w) {
+            char line[96], a[16], b[16];
+            ni_client_line(line, sizeof line, w);
+            set_label_fmt(s_w_cli_mac[i], c_cli_mac[i], sizeof c_cli_mac[i], "%s", line);
+            fmt_bytes_total(a, sizeof a, (long)w->down);
+            fmt_bytes_total(b, sizeof b, (long)w->up);
+            set_label_fmt(s_w_cli_tot[i], c_tot[i], sizeof c_tot[i], "连上以来 \xE2\x86\x93%s \xE2\x86\x91%s", a, b);
+        } else {
+            set_label_fmt(s_w_cli_mac[i], c_cli_mac[i], sizeof c_cli_mac[i], "%s", d->client[i].mac);
+            set_label_fmt(s_w_cli_tot[i], c_tot[i], sizeof c_tot[i], "%s", "");
+        }
+        /* Wi-Fi 设备多一行总流量：行高跟着变 */
+        int rh = w ? WIFI_CLI_H + 18 : WIFI_CLI_H;
+        lv_obj_set_y(s_w_cli[i], cli_y);
+        lv_obj_set_height(s_w_cli[i], rh);
+        cli_y += rh;
     }
     /* Reflow: the card shrinks to the rows shown, DHCP follows. */
     uk_show(s_w_cli_empty, n == 0);
-    int cli_h = n ? n * WIFI_CLI_H : UK_ROW_H;
+    int cli_h = n ? cli_y : UK_ROW_H;
     lv_obj_set_height(s_w_cli_card, cli_h);
     int dy = lv_obj_get_style_y(s_w_cli_card, 0) + cli_h + 10;
     lv_obj_set_y(s_w_dhcp_sec, dy);
     lv_obj_set_y(s_w_dhcp_card, dy + 20);
-    uk_scroll_extent(s_w_scroll, dy + 20 + 3 * UK_ROW_H + 16);
+    int base = dy + 20 + 3 * UK_ROW_H + 10;
+    if (base != s_nh_base[NH_WIFI]) { s_nh_base[NH_WIFI] = base; net_relayout(); }
 
     /* DHCP — mirrors htmlmain.c's own summary formatting. */
     static char c_gw[28] = "", c_pool[48] = "", c_lease[24] = "";
@@ -2315,6 +3698,64 @@ static void refresh_wifi(const devui_data_t *d)
 }
 
 /* ---- refresh ---- */
+/* eSIM 列表。定时刷新在数据变了时画，点一下也当场画（esim_row_cb）。 */
+static void esim_paint(void)
+{
+    s_es_dirty = 0;
+    int n = esim_profile_count();
+
+    int plain = s_sim.kind == UI_SIM_PLAIN, none = s_sim.kind == UI_SIM_NONE;
+    const char *cur = esim_current();
+    char tail[16] = "";
+    {
+        size_t l = strlen(s_sim.iccid);
+        while (l && (s_sim.iccid[l - 1] == 'F' || s_sim.iccid[l - 1] == 'f')) l--;
+        if (l >= 4) snprintf(tail, sizeof tail, "尾号 %.4s", s_sim.iccid + l - 4);
+    }
+    /* 顶上一块写的是「现在用的这张卡」：实体 SIM 写运营商，eSIM 写配置名 */
+    lv_label_set_text(s_es_hero.st, none ? "没有卡" : plain ? "使用中 · 实体 SIM 卡" : "使用中 · eSIM");
+    lv_label_set_text(s_es_cur, none ? "没插卡" : plain ? (s_sim.oper[0] ? s_sim.oper : "SIM 卡")
+                                                        : (cur[0] && strcmp(cur, "-") ? cur : "—"));
+    if (net_flash_on(&s_es_flash)) {
+        lv_label_set_text(s_es_state, s_es_flash.txt);
+        uk_text_color(s_es_state, s_es_flash.col);
+    } else {
+        lv_label_set_text(s_es_state, none ? "插上 SIM 卡或 eSIM 卡后这里显示卡信息"
+                                     : plain ? (s_sim.msisdn[0] ? s_sim.msisdn : "号码没写在卡里") : esim_state());
+        uk_text_color(s_es_state, T->t2);
+    }
+    lv_label_set_text(s_es_hero.rtop, plain ? tail : "");
+    lv_label_set_text(s_es_info[0], s_sim.msisdn[0] ? s_sim.msisdn : "—");
+    lv_label_set_text(s_es_info[1], s_sim.iccid[0] ? s_sim.iccid : "—");
+    lv_label_set_text(s_es_info[2], s_sim.imsi[0] ? s_sim.imsi : "—");
+    lv_label_set_text(s_es_list_sec, plain && n ? "eSIM 配置（现在没在用）" : "eSIM 配置");
+    uk_show(s_es_empty, n == 0);
+    if (n == 0) {
+        const char *st = esim_state();
+        lv_label_set_text(s_es_empty, plain ? "现在插的是普通 SIM 卡，没有 eSIM 配置。换成 eSIM 卡后可以在这里切换。"
+                                     : !esim_loaded() && strcmp(st, "就绪") == 0 ? "读取中…"
+                                     : strcmp(st, "就绪") ? st : "还没有 eSIM 配置 · 用管理网页添加");
+    }
+    for (int i = 0; i < ESIM_MAX_ROWS; i++) {
+        if (i >= n) { uk_show(s_es_row[i], 0); continue; }
+        esim_profile_t p;
+        esim_get_profile(i, &p);
+        uk_show(s_es_row[i], 1);
+        lv_label_set_text(s_es_row_name[i], p.name);
+        lv_label_set_text(s_es_row_sub[i], p.sub);
+        if (p.enabled && !plain) lv_label_set_text(s_es_hero.rtop, p.sub);
+        lv_label_set_text(s_es_row_tag[i],
+            p.going ? "切换中…" : p.armed ? "再点一次确认切换" : p.enabled ? (plain ? "已启用" : "使用中") : "");
+        /* 正在用的、切换中的也能点：esim_row_cb 会说一句为什么不动 */
+        uk_bg(s_es_row[i], p.armed ? T->fillOrange : p.enabled ? T->accS : T->card);
+        uint32_t fg = p.armed ? 0xffffff : T->t1;
+        uk_text_color(s_es_row_name[i], fg);
+        uk_text_color(s_es_row_sub[i], p.armed ? T->onFill : T->t3);
+        uk_text_color(s_es_row_tag[i], p.armed ? 0xffffff : p.enabled ? T->accT : T->t2);
+    }
+    lv_obj_set_height(s_es_list_card, n ? n * ESIM_ROW_H : UK_ROW_H);
+}
+
 static void refresh_cb(lv_timer_t *t)
 {
     appearance_tick();
@@ -2395,6 +3836,22 @@ static void refresh_cb(lv_timer_t *t)
         }
     }
 
+    /* 网络页只靠 zte-agent，不靠 datad：放在 datad 的提前返回之前。首页的
+     * 网络卡也读它（30 秒一次、精简读取），画在后面首页那段。 */
+    {
+        /* 只有运营商选择页做完整读取（agent 会读 AT+COPS?）；别的页只要它显示的那部分 */
+        int ni_mode = sub_visible(SUB_NET) ? NI_PAGE :
+                      (sub_visible(SUB_APN) || tab_visible(TAB_CELL)) ? NI_APN :
+                      tab_visible(TAB_WIFI) ? NI_CLIENTS :
+                      (sub_visible(SUB_SCENE) || sub_visible(SUB_CELL) || tab_visible(TAB_EXIT)) ? NI_LITE :
+                      tab_visible(TAB_HOME) ? NI_HOME : NI_OFF;
+        int paint = ni_mode != NI_OFF && ni_mode != NI_HOME;
+        static int ni_last;
+        int ni_changed = netinfo_poll(ni_mode) || (paint && ni_last != ni_mode);
+        ni_last = ni_mode;
+        if (paint) net_paint(ni_changed);
+    }
+
     if (!data_refresh(&d)) {
         /* Backend down is a device-wide condition, so it is reported once in
          * the shared banner instead of overwriting home-page content. */
@@ -2425,7 +3882,9 @@ static void refresh_cb(lv_timer_t *t)
             uint32_t col = i < d.bars ? sig_col : T->track;
             if (col != c_sig[i]) { c_sig[i] = col; uk_bg(s_top_sig[i], col); }
         }
-        set_label_fmt(s_top_net, c_net, sizeof c_net, "%s", d.net_type);
+        /* the phone-style label (5G-A / 5G+ / 4G+ / 3G …) needs the carrier
+         * counts, so the signal card below writes it (s_top_label) */
+        set_label_fmt(s_top_net, c_net, sizeof c_net, "%s", s_top_label[0] ? s_top_label : ui_rat_short(d.net_type));
         char dn[16], up[16], dn2[16], up2[16], full[48], shrt[48], down[24];
         fmt_rate_top(dn, sizeof dn, d.rx_speed, s_cf_speed_bits, 0);
         fmt_rate_top(up, sizeof up, d.tx_speed, s_cf_speed_bits, 0);
@@ -2480,10 +3939,26 @@ static void refresh_cb(lv_timer_t *t)
         int nr_extra = parse_ca(d.nrca, ca + ca_n, CA_SLOTS - ca_n);
         for (int i = 0; i < nr_extra; i++) pfx[ca_n + i] = 'n';
         ca_n += nr_extra;
+        ui_rat_t rat = ui_rat(d.net_type);
         if (ca_n < CA_SLOTS) {
             int lte_n = parse_ca(d.lteca, ca + ca_n, CA_SLOTS - ca_n);
             for (int i = 0; i < lte_n; i++) pfx[ca_n + i] = 'B';
             ca_n += lte_n;
+            /* 4G without carrier aggregation (and an NSA anchor the modem does
+             * not list in lteca): the LTE serving cell is only in lte_*. */
+            if (!lte_n && d.lte_rsrp != 0 && (rat == UI_RAT_4G || rat == UI_RAT_5G_NSA)) {
+                char bs[16];
+                ui_band_short(d.band, 0, bs, sizeof bs);
+                ca[ca_n].band = atoi(bs + 1);
+                ca[ca_n].pci = d.lte_pci;
+                ca[ca_n].arfcn = d.channel;
+                ca[ca_n].bw = atoi(d.bandwidth);
+                ca[ca_n].rsrp = d.lte_rsrp;
+                ca[ca_n].rsrq = d.lte_rsrq;
+                ca[ca_n].sinr = atof(d.lte_snr[0] ? d.lte_snr : "0");
+                ca[ca_n].active = 1;
+                pfx[ca_n++] = 'B';
+            }
         }
         int total_bw = 0, nr_cc = 0, lte_cc = 0;
         for (int i = 0; i < ca_n; i++) {
@@ -2497,44 +3972,74 @@ static void refresh_cb(lv_timer_t *t)
         else                 snprintf(cnt, sizeof cnt, "无载波");
 
         double sinr0 = ca_n ? ca[0].sinr : 0;
-        ui_sig_state_t sst = ui_sig_state(1, 1, d.sim_state, d.bars, ca_n > 0, sinr0);
+        int act_n = 0, act_bw = 0, act_nr = 0, act_lte = 0;
+        for (int i = 0; i < ca_n; i++)
+            if (ca[i].active) {
+                act_n++; act_bw += ca[i].bw;
+                if (pfx[i] == 'n') act_nr++; else act_lte++;
+            }
+        /* 漫游：datad 的 net.roaming（Home / Roaming / …） */
+        const char *rm = d.roaming;
+        int roam = rm[0] && strcmp(rm, "Home") && strcmp(rm, "home") && strcmp(rm, "0");
+        /* 结论、解读、下一步：全部在 ui_net_story 里按优先级决定（有逐条单测）；
+         * 这里只负责把它画出来，参数只作为小字佐证。 */
+        const char *ws = d.wan_status;
+        ui_net_in_t nin = {
+            .ever_valid = 1, .valid = 1, .sim_state = d.sim_state,
+            .airplane = strstr(d.operate_mode, "LPM") || strstr(d.operate_mode, "OFFLINE"),
+            .net_type = d.net_type, .bars = d.bars,
+            .data_up = !ws[0] || (strstr(ws, "connected") && !strstr(ws, "disconnect")),
+            .roaming = !rm[0] ? -1 : roam, .n_active = act_n, .nr_active = act_nr, .lte_active = act_lte,
+            .mhz = act_bw,
+            .sinr_valid = ca_n > 0, .sinr = sinr0, .rsrp_valid = ca_n > 0, .rsrp = ca_n ? (int)ca[0].rsrp : 0,
+            .net_select = d.net_select,
+        };
+        ui_net_story_t story;
+        ui_net_story(&nin, &story);
+        snprintf(s_top_label, sizeof s_top_label, "%s", story.rat);
         static uint32_t nosig_since;
-        if (sst == UI_SIG_NONE) { if (!nosig_since) nosig_since = lv_tick_get() ? lv_tick_get() : 1; }
+        int nosvc = !strcmp(story.headline, "无服务") || !strcmp(story.headline, "只能紧急呼叫");
+        if (nosvc) { if (!nosig_since) nosig_since = lv_tick_get() ? lv_tick_get() : 1; }
         else nosig_since = 0;
-        int tone = sst == UI_SIG_GOOD ? 0 : sst == UI_SIG_WEAK ? 1 : 2;
+        int tone = story.tone == UI_NET_OK ? 0 : story.tone == UI_NET_WARN ? 1 : story.tone == UI_NET_BAD ? 2 : 3;
         if (tone != s_cc_tone) { s_cc_tone = tone; uk_hero_tone(&s_cc_hero, tone); }
-        const char *hint = "";
-        int words = 0;   /* the big field shows words, not a number */
-        if (sst == UI_SIG_NOSIM) {
+        const char *hint = story.hint;
+        /* 顶行：谁的网 · 什么网 · 本地/漫游 */
+        if (!sim_usable_ui(d.sim_state))
             set_label_fmt(s_cc_hero.st, c_st, sizeof c_st, "%s", "没有 SIM 卡");
-            set_label_fmt(s_cc_hero.rtop, c_rtop, sizeof c_rtop, "%s", "");
-            set_label_fmt(s_cc_hero.big, c_big, sizeof c_big, "%s", "无 SIM");
-            set_label_fmt(s_cc_hero.r1, c_r1, sizeof c_r1, "%s", "");
-            set_label_fmt(s_cc_hero.r2, c_r2, sizeof c_r2, "%s", "");
-            hint = "插卡，或在「功能 → eSIM」启用一个配置";
-            words = 1;
-        } else if (sst == UI_SIG_NONE) {
+        else
+        {
+            /* 顶栏已经是简写（5G-A / 4G+ …），这里写更细的：怎么组网、哪种技术 */
+            char fine[32];
+            ui_rat_long(d.net_type, fine, sizeof fine);
+            set_label_fmt(s_cc_hero.st, c_st, sizeof c_st, "%s%s%s%s",
+                          d.operator_name[0] ? d.operator_name : "未注册",
+                          fine[0] ? " · " : "", fine,
+                          !rm[0] || nosvc ? "" : roam ? " · 漫游" : " · 本地");
+        }
+        set_label_fmt(s_cc_hero.big, c_big, sizeof c_big, "%s", story.headline);
+        if (nosvc) {
             uint32_t mins = (lv_tick_get() - nosig_since) / 60000;
-            set_label_fmt(s_cc_hero.st, c_st, sizeof c_st, "%s", "没有信号");
             if (mins) set_label_fmt(s_cc_hero.rtop, c_rtop, sizeof c_rtop, "已 %u 分钟", (unsigned)mins);
             else      set_label_fmt(s_cc_hero.rtop, c_rtop, sizeof c_rtop, "%s", "刚刚");
-            set_label_fmt(s_cc_hero.big, c_big, sizeof c_big, "%s", "无服务");
-            set_label_fmt(s_cc_hero.r1, c_r1, sizeof c_r1, "%s", "正在搜网");
-            set_label_fmt(s_cc_hero.r2, c_r2, sizeof c_r2, "%s", d.operator_name[0] ? d.operator_name : "SIM 正常");
-            hint = "换个位置试试；锁过频就去「锁频」恢复默认配置";
-            words = 1;
+        } else
+            set_label_fmt(s_cc_hero.rtop, c_rtop, sizeof c_rtop, "%s", "");
+        /* 右边：信号好坏的一句评价，下面是依据 */
+        if (story.quality[0] && !nosvc) {
+            char sinr_s[16];
+            snprintf(sinr_s, sizeof sinr_s, "%.1f", sinr0);
+            set_label_fmt(s_cc_hero.r1, c_r1, sizeof c_r1, "%s", story.quality);
+            set_label_fmt(s_cc_hero.r2, c_r2, sizeof c_r2, "SINR %s · RSRP %d", sinr_s, (int)ca[0].rsrp);
+            uk_text_color(s_cc_hero.r1, story.quality_tone == UI_NET_OK ? T->okT :
+                                        story.quality_tone == UI_NET_WARN ? T->warnT : T->badT);
+        } else if (!nosvc && d.rssi && (ui_rat(d.net_type) == UI_RAT_3G || ui_rat(d.net_type) == UI_RAT_2G)) {
+            set_label_fmt(s_cc_hero.r1, c_r1, sizeof c_r1, "%s", d.bars >= 3 ? "信号良好" : "信号一般");
+            set_label_fmt(s_cc_hero.r2, c_r2, sizeof c_r2, "RSSI %d dBm", d.rssi);
+            uk_text_color(s_cc_hero.r1, d.bars >= 3 ? T->okT : T->warnT);
         } else {
-            set_label_fmt(s_cc_hero.st, c_st, sizeof c_st, "%s", sst == UI_SIG_GOOD ? "信号良好" : "信号偏弱");
-            set_label_fmt(s_cc_hero.rtop, c_rtop, sizeof c_rtop, "QCI %d · AMBR %d/%d", d.qci, (int)d.ambr_dl, (int)d.ambr_ul);
-            set_label_fmt(s_cc_hero.big, c_big, sizeof c_big, "%d", total_bw);
-            set_label_fmt(s_cc_hero.r1, c_r1, sizeof c_r1, "%s", d.net_type[0] ? d.net_type : "-");
-            set_label_fmt(s_cc_hero.r2, c_r2, sizeof c_r2, "%s · %s", d.operator_name[0] ? d.operator_name : "-", cnt);
-        }
-        if (words != s_cc_words) {
-            s_cc_words = words;
-            lv_obj_set_style_text_font(s_cc_hero.big, words ? UF.cj24b : UF.n32, 0);
-            lv_obj_set_y(s_cc_hero.big, words ? 34 : 30);
-            uk_show(s_cc_hero.unit, !words);
+            set_label_fmt(s_cc_hero.r1, c_r1, sizeof c_r1, "%s", nosvc ? "正在搜网" : "");
+            set_label_fmt(s_cc_hero.r2, c_r2, sizeof c_r2, "%s", "");
+            uk_text_color(s_cc_hero.r1, T->t1);
         }
         uk_hero_layout(&s_cc_hero);
 
@@ -2546,16 +4051,87 @@ static void refresh_cb(lv_timer_t *t)
             lv_obj_set_y(s_cc_hint, y + 10);
             y += 46;
         }
+        /* 载波块：标题行右边是在用总带宽；第一行是解读（几条载波聚合、带宽
+         * 宽不宽，3G/2G 写不支持聚合），第二行才是每个载波的频段和带宽。
+         * 未激活的只在下面的载波明细卡里。 */
+        {
+            static char c_cas[32], c_qos[48], c_link[96], c_list[160];
+            char list[160] = "";
+            size_t lo = 0;
+            for (int i = 0; i < ca_n && lo + 16 < sizeof list; i++) {
+                char b[20];
+                if (!ca[i].active) continue;
+                if (ca[i].band) snprintf(b, sizeof b, "%c%d", pfx[i], ca[i].band);
+                else if (pfx[i] == 'n') ui_band_short(d.nr_band, 1, b, sizeof b);
+                else ui_band_short(d.band, 0, b, sizeof b);
+                if (ca[i].bw) lo += (size_t)snprintf(list + lo, sizeof list - lo, "%s%s %dM", lo ? " · " : "", b, ca[i].bw);
+                else          lo += (size_t)snprintf(list + lo, sizeof list - lo, "%s%s", lo ? " · " : "", b);
+            }
+            ui_rat_t r2 = ui_rat(d.net_type);
+            if (!act_n && (r2 == UI_RAT_3G || r2 == UI_RAT_2G)) {
+                /* 小字：具体是哪种（WCDMA / EDGE / CDMA2000 …）和频段 */
+                char bs[16] = "";
+                if (d.band[0]) ui_band_short(d.band, 0, bs, sizeof bs);
+                snprintf(list, sizeof list, "%s", bs);   /* 技术名已经在顶行 */
+            }
+            if (act_bw) set_label_fmt(s_hr_ca.val, c_cas, sizeof c_cas, "%d MHz", act_bw);
+            else        set_label_fmt(s_hr_ca.val, c_cas, sizeof c_cas, "%s", "");
+            set_label_fmt(s_hr_ca_link, c_link, sizeof c_link, "%s",
+                          story.link[0] ? story.link : nosvc ? "没连上基站" : "没有在用的载波");
+            uk_text_color(s_hr_ca_link, story.link[0] ? T->t1 : T->t3);
+            set_label_fmt(s_hr_ca_list, c_list, sizeof c_list, "%s", list);
+            uk_show(s_hr_ca_list, list[0] != 0);
+            lv_obj_update_layout(s_hr_ca_link);
+            int ly = 34 + lv_obj_get_height(s_hr_ca_link);
+            lv_obj_set_y(s_hr_ca_list, ly + 2);
+            if (list[0]) {
+                lv_obj_update_layout(s_hr_ca_list);
+                ly += 2 + lv_obj_get_height(s_hr_ca_list);
+            }
+            int ch = ly + 10;
+            lv_obj_set_height(s_hr_ca.box, ch);
+            lv_obj_set_y(s_hr_ca.box, y);
+            y += ch;
+            set_label_fmt(s_ca_qos, c_qos, sizeof c_qos, "QCI %d · AMBR %d/%d", d.qci, (int)d.ambr_dl, (int)d.ambr_ul);
+        }
+        /* Wi-Fi · 设备数（点进 Wi-Fi 页） */
+        {
+            static char c_w[64];
+            if (!d.wifi_enabled)
+                set_label_fmt(s_hr_wifi.val, c_w, sizeof c_w, "%s", "已关闭");
+            else
+                set_label_fmt(s_hr_wifi.val, c_w, sizeof c_w, "%.16s · %d 台", d.wifi_ssid[0] ? d.wifi_ssid : "-",
+                              d.clients_total);
+            uk_text_color(s_hr_wifi.val, d.wifi_enabled ? T->t1 : T->t3);
+            lv_obj_set_y(s_hr_wifi.box, y);
+            y += UK_ROW_H;
+        }
+        /* 出口：CHILL 经哪出去，没开就是蜂窝直连的归属地（值在「出口 (Home)」那段写） */
+        lv_obj_set_y(s_hr_exit.box, y);
+        y += UK_ROW_H;
+        /* 今日/本月：固件（zwrt_data）按日历日/月累计的计数器，不是本次开机的 rx/tx */
+        {
+            char c_day[32], c_month[32];
+            static char c_traf[80] = "";
+            fmt_bytes_total(c_day, sizeof c_day, d.day_rx_bytes + d.day_tx_bytes);
+            fmt_bytes_total(c_month, sizeof c_month, d.month_rx_bytes + d.month_tx_bytes);
+            set_label_fmt(s_hr_traf.val, c_traf, sizeof c_traf, "今日 %s · 本月 %s", c_day, c_month);
+            uk_text_color(s_hr_traf.val, T->t1);
+            lv_obj_set_y(s_hr_traf.box, y);
+            y += UK_ROW_H;
+        }
+        lv_obj_set_height(s_cell_card, y);
+        y = CA_CARD_TOP;
         for (int i = 0; i < CA_SLOTS; i++) {
             home_ca_t *k = &s_ca[i];
             if (i >= ca_n) { uk_show(k->box, 0); continue; }
             uk_show(k->box, 1);
-            uk_show(k->sep, i > 0 || hint[0]);
+            uk_show(k->sep, 1);
             int act = ca[i].active;
             char band_s[16];
             if (ca[i].band)         snprintf(band_s, sizeof band_s, "%c%d", pfx[i], ca[i].band);
             else if (pfx[i] == 'n') snprintf(band_s, sizeof band_s, "%s", d.nr_band[0] ? d.nr_band : "-");
-            else                    snprintf(band_s, sizeof band_s, "%s", d.band[0] ? d.band : "-");
+            else                    ui_band_short(d.band, 0, band_s, sizeof band_s);
             const char *fl = pfx[i] == 'n' ? "ARFCN" : "EARFCN";
             lv_obj_t *on[8] = { k->band, k->bw, k->rsrp, k->rsrp_c, k->sinr, k->sinr_c, k->pci, k->arfcn };
             for (int j2 = 0; j2 < 8; j2++) uk_show(on[j2], act);
@@ -2585,20 +4161,43 @@ static void refresh_cb(lv_timer_t *t)
             lv_obj_set_y(k->box, y);
             y += act ? 40 : 32;
         }
-        /* 今日/本月：固件（zwrt_data）按日历日/月累计的计数器，不是本次开机的 rx/tx */
-        {
-            char c_day[32], c_month[32];
-            static char c_traf[80] = "";
-            fmt_bytes_total(c_day, sizeof c_day, d.day_rx_bytes + d.day_tx_bytes);
-            fmt_bytes_total(c_month, sizeof c_month, d.month_rx_bytes + d.month_tx_bytes);
-            set_label_fmt(s_cc_traffic, c_traf, sizeof c_traf, "今日 %s · 本月 %s", c_day, c_month);
-            lv_obj_set_y(s_cc_tsep, y);
-            lv_obj_set_y(s_cc_tkey, y + 10);
-            lv_obj_set_y(s_cc_traffic, y + 9);
-            uk_text_color(s_cc_traffic, T->t2);
-            y += 34;
-        }
-        lv_obj_set_height(s_cell_card, y);
+        lv_obj_set_height(s_ca_card, y + (ca_n ? 2 : 0));
+        uk_show(s_ca_card, ca_n > 0);
+        cell_reflow();
+    }
+
+    /* ---- 出口 (Home) ----
+     * IP 和归属地来自 zte-agent 的缓存（netinfo_poll 在首页 30 秒读一次）；
+     * 运营商和漫游已经在状态卡顶行。 */
+    if (tab_visible(TAB_HOME)) {
+        static char c_nip[48], c_ngeo[320];
+        const netinfo_t *n = netinfo_get();
+        int two = n->proxy.present && strcmp(n->proxy.ip, n->direct.ip);
+        int dead = s_cc_tone >= 2;      /* 没信号 / 没卡：出口和 CHILL 速率都是旧的 */
+        char g[320];
+        set_label_fmt(s_nh_ip, c_nip, sizeof c_nip, "%s", n->direct.ip[0] ? n->direct.ip : "—");
+        uk_text_color(s_nh_ip, dead ? T->t3 : T->t1);
+        uk_text_color(s_ct_rate, dead ? T->t3 : T->t1);
+        if (n->err[0]) snprintf(g, sizeof g, "%s", n->err);
+        else if (!n->direct.present) snprintf(g, sizeof g, "归属地查询中…");
+        else if (!n->direct.ip[0]) snprintf(g, sizeof g, "查不到归属地");
+        else snprintf(g, sizeof g, "%s%s%s%s%s", n->direct.geo[0] ? n->direct.geo : n->direct.ip,
+                      n->direct.isp[0] ? " · " : "", n->direct.isp,
+                      two ? " · CHILL " : "", two ? (n->proxy.geo[0] ? n->proxy.geo : n->proxy.ip) : "");
+        set_label_fmt(s_nh_geo, c_ngeo, sizeof c_ngeo, "%s", g);
+        /* 首页「出口」行：CHILL 开着写它的出口在哪，没开写蜂窝直连。
+         * 归属地只写国家和城市（「美国 加利福尼亚州 洛杉矶」→「美国 洛杉矶」），
+         * 完整的在出口标签。 */
+        static char c_hx[96];
+        char sg[96];
+        if (n->proxy.present && chill_online())
+            snprintf(g, sizeof g, "CHILL · %s", n->proxy.geo[0] ? geo_short(n->proxy.geo, sg, sizeof sg) : n->proxy.ip[0] ? n->proxy.ip : "—");
+        else if (n->direct.ip[0])
+            snprintf(g, sizeof g, "直连 · %s", n->direct.geo[0] ? geo_short(n->direct.geo, sg, sizeof sg) : n->direct.ip);
+        else
+            snprintf(g, sizeof g, "%s", n->err[0] ? "—" : "查询中…");
+        set_label_fmt(s_hr_exit.val, c_hx, sizeof c_hx, "%s", g);
+        uk_text_color(s_hr_exit.val, dead ? T->t3 : T->t1);
     }
 
     /* ---- 情景 (Home) ---- */
@@ -2615,32 +4214,36 @@ static void refresh_cb(lv_timer_t *t)
                 if (!sc.enabled)
                     set_label_fmt(s_sc_state, c_ss, sizeof c_ss, "已停用");
                 else
-                    set_label_fmt(s_sc_state, c_ss, sizeof c_ss, "%s%s",
-                                  sc.name[0] ? sc.name : "判定中",
-                                  sc.pin[0] ? " · 已固定" : "");
+                    set_label_fmt(s_sc_state, c_ss, sizeof c_ss, "%s", sc.name[0] ? sc.name : "判定中");
                 uk_text_color(s_sc_state, sc.enabled ? T->t1 : T->t3);
                 if (sc.last_switch > 0) {
                     time_t tt = (time_t)sc.last_switch;
                     struct tm tm;
+                    /* 磁贴只有 121 px 宽：当天只写时间，更早的只写日期 */
+                    time_t nw = time(NULL);
+                    struct tm tn;
                     localtime_r(&tt, &tm);
-                    strftime(when, sizeof when, "%m-%d %H:%M", &tm);
+                    localtime_r(&nw, &tn);
+                    int today = tm.tm_year == tn.tm_year && tm.tm_yday == tn.tm_yday;
+                    strftime(when, sizeof when, today ? "%H:%M" : "%m-%d", &tm);
                 }
                 /* 在家：解释 Wi-Fi 为什么没了；判定中：为什么还没结论；
-                 * 其他：上次什么时候切过来的 */
+                 * 其他：上次什么时候切过来的。手动固定的，先说「已固定」 */
+                const char *pinned = sc.pin[0] ? "已固定 · " : "";
                 uint32_t note_col = T->t2;
                 if (sc.enabled && !sc.name[0])
                     set_label_fmt(s_sc_note, c_sn, sizeof c_sn, "开机后要连续两次扫描确认位置");
                 else if (sc.abroad && sc.chill_on == 1) {
                     /* 在国外：直接写 CHILL 现在怎么走，点卡片改 */
                     note_col = T->accT;
-                    set_label_fmt(s_sc_note, c_sn, sizeof c_sn, "CHILL：%s · 点这里改", chill_mode());
+                    set_label_fmt(s_sc_note, c_sn, sizeof c_sn, "%sCHILL %s", pinned, chill_mode());
                 } else if (sc.abroad && sc.chill_on == 0) {
                     note_col = T->accT;
-                    set_label_fmt(s_sc_note, c_sn, sizeof c_sn, "%s",
-                                  sc.chill_back ? "CHILL 已关 · 回国自动打开 · 点这里改" : "CHILL 已关 · 点这里改");
+                    set_label_fmt(s_sc_note, c_sn, sizeof c_sn, "%s%s", pinned,
+                                  sc.chill_back ? "CHILL 已关，回国自动开" : "CHILL 已关");
                 } else
-                    set_label_fmt(s_sc_note, c_sn, sizeof c_sn, "%s%s%s",
-                                  sc.wifi_off ? "Wi-Fi 已关 · " : (when[0] ? "上次切换 " : ""),
+                    set_label_fmt(s_sc_note, c_sn, sizeof c_sn, "%s%s%s%s", pinned,
+                                  sc.wifi_off ? "Wi-Fi 已关 · " : (when[0] ? "切换于 " : ""),
                                   when, sc.wifi_off && !when[0] ? "手机走家里网络" : "");
                 uk_text_color(s_sc_note, note_col);
             }
@@ -2657,11 +4260,13 @@ static void refresh_cb(lv_timer_t *t)
 
     /* ---- Tailscale (Home) ---- */
     {
-        if (tailscale_poll(tab_visible(TAB_HOME))) {
+        if (tailscale_poll(tab_visible(TAB_HOME) || tab_visible(TAB_EXIT) || sub_visible(SUB_TS))) {
             tailscale_status_t ts;
             tailscale_get_status(&ts);
             if (!ts.available) {
                 lv_obj_add_flag(s_ts_card, LV_OBJ_FLAG_HIDDEN);
+                uk_show(s_nh_tsrow, 0);
+                lv_obj_set_height(s_nh_card, NET_EXIT_ROW_H);
             } else {
                 const char *state_txt, *note = "";
                 uint32_t state_col, dot_col;
@@ -2678,6 +4283,19 @@ static void refresh_cb(lv_timer_t *t)
                 else if (!strcmp(ts.state, "Stopped"))          { state_txt = "已停止";   state_col = T->t3; }
                 else                                            { state_txt = ts.state[0] ? ts.state : "-"; state_col = T->t3; }
                 dot_col = running && ts.self_online ? T->green : state_col == T->warnT ? T->orange : state_col == T->badT ? T->red : T->t3;
+                {
+                    /* 出口卡里的一行摘要；完整的节点、子网在下面的 Tailscale 卡 */
+                    static char c_nts[80];
+                    if (running && ts.ip[0])
+                        set_label_fmt(s_nh_tsval, c_nts, sizeof c_nts, "%s · %s", state_txt, ts.ip);
+                    else
+                        set_label_fmt(s_nh_tsval, c_nts, sizeof c_nts, "%s", state_txt);
+                    uk_text_color(s_nh_tsval, running && ts.self_online ? T->okT : state_col);
+                    if (lv_obj_has_flag(s_nh_tsrow, LV_OBJ_FLAG_HIDDEN)) {
+                        uk_show(s_nh_tsrow, 1);
+                        lv_obj_set_height(s_nh_card, NET_EXIT_ROW_H + UK_ROW_H);
+                    }
+                }
                 lv_label_set_text(s_ts_val[0], state_txt);
                 uk_text_color(s_ts_val[0], state_col);
                 uk_bg(s_ts_dot, dot_col);
@@ -2719,11 +4337,25 @@ static void refresh_cb(lv_timer_t *t)
                 lv_obj_set_width(s_ts_val[4], LV_SIZE_CONTENT);
                 s_ts_rows = rows;
                 lv_obj_set_height(s_ts_card, rows * UK_ROW_H);
+                {
+                    /* 出口标签「Tailscale ›」行的小字 */
+                    static char c_tsn[64];
+                    if (running && ts.peers)
+                        set_label_fmt(s_tile_sub[SUB_TS], c_tsn, sizeof c_tsn, "%s · 在线 %d/%d", state_txt, ts.peers_online, ts.peers);
+                    else
+                        set_label_fmt(s_tile_sub[SUB_TS], c_tsn, sizeof c_tsn, "%s", state_txt);
+                    uk_text_color(s_tile_sub[SUB_TS], running && ts.self_online ? T->okT : T->t2);
+                }
                 /* Subpage: own identity + the peer list. */
                 lv_label_set_text(s_tp_self[0], ts.name[0] ? ts.name : "-");
                 lv_label_set_text(s_tp_self[1], ts.ip[0] ? ts.ip : "-");
-                lv_label_set_text(s_tp_self[2], ts.relay[0] ? ts.relay : "-");
-                lv_label_set_text(s_tp_self[3], ts.routes[0] ? ts.routes : "-");
+                lv_label_set_text(s_tp_self[2], ts.ip6[0] ? ts.ip6 : "-");
+                lv_label_set_text(s_tp_self[3], ts.relay[0] ? ts.relay : "-");
+                lv_label_set_text(s_tp_self[4], ts.routes[0] ? ts.routes : "-");
+                lv_label_set_text(s_tp_self[5], ts.tailnet[0] ? ts.tailnet : "-");
+                lv_label_set_text_fmt(s_tp_self[6], "%s%s%s", ts.version[0] ? ts.version : "-",
+                                      ts.os[0] ? " · " : "", ts.os);
+                lv_label_set_text(s_tp_self[7], ts.key_expiry[0] ? ts.key_expiry : "不过期");
                 int pn = tailscale_peer_count();
                 if (pn > TS_PEER_MAX) pn = TS_PEER_MAX;
                 for (int i = 0; i < TS_PEER_MAX; i++) {
@@ -2732,7 +4364,28 @@ static void refresh_cb(lv_timer_t *t)
                     tailscale_get_peer(i, &pe);
                     lv_obj_remove_flag(s_tp_row[i], LV_OBJ_FLAG_HIDDEN);
                     lv_label_set_text(s_tp_name[i], pe.name[0] ? pe.name : "-");
-                    lv_label_set_text(s_tp_ip[i], pe.ip);
+                    {
+                        char rx[16], tx[16], tr[48] = "";
+                        fmt_bytes_total(rx, sizeof rx, (long)pe.rx);
+                        fmt_bytes_total(tx, sizeof tx, (long)pe.tx);
+                        if (pe.rx || pe.tx) snprintf(tr, sizeof tr, " · ↓%s ↑%s", rx, tx);
+                        lv_label_set_text_fmt(s_tp_ip[i], "%s%s%s%s%s", pe.ip, pe.os[0] ? " · " : "", pe.os,
+                                              pe.exit_node ? " · 出口节点" : "", tr);
+                    }
+                    {
+                        /* 第三行：跟本机之间怎么连、多久前握手、收发了多少 */
+                        char how[80], ago[24] = "", line[160];
+                        if (pe.active && pe.direct) snprintf(how, sizeof how, "直连 %s", pe.cur_addr);
+                        else if (pe.active)         snprintf(how, sizeof how, "经 DERP %s 中继", pe.relay[0] ? pe.relay : "?");
+                        else if (pe.online)         snprintf(how, sizeof how, "%s", "在线，现在没在传数据");
+                        /* 不写「最后在线多久」：LastSeen 是控制服务器给的真 UTC，设备时钟是
+                         * 当地时间标成 UTC，一减就差一个时区 */
+                        else                        snprintf(how, sizeof how, "%s", "离线");
+                        if (pe.hs_ago >= 0 && (pe.active || pe.online)) fmt_ago(ago, sizeof ago, pe.hs_ago);
+                        snprintf(line, sizeof line, "%s%s%s", how, ago[0] ? " · 握手 " : "", ago);
+                        lv_label_set_text(s_tp_link[i], line);
+                        uk_text_color(s_tp_link[i], pe.online ? T->t2 : T->t3);
+                    }
                     /* One tag, most specific first: how it is connected beats
                      * plain online/offline. */
                     const char *tag = pe.active
@@ -2751,7 +4404,7 @@ static void refresh_cb(lv_timer_t *t)
 
     /* ---- CHILL (Home card + subpage) ---- */
     {
-        int on_home = tab_visible(TAB_HOME);
+        int on_home = tab_visible(TAB_HOME) || tab_visible(TAB_EXIT);
         int on_page = sub_visible(SUB_CHILL) || sub_visible(SUB_CHILL_NODES) ||
                       sub_visible(SUB_CHILL_PAIRS);
         if (chill_poll(on_home || on_page)) {
@@ -2762,6 +4415,29 @@ static void refresh_cb(lv_timer_t *t)
             /* Hidden only when there is no CHILL at all; stopped still shows,
              * with the way back (the card opens the page with the switch). */
             uk_show(s_chill_card, online || csc.chill_on == 0);
+            uk_show(s_ct_tile, online || csc.chill_on == 0);
+            {
+                /* 磁贴：状态 · 速率 · 出口节点和延迟（明细在下面的 CHILL 卡） */
+                static char c_ts2[24], c_tr[48], c_tl[160];
+                char dl[24] = "";
+                if (online)
+                    for (int i = 0; i < chill_node_count(); i++) {
+                        chill_node_info_t ni;
+                        chill_get_node(i, &ni);
+                        if (ni.selected && !strcmp(ni.name, chill_node())) {
+                            if (ni.delay > 0) snprintf(dl, sizeof dl, " · %dms", ni.delay);
+                            else if (ni.delay == 0) snprintf(dl, sizeof dl, " · 超时");
+                            break;
+                        }
+                    }
+                set_label_fmt(s_ct_state, c_ts2, sizeof c_ts2, "%s", online ? "● 运行中" : "已关闭");
+                uk_text_color(s_ct_state, online ? T->okT : T->t3);
+                set_label_fmt(s_ct_rate, c_tr, sizeof c_tr, "%s", online ? chill_speed() : "—");
+                if (online)
+                    set_label_fmt(s_ct_line, c_tl, sizeof c_tl, "%s%s%s", chill_node()[0] ? chill_node() : chill_mode(), dl, "");
+                else
+                    set_label_fmt(s_ct_line, c_tl, sizeof c_tl, "%s", csc.chill_back ? "国外关掉了，回国自动打开" : "点这里打开");
+            }
             if (!online) {
                 set_label_fmt(s_chill_state, c_cs, sizeof c_cs, "%s", "已关闭");
                 uk_text_color(s_chill_state, T->t3);
@@ -2947,39 +4623,31 @@ static void refresh_cb(lv_timer_t *t)
 
     /* ---- eSIM subpage ---- */
     {
-        if (esim_poll(sub_visible(SUB_ESIM))) {
-            int n = esim_profile_count();
-            int locked = esim_locked();
-
-            const char *cur = esim_current();
-            lv_label_set_text(s_es_cur, cur[0] ? cur : "—");
-            lv_label_set_text(s_es_state, esim_state());
-            lv_label_set_text(s_es_hero.rtop, "");
-            uk_show(s_es_empty, n == 0);
-            if (n == 0) {
-                const char *st = esim_state();
-                lv_label_set_text(s_es_empty, !esim_loaded() && strcmp(st, "就绪") == 0 ? "读取中…"
-                                             : strcmp(st, "就绪") ? st : "还没有 eSIM 配置 · 用管理网页添加");
+        static int es_flash_shown;
+        int es_changed = esim_poll(sub_visible(SUB_ESIM));
+        /* 蜂窝标签开着、手没在动时读一次 eSIM 列表（每张卡一次），才分得清
+         * 插的是普通 SIM 还是 eSIM 卡；读列表要跑 lpac，会卡一下，所以挑空闲时 */
+        if (tab_visible(TAB_CELL) && !sub_visible(SUB_ESIM) && lv_display_get_inactive_time(NULL) > 1500
+            && esim_prefetch(d.sim_iccid))
+            es_changed = 1;
+        {
+            const netinfo_t *ni = netinfo_get();
+            ui_sim_kind_t k = ui_sim_kind(d.sim_state, d.sim_iccid, esim_enabled_iccid());
+            const char *op = ni->home.name[0] ? ni->home.name : d.operator_name;
+            if (k != s_sim.kind || strcmp(op, s_sim.oper) || strcmp(d.sim_iccid, s_sim.iccid)
+                || strcmp(d.sim_imsi, s_sim.imsi) || strcmp(d.sim_msisdn, s_sim.msisdn)) {
+                s_sim.kind = k;
+                snprintf(s_sim.oper, sizeof s_sim.oper, "%s", op);
+                snprintf(s_sim.iccid, sizeof s_sim.iccid, "%s", d.sim_iccid);
+                snprintf(s_sim.imsi, sizeof s_sim.imsi, "%s", d.sim_imsi);
+                snprintf(s_sim.msisdn, sizeof s_sim.msisdn, "%s", d.sim_msisdn);
+                es_changed = 1;
             }
-            for (int i = 0; i < ESIM_MAX_ROWS; i++) {
-                if (i >= n) { uk_show(s_es_row[i], 0); continue; }
-                esim_profile_t p;
-                esim_get_profile(i, &p);
-                uk_show(s_es_row[i], 1);
-                lv_label_set_text(s_es_row_name[i], p.name);
-                lv_label_set_text(s_es_row_sub[i], p.sub);
-                if (p.enabled) lv_label_set_text(s_es_hero.rtop, p.sub);
-                lv_label_set_text(s_es_row_tag[i],
-                    p.going ? "切换中…" : p.armed ? "再点一次确认切换" : p.enabled ? "使用中" : "");
-                if (locked || p.enabled) lv_obj_remove_flag(s_es_row[i], LV_OBJ_FLAG_CLICKABLE);
-                else                     lv_obj_add_flag(s_es_row[i], LV_OBJ_FLAG_CLICKABLE);
-                uk_bg(s_es_row[i], p.armed ? T->fillOrange : p.enabled ? T->accS : T->card);
-                uint32_t fg = p.armed ? 0xffffff : T->t1;
-                uk_text_color(s_es_row_name[i], fg);
-                uk_text_color(s_es_row_sub[i], p.armed ? T->onFill : T->t3);
-                uk_text_color(s_es_row_tag[i], p.armed ? 0xffffff : p.enabled ? T->accT : T->t2);
-            }
-            lv_obj_set_height(s_es_list_card, n ? n * ESIM_ROW_H : UK_ROW_H);
+        }
+        if (es_flash_shown && !net_flash_on(&s_es_flash)) s_es_dirty = 1;   /* 提示到时间了：换回状态行 */
+        if (es_changed || s_es_dirty) {
+            es_flash_shown = net_flash_on(&s_es_flash);
+            esim_paint();
         }
     }
 
@@ -2989,7 +4657,7 @@ static void refresh_cb(lv_timer_t *t)
          * subpage itself) — the tile's own subtitle (功能 tile subtitles,
          * below) needs live data to replace the old hardcoded "插件未安装"
          * text, same as WiFi/SMS/CHILL/eSIM/锁频 already do. */
-        if (speedtest_poll(sub_visible(SUB_SPEED) || tab_visible(TAB_FUNC))) {
+        if (speedtest_poll(sub_visible(SUB_SPEED) || tab_visible(TAB_EXIT))) {
             int online = speedtest_agent_reachable();
             if (!online) {
                 lv_obj_add_flag(s_st_live, LV_OBJ_FLAG_HIDDEN);
@@ -3228,14 +4896,35 @@ static void refresh_cb(lv_timer_t *t)
         static char c_ac[48], c_al[ALERTS_MAX][96], c_at[ALERTS_MAX][24], c_ax[ALERTS_MAX][128];
         int n = alerts_count(), un = alerts_unread();
         const char *err = alerts_error();
+        {
+            static char c_hl[HEALTH_MAX][48], c_hd[HEALTH_MAX][320], c_hn[64];
+            int hn = health_count();
+            for (int i = 0; i < HEALTH_MAX; i++) {
+                health_item_t h;
+                if (i >= hn) { uk_show(s_hc_row[i], 0); continue; }
+                health_get(i, &h);
+                uk_show(s_hc_row[i], 1);
+                lv_label_set_text(s_hc_mark[i], h.bad ? "■" : "▲");
+                uk_text_color(s_hc_mark[i], h.bad ? T->badT : T->warnT);
+                set_label_fmt(s_hc_label[i], c_hl[i], sizeof c_hl[i], "%s", h.label);
+                set_label_fmt(s_hc_detail[i], c_hd[i], sizeof c_hd[i], "%s", h.detail);
+            }
+            if (hn == -2) set_label_fmt(s_hc_none, c_hn, sizeof c_hn, "%s", "读不到体检结果（管理后台没响应）");
+            else if (hn < 0) set_label_fmt(s_hc_none, c_hn, sizeof c_hn, "%s", "体检结果读取中…");
+            else set_label_fmt(s_hc_none, c_hn, sizeof c_hn, "● %d 项检查都正常", health_checked());
+            uk_show(s_hc_none, hn <= 0);
+            int hh = hn > 0 ? hn * HC_ROW_H : UK_ROW_H;
+            lv_obj_set_height(s_hc_card, hh);
+            lv_obj_set_y(s_al_body, HC_TOP + hh + 10);
+        }
         if (err[0]) set_label_fmt(s_al_count, c_ac, sizeof c_ac, "%s", err);
-        else if (!n) set_label_fmt(s_al_count, c_ac, sizeof c_ac, "%s", "");
-        else if (un) set_label_fmt(s_al_count, c_ac, sizeof c_ac, "%d 条未读", un);
-        else set_label_fmt(s_al_count, c_ac, sizeof c_ac, "%s", "都已读");
+        else if (!n) set_label_fmt(s_al_count, c_ac, sizeof c_ac, "%s", "告警记录");
+        else if (un) set_label_fmt(s_al_count, c_ac, sizeof c_ac, "告警记录 · %d 条未读", un);
+        else set_label_fmt(s_al_count, c_ac, sizeof c_ac, "%s", "告警记录 · 都已读");
         if (un && !err[0]) lv_obj_remove_flag(s_al_allread_btn, LV_OBJ_FLAG_HIDDEN);
         else               lv_obj_add_flag(s_al_allread_btn, LV_OBJ_FLAG_HIDDEN);
         if (!n && !err[0]) {
-            lv_label_set_text(s_al_empty, "● 一切正常，没有告警。程序崩溃、Wi-Fi 被看门狗打开这类事会记在这里。");
+            lv_label_set_text(s_al_empty, "没有告警记录。程序崩溃、Wi-Fi 被看门狗打开这类事会记在这里。");
             lv_obj_remove_flag(s_al_empty, LV_OBJ_FLAG_HIDDEN);
         } else {
             lv_obj_add_flag(s_al_empty, LV_OBJ_FLAG_HIDDEN);
@@ -3268,7 +4957,7 @@ static void refresh_cb(lv_timer_t *t)
 
     /* ---- 信令读取 subpage ---- */
     {
-        static char c_sg[6][64], c_sgl[80], c_sgn[4][48], c_nrb[160], c_lteb[200];
+        static char c_sg[6][64], c_sgn[4][48], c_nrb[160], c_lteb[200];
         set_label_fmt(s_sg_nr[0], c_sg[0], sizeof c_sg[0], "%s  %s MHz",
                       d.nr_band[0] ? d.nr_band : "-", d.nr_bw[0] ? d.nr_bw : "-");
         set_label_fmt(s_sg_nr[1], c_sg[1], sizeof c_sg[1], "%ld", d.nr_channel);
@@ -3278,14 +4967,37 @@ static void refresh_cb(lv_timer_t *t)
                       d.mcc, d.mnc, d.operator_name);
         set_label_fmt(s_sg_nr[5], c_sg[5], sizeof c_sg[5], "%d / %d / %s",
                       d.nr_rsrp, d.nr_rsrq, d.nr_snr[0] ? d.nr_snr : "-");
-        if (d.lte_rsrp != 0)
-            set_label_fmt(s_sg_lte, c_sgl, sizeof c_sgl, "RSRP %d  RSRQ %d  SINR %s  RSSI %d",
-                          d.lte_rsrp, d.lte_rsrq, d.lte_snr[0] ? d.lte_snr : "-", d.lte_rssi);
-        else
-            set_label_fmt(s_sg_lte, c_sgl, sizeof c_sgl, "%s",
-                          "\xE6\x9C\xAA\xE8\x81\x9A\xE5\x90\x88" /* 未聚合 */);
-        set_label_fmt(s_sg_net[0], c_sgn[0], sizeof c_sgn[0], "%s",
-                      d.net_select[0] ? d.net_select : "-");
+        {
+            /* 服务小区：有 lteca 就取第一条（主载波），否则取 net.* 的 lte_* */
+            static char c_lt[6][48];
+            ca_carrier_t pc[1];
+            int have = parse_ca(d.lteca, pc, 1) > 0;
+            char bs[16] = "";
+            int bw = have ? pc[0].bw : atoi(d.bandwidth);
+            long earfcn = have ? pc[0].arfcn : d.channel;
+            int pci = have ? pc[0].pci : d.lte_pci;
+            if (have) snprintf(bs, sizeof bs, "B%d", pc[0].band);
+            else if (d.band[0] && strstr(d.band, "LTE")) ui_band_short(d.band, 0, bs, sizeof bs);
+            ui_rat_t rat = ui_rat(d.net_type);
+            int in_use = rat == UI_RAT_4G || rat == UI_RAT_5G_NSA;
+            lv_label_set_text(s_sg_lte_sec, in_use ? "LTE 服务小区" : "LTE（现在不用，下面是测量值）");
+            lv_label_set_text(s_sg_nr_sec, rat == UI_RAT_4G ? "5G（现在不用，下面是测量值）" : "5G 服务小区");
+            if (bs[0] && bw > 0) set_label_fmt(s_sg_lt[0], c_lt[0], sizeof c_lt[0], "%s  %d MHz", bs, bw);
+            else set_label_fmt(s_sg_lt[0], c_lt[0], sizeof c_lt[0], "%s", bs[0] ? bs : "-");
+            if (earfcn > 0) set_label_fmt(s_sg_lt[1], c_lt[1], sizeof c_lt[1], "%ld", earfcn);
+            else set_label_fmt(s_sg_lt[1], c_lt[1], sizeof c_lt[1], "%s", "-");
+            if (pci > 0) set_label_fmt(s_sg_lt[2], c_lt[2], sizeof c_lt[2], "%d", pci);
+            else set_label_fmt(s_sg_lt[2], c_lt[2], sizeof c_lt[2], "%s", "-");
+            if (in_use && d.lte_cell_id > 0) set_label_fmt(s_sg_lt[3], c_lt[3], sizeof c_lt[3], "%ld", d.lte_cell_id);
+            else set_label_fmt(s_sg_lt[3], c_lt[3], sizeof c_lt[3], "%s", "-");
+            if (d.lte_rsrp != 0)
+                set_label_fmt(s_sg_lt[4], c_lt[4], sizeof c_lt[4], "%d / %d / %s",
+                              d.lte_rsrp, d.lte_rsrq, d.lte_snr[0] ? d.lte_snr : "-");
+            else set_label_fmt(s_sg_lt[4], c_lt[4], sizeof c_lt[4], "%s", "-");
+            if (d.lte_rssi != 0) set_label_fmt(s_sg_lt[5], c_lt[5], sizeof c_lt[5], "%d", d.lte_rssi);
+            else set_label_fmt(s_sg_lt[5], c_lt[5], sizeof c_lt[5], "%s", "-");
+        }
+        set_label_fmt(s_sg_net[0], c_sgn[0], sizeof c_sgn[0], "%s", ui_net_select_word(d.net_select));
         set_label_fmt(s_sg_net[1], c_sgn[1], sizeof c_sgn[1], "%s",
                       d.wan_status[0] ? d.wan_status : "-");
         set_label_fmt(s_sg_net[2], c_sgn[2], sizeof c_sgn[2], "%s", d.net_type);
@@ -3302,13 +5014,14 @@ static void refresh_cb(lv_timer_t *t)
     band_group_sync(BG_SA,  d.sa_bands);
     band_group_sync(BG_NSA, d.nsa_bands);
     band_group_sync(BG_LTE, d.lte_bands);
-    /* Highlight whichever 选网方式 the modem is actually on. Skipped while a
+    /* Highlight whichever 网络模式 the modem is actually on. Skipped while a
      * tap is armed so the orange "confirm?" state isn't repainted away by
      * the next refresh tick. */
     if (s_lk_mode_pending < 0) {
-        static const char *const k_mode_v[4] = { "WL_AND_5G", "Only_5G", "LTE_AND_5G", "Only_LTE" };
+        static const char *const k_mode_v[4] = { "WL_AND_5G", "LTE_AND_5G", "Only_5G", "Only_LTE" };
         int sel = -1;
         for (int i = 0; i < 4; i++) if (!strcmp(d.net_select, k_mode_v[i])) sel = i;
+        if (ui_net_select_is_auto(d.net_select)) sel = 0;   /* TCHGWL_5G is automatic too */
         if (sel != s_lk_seg.sel) uk_seg_set(&s_lk_seg, sel);
     } else if (lv_tick_get() - s_lk_mode_arm >= 5000) {
         s_lk_mode_pending = -1;          /* confirm window lapsed */
@@ -3316,22 +5029,17 @@ static void refresh_cb(lv_timer_t *t)
         lv_label_set_text(s_lk_mode_lbl, "切换会短暂断网，需要按两次确认");
     }
 
-    /* ---- 功能 tile subtitles ---- */
+    /* ---- › 行右边的状态字（蜂窝 / 出口标签） ---- */
     {
-        static char c_t0[40] = "", c_t1[40] = "", c_t5[40] = "", c_t6[40] = "";
-        /* 「开着」(WiFi up, CHILL running) = green dot + green subtitle; the
-         * SMS tile carries the unread count as a badge. */
+        static char c_t1[40] = "", c_t5[40] = "", c_t6[112] = "";
+        /* 「开着」(CHILL running) = green; unread SMS = accent (the old tiles'
+         * green dot and badge). */
         {
-            static int c_on[3] = { -1, -1, -1 };
-            int wifi_on = s_aux_w24 == 1 || s_aux_w5 == 1 || (s_aux_w24 < 0 && s_aux_w5 < 0 && d.wifi_enabled);
-            int chill_on = chill_online();
-            int unread = d.sms_unread;
-            if (wifi_on != c_on[0]) { c_on[0] = wifi_on; uk_tile_set(&s_tile[SUB_WIFI], wifi_on, 0, 0); }
-            if (chill_on != c_on[1]) { c_on[1] = chill_on; uk_tile_set(&s_tile[SUB_CHILL], chill_on, 0, 0); }
-            if (unread != c_on[2]) { c_on[2] = unread; uk_tile_set(&s_tile[SUB_SMS], 0, 0, unread); }
+            static int c_on[2] = { -1, -1 };
+            int chill_on = chill_online(), unread = d.sms_unread > 0;
+            if (chill_on != c_on[0]) { c_on[0] = chill_on; uk_text_color(s_tile_sub[SUB_CHILL], chill_on ? T->okT : T->t2); }
+            if (unread != c_on[1]) { c_on[1] = unread; uk_text_color(s_tile_sub[SUB_SMS], unread ? T->accT : T->t2); }
         }
-        set_label_fmt(s_tile_sub[SUB_WIFI], c_t0, sizeof c_t0, "%s \xC2\xB7 %d \xE5\x8F\xB0",
-                      d.wifi_ssid[0] ? d.wifi_ssid : "-", d.client_n);
         if (d.sms_unread)
             set_label_fmt(s_tile_sub[SUB_SMS], c_t1, sizeof c_t1,
                           "%d \xE6\x9D\xA1 \xC2\xB7 %d \xE6\x9C\xAA\xE8\xAF\xBB", d.sms_n, d.sms_unread);
@@ -3339,10 +5047,18 @@ static void refresh_cb(lv_timer_t *t)
             set_label_fmt(s_tile_sub[SUB_SMS], c_t1, sizeof c_t1, "%d \xE6\x9D\xA1", d.sms_n);
         set_label_fmt(s_tile_sub[SUB_CHILL], c_t5, sizeof c_t5, "%s \xC2\xB7 %s",
                       chill_core(), chill_mode());
-        set_label_fmt(s_tile_sub[SUB_ESIM], c_t6, sizeof c_t6, "%s", esim_current());
+        /* 实体 SIM 写「SIM 卡 · 运营商」，eSIM 写「eSIM · 配置名」 */
+        if (s_sim.kind == UI_SIM_ESIM)
+            set_label_fmt(s_tile_sub[SUB_ESIM], c_t6, sizeof c_t6, "eSIM · %s", esim_current());
+        else if (s_sim.kind == UI_SIM_PLAIN)
+            set_label_fmt(s_tile_sub[SUB_ESIM], c_t6, sizeof c_t6, "SIM 卡 · %s", s_sim.oper[0] ? s_sim.oper : "已插入");
+        else
+            set_label_fmt(s_tile_sub[SUB_ESIM], c_t6, sizeof c_t6, "%s", "没插卡");
         static char c_t3[40] = "";
-        set_label_fmt(s_tile_sub[SUB_LOCK], c_t3, sizeof c_t3, "%s",
-                      d.net_select[0] ? d.net_select : "-");
+        int locked = 0, known = 0;
+        for (int gi = 0; gi < 3; gi++)
+            for (int i = 0; i < s_bg[gi].n; i++) { known = 1; if (!s_bg[gi].sel[i]) locked = 1; }
+        set_label_fmt(s_tile_sub[SUB_LOCK], c_t3, sizeof c_t3, "%s", !known ? "" : locked ? "已锁定" : "未锁定");
         static char c_t4[40] = "";
         if (!speedtest_agent_reachable())
             set_label_fmt(s_tile_sub[SUB_SPEED], c_t4, sizeof c_t4, "%s",
@@ -3361,7 +5077,7 @@ static void refresh_cb(lv_timer_t *t)
     }
 
     /* ---- WiFi subpage ---- */
-    aux_refresh(sub_visible(SUB_WIFI) || tab_visible(TAB_SYS));
+    aux_refresh(tab_visible(TAB_WIFI) || tab_visible(TAB_SYS));
     refresh_wifi(&d);
     {
         static char c_wsw[5][32];
@@ -3463,11 +5179,11 @@ static void key_poll_cb(lv_timer_t *t)
 }
 
 /* ---- shared chrome: floating tab capsule ----
- * Four top-level pages, text only (the icon row read as guesses). The
+ * Five top-level pages, text only (the icon row read as guesses). The
  * capsule floats over the page (glass, rim, soft shadow; no real blur: it is
  * in every frame). It hides while a subpage or a sheet is open: subpages have
  * their own ‹ back button, top-left, and sheets cover the bottom. */
-static const char *k_tab_names[UI_TABS] = { "首页", "图表", "功能", "系统" };
+static const char *k_tab_names[UI_TABS] = { "首页", "蜂窝", "Wi-Fi", "出口", "系统" };
 static lv_obj_t *s_tab_bar, *s_tab_pill[UI_TABS];
 
 static int any_sheet_open(void);
@@ -3488,12 +5204,54 @@ static void update_tabs(void)
     uk_show(s_tab_bar, s_sub_cur < 0 && !any_sheet_open());
 }
 
+/* Jump to a tab from somewhere else (Home's summary rows): from its top. */
+static void tab_go(int idx)
+{
+    sub_close();
+    lv_tileview_set_tile_by_index(s_tv, idx, 0, LV_ANIM_OFF);
+    lv_obj_t *sc = tab_scroller(idx);
+    if (sc) lv_obj_scroll_to_y(sc, 0, LV_ANIM_OFF);
+    update_tabs();
+}
+static void tab_go_cb(lv_event_t *e) { tab_go((int)(intptr_t)lv_event_get_user_data(e)); }
+
+/* Tab bar: another tab keeps where it was; the tab you are on goes to its top. */
 static void tab_click_cb(lv_event_t *e)
 {
     int idx = (int)(intptr_t)lv_event_get_user_data(e);
+    if (s_sub_cur < 0 && cur_tab() == idx) { tab_go(idx); return; }
     sub_close();
     lv_tileview_set_tile_by_index(s_tv, idx, 0, LV_ANIM_OFF);
     update_tabs();
+}
+
+/* 二级页：从左边缘（x < 24）往右滑 = 返回（2026-09-25）。挂在输入设备上，
+ * 松手时判断；成立就把这次按下作废，手指下面那一行不会再收到「点击」
+ * （不然滑一下返回的同时点中了会断网的选项）。 */
+#define EDGE_X   24
+#define EDGE_DX  60
+#define EDGE_DY  40
+static lv_point_t s_edge_p0;
+static int s_edge_armed;
+
+static void edge_back_cb(lv_event_t *e)
+{
+    lv_indev_t *in = lv_indev_active();
+    if (!in || lv_indev_get_type(in) != LV_INDEV_TYPE_POINTER) return;
+    lv_point_t p;
+    lv_indev_get_point(in, &p);
+    if (lv_event_get_code(e) == LV_EVENT_PRESSED) {
+        s_edge_p0 = p;
+        s_edge_armed = s_sub_cur >= 0 && p.x < EDGE_X && !any_sheet_open();
+        return;
+    }
+    if (!s_edge_armed) return;
+    s_edge_armed = 0;
+    int dx = p.x - s_edge_p0.x, dy = p.y - s_edge_p0.y;
+    if (dx >= EDGE_DX && dy < EDGE_DY && dy > -EDGE_DY) {
+        lv_indev_reset(in, NULL);
+        sub_back();
+    }
 }
 
 static void build_tabbar(void)
@@ -3533,7 +5291,8 @@ static void build_tabbar(void)
  * charging) and the ▲; when it does not fit it drops to a shorter form
  * (ui_rate_pick). */
 #define TOP_BATT_XR 308
-#define TOP_LEFT_END 132   /* time + dots + RAT end here; the rate never crosses it */
+#define TOP_LEFT_END 138   /* time + dots + RAT end here; the rate never crosses it.
+                            * The RAT slot fits "5G-A" (the widest label). */
 
 static void build_statusbar(void)
 {
@@ -3725,8 +5484,9 @@ void ui_create(void)
         lv_obj_set_style_bg_opa(s_tiles[i], LV_OPA_COVER, 0);
     }
     build_home(s_tiles[TAB_HOME]);
-    build_charts(s_tiles[TAB_CHART]);
-    build_func(s_tiles[TAB_FUNC]);
+    build_cellular(s_tiles[TAB_CELL]);
+    build_wifi(s_tiles[TAB_WIFI]);
+    build_exit(s_tiles[TAB_EXIT]);
     build_system(s_tiles[TAB_SYS]);
     lv_obj_add_event_cb(s_tv, tv_changed_cb, LV_EVENT_VALUE_CHANGED, NULL);
 
@@ -3763,7 +5523,6 @@ void ui_create(void)
         lv_obj_add_flag(pg, LV_OBJ_FLAG_HIDDEN);
         s_sub_page[i] = pg;
     }
-    build_sub_wifi(s_sub_page[SUB_WIFI]);
     build_sub_sms(s_sub_page[SUB_SMS]);
     build_sub_cell(s_sub_page[SUB_CELL]);
     build_sub_lock(s_sub_page[SUB_LOCK]);
@@ -3776,6 +5535,9 @@ void ui_create(void)
     build_sub_perf(s_sub_page[SUB_PERF]);
     build_sub_sms_detail(s_sub_page[SUB_SMS_DETAIL]);
     build_sub_alerts(s_sub_page[SUB_ALERTS]);
+    build_sub_alert_detail(s_sub_page[SUB_ALERT_DETAIL]);
+    build_sub_apn(s_sub_page[SUB_APN]);
+    build_sub_net(s_sub_page[SUB_NET]);   /* also fills SUB_SCENE and hangs cards on 小区信息 / 出口 / Wi-Fi */
     sub_close();
 
     /* Seed the tileview's "active tile" pointer. lv_tileview_add_tile()
@@ -3812,6 +5574,10 @@ void ui_create(void)
     build_statusbar();
     build_tabbar();
     build_banner();
+    for (lv_indev_t *in = lv_indev_get_next(NULL); in; in = lv_indev_get_next(in)) {
+        lv_indev_add_event_cb(in, edge_back_cb, LV_EVENT_PRESSED, NULL);
+        lv_indev_add_event_cb(in, edge_back_cb, LV_EVENT_RELEASED, NULL);
+    }
 
     lv_timer_create(refresh_cb, 1000, NULL);
     refresh_cb(NULL);

@@ -68,4 +68,13 @@ int esim_locked(void);
  * then means "no eSIM profiles", not "still reading". */
 int esim_loaded(void);
 
+/* ICCID of the enabled profile ("" = none / list not read). */
+const char *esim_enabled_iccid(void);
+
+/* Read the profile list once for this card (key = the modem's ICCID) even
+ * when the eSIM page is closed, so 蜂窝 can tell a plain SIM from an eSIM.
+ * Returns 1 when it read something. Blocks for the agent call (≤ a few s),
+ * so the caller only asks while the user is idle. */
+int esim_prefetch(const char *key);
+
 #endif /* U60_ESIM_H */

@@ -386,7 +386,7 @@ static int cp_is_emoji(unsigned cp)
             cp == 0x200D;                        /* 零宽连接符 */
 }
 
-static void sanitize_name(const char *in, char *out, size_t cap)
+void chill_sanitize_name(const char *in, char *out, size_t cap)
 {
     const unsigned char *p = (const unsigned char *)in;
     size_t o = 0;
@@ -527,8 +527,8 @@ static void pair_finish(void)
     s_top_pair_n = s_stat_pair_n < SC_TOP_SHOW ? s_stat_pair_n : SC_TOP_SHOW;
     for (int i = 0; i < s_top_pair_n; i++) {
         char gd[SC_NAME_MAX], nd[SC_NAME_MAX], ds[24], us[24];
-        sanitize_name(s_stat_pair[i].grp_raw, gd, sizeof gd);
-        sanitize_name(s_stat_pair[i].node_raw, nd, sizeof nd);
+        chill_sanitize_name(s_stat_pair[i].grp_raw, gd, sizeof gd);
+        chill_sanitize_name(s_stat_pair[i].node_raw, nd, sizeof nd);
         snprintf(s_top_pair[i].name, sizeof s_top_pair[i].name,
                  "%s \xE2\x86\x92 %s", gd, nd);
         human(s_stat_pair[i].down, ds, sizeof ds);
@@ -578,7 +578,7 @@ static void parse_all_array(const char *arr)
             raw[l] = 0;
             /* 原名留着给 API 用，显示名去掉 emoji */
             snprintf(s_nodes_raw[s_node_count], SC_NAME_MAX, "%s", raw);
-            sanitize_name(raw, s_nodes[s_node_count], SC_NAME_MAX);
+            chill_sanitize_name(raw, s_nodes[s_node_count], SC_NAME_MAX);
             s_node_delay[s_node_count] = -1;
             for (int k = 0; k < old_count; k++)
                 if (!strcmp(old_names[k], raw)) { s_node_delay[s_node_count] = old_delay[k]; break; }
@@ -609,7 +609,7 @@ static void parse_groups(const char *j)
             if (l >= SC_NAME_MAX) l = SC_NAME_MAX - 1;
             memcpy(s_grp_raw[s_grp_count], n, l);
             s_grp_raw[s_grp_count][l] = 0;
-            sanitize_name(s_grp_raw[s_grp_count], s_grp_disp[s_grp_count], SC_NAME_MAX);
+            chill_sanitize_name(s_grp_raw[s_grp_count], s_grp_disp[s_grp_count], SC_NAME_MAX);
         }
         s_grp_type[s_grp_count][0] = 0;
         t = strstr(e, "\"type\":\"");
@@ -854,7 +854,7 @@ int chill_poll(int active)
          * （这里踩过一次：先追链路，导致节点列表读不到、界面空白。）
          */
         if (json_get(b, "all", arr, sizeof arr)) parse_all_array(arr);
-        if (have_now) sanitize_name(rawnow, s_node, sizeof s_node);
+        if (have_now) chill_sanitize_name(rawnow, s_node, sizeof s_node);
         b = NULL;                       /* 明确失效，避免后面误用 */
 
         if (have_now) {
@@ -864,7 +864,7 @@ int chill_poll(int active)
              * 主组常常指向另一个组（如 SNTP），此时 "now" 不是真实出口。
              * 顺着 now 往下追最多 3 层，把真正落地的节点显示出来。
              */
-            sanitize_name(rawnow, disp, sizeof disp);
+            chill_sanitize_name(rawnow, disp, sizeof disp);
             o = snprintf(s_chain, sizeof s_chain, "%s", disp);
             s_chain_n = 0;
             snprintf(s_chain_raw[s_chain_n++], SC_NAME_MAX, "%s", rawnow);
@@ -878,7 +878,7 @@ int chill_poll(int active)
                 if (!strcmp(nxt, rawnow)) break;             /* 自指，防死循环 */
                 snprintf(rawnow, sizeof rawnow, "%s", nxt);
                 if (s_chain_n < 4) snprintf(s_chain_raw[s_chain_n++], SC_NAME_MAX, "%s", rawnow);
-                sanitize_name(rawnow, disp, sizeof disp);
+                chill_sanitize_name(rawnow, disp, sizeof disp);
                 o += snprintf(s_chain + o, sizeof s_chain - (size_t)o,
                               " \xE2\x86\x92 %s", disp);
                 if (o >= (int)sizeof s_chain - 32) break;
@@ -893,7 +893,7 @@ const char *chill_mode_raw(void){ return s_mode_raw; }
 const char *chill_group(void)
 {
     static char disp[SC_NAME_MAX];
-    sanitize_name(s_group, disp, sizeof disp);
+    chill_sanitize_name(s_group, disp, sizeof disp);
     return disp;
 }
 const char *chill_node(void)    { return s_node[0] ? s_node : "-"; }

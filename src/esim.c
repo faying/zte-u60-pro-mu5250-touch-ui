@@ -484,6 +484,24 @@ static void es_esc(char *dst, size_t cap, const char *src)
     dst[o] = 0;
 }
 
+const char *esim_enabled_iccid(void)
+{
+    for (int i = 0; i < s_count; i++)
+        if (s_prof[i].enabled) return s_prof[i].iccid;
+    return "";
+}
+
+int esim_prefetch(const char *key)
+{
+    static char done[32];
+
+    /* 每张卡只试一次，成败都算：读列表会卡界面一两秒、还要敲 eSIM 卡（有过
+     * catBusy），不能失败了就反复试。换卡（ICCID 变了）或打开 eSIM 页才再读。 */
+    if (!key || !key[0] || !strcmp(done, key) || s_my_job) return 0;
+    snprintf(done, sizeof done, "%s", key);
+    return load_list();
+}
+
 const char *esim_current(void)
 {
     for (int i = 0; i < s_count; i++)

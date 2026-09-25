@@ -26,6 +26,12 @@ typedef enum {
     RT_LONG_NAMES,     /* every name at its buffer limit                              */
     RT_EMPTY,          /* no SMS, no clients, CHILL stopped, Tailscale needs login,
                           no eSIM profile, speed test service unreachable            */
+    RT_NSA,            /* 5G NSA: NR n78 + LTE anchor B3 + B1                          */
+    RT_LTE,            /* 4G, one carrier, no lteca (serving cell only in lte_*)      */
+    RT_3G,             /* WCDMA, no carriers at all                                   */
+    RT_NODATA,         /* registered on 5G, but the data call is down                 */
+    RT_5GA,            /* SA with three active NR carriers → 5G-A                     */
+    RT_EDGE,           /* EDGE (2G)                                                   */
     RT_SCENES
 } rt_scene_t;
 
@@ -34,6 +40,8 @@ extern long rt_now;                   /* what time() returns (device-local label
 extern int  rt_refreshes;             /* data_refresh() calls so far                     */
 extern int  rt_exec_calls;            /* ui_exec_self() calls                            */
 extern ui_launch_t rt_exec_last;      /* what the last one asked for                     */
+extern int  rt_apn_calls;             /* netinfo_apn_use() calls                         */
+extern char rt_apn_last[24];
 extern int  rt_system_calls;
 extern char rt_system_last[256];
 

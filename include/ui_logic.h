@@ -171,4 +171,79 @@ typedef enum {
  * unknown); bars: 0–5. Weak = 1–2 bars or SINR < 0 on the serving carrier. */
 ui_sig_state_t ui_sig_state(int ever_valid, int valid, const char *sim_state, int bars, int sinr_valid, double sinr);
 
+/* ---- radio technology names ----
+ * datad's net.type is the modem's raw network_type: "SA", "NSA", "LTE",
+ * "WCDMA", "GSM", … (and variants: ENDC, LTE-A, HSPA+, EDGE, TD-SCDMA…).
+ * The status bar has room for two characters, the status card for a word. */
+typedef enum { UI_RAT_NONE = 0, UI_RAT_2G, UI_RAT_3G, UI_RAT_4G, UI_RAT_5G_NSA, UI_RAT_5G_SA } ui_rat_t;
+ui_rat_t    ui_rat(const char *raw);
+const char *ui_rat_short(const char *raw);   /* "5G" "4G" "3G" "2G"; anything else → "" */
+/* The finer name under the status bar label: "5G SA" "5G NSA"
+ * "4G LTE" "3G WCDMA" "3G HSPA+" "2G EDGE"…; "" when not on a network. out ≥ 24. */
+void        ui_rat_long(const char *raw, char *out, int n);
+
+/* The label a phone would show, from the raw type and how many carriers are
+ * in use: "2G" "3G" "3G+" "4G" "4G+" "5G" "5G+" "5G-A"; "" when not on a
+ * network. 5G+ = 2 NR carriers aggregated, 5G-A = 3 or more (the modem has no
+ * 5G-Advanced flag; three-carrier NR is how Chinese carriers deliver it), or
+ * the raw type already says 5G-A. */
+void ui_net_label(const char *raw, int nr_active, int lte_active, char *out, int n);
+/* The radio-mode preference (`net_select`) in words: "自动" "只用 5G SA"
+ * "5G NSA + 4G" "只用 4G" "4G + 3G" …; the firmware's 14 values
+ * (zte_topsw_nwinfo) are all named, anything else comes back as-is, "" as "-".
+ * B27 reports both WL_AND_5G and TCHGWL_5G for automatic. */
+const char *ui_net_select_word(const char *sel);
+/* 1 for the two automatic values (WL_AND_5G, TCHGWL_5G). */
+int ui_net_select_is_auto(const char *sel);
+/* The specific technology for small print: "GPRS" "EDGE" "GSM" "CDMA 1X"
+ * "WCDMA" "HSPA" "HSPA+" "TD-SCDMA" "CDMA2000" "LTE" "NR"; "" if unknown. */
+const char *ui_rat_family(const char *raw);
+
+/* A band as the modem writes it ("LTE BAND 3", "B3", "3", "NR5G BAND 78",
+ * "n78") → "B3" / "n78" (nr = the NR prefix). No digits → the raw text. */
+void ui_band_short(const char *raw, int nr, char *out, int n);
+
+/* ---- what the network situation means, in words ----
+ * The home status card leads with this, and shows the raw figures only as
+ * supporting detail (2026-09-24: "不要直接暴露参数，要有让人听得懂的解读").
+ * Every situation the card can be in is decided here, in one priority order,
+ * so it can be tested as a table. */
+typedef struct {
+    int  ever_valid, valid;     /* datad snapshot state                        */
+    const char *sim_state;      /* "sim ready" …                               */
+    int  airplane;              /* operate_mode LPM / OFFLINE                  */
+    const char *net_type;       /* raw network_type                            */
+    int  bars;                  /* 0–5                                         */
+    int  data_up;               /* WAN connected (wan_status …connected)       */
+    int  roaming;               /* 1 / 0 / -1 unknown                          */
+    int  n_active;              /* active carriers                             */
+    int  nr_active, lte_active; /* of which NR / LTE (for 5G+ / 5G-A / 4G+)    */
+    int  mhz;                   /* their total bandwidth, 0 = unknown          */
+    int  sinr_valid;  double sinr;
+    int  rsrp_valid;  int rsrp;
+    const char *net_select;     /* radio-mode preference (Only_LTE, WL_AND_5G…) */
+} ui_net_in_t;
+
+typedef enum { UI_NET_OK = 0, UI_NET_WARN, UI_NET_BAD, UI_NET_NEUTRAL } ui_net_tone_t;
+
+typedef struct {
+    ui_net_tone_t tone;
+    char headline[32];      /* 网络正常 / 信号偏弱 / 漫游中 / 只有 3G / 没连上网 / 无服务 … */
+    char hint[128];         /* what it means / what to do; "" when all is fine */
+    char rat[32];           /* the phone-style label: 5G-A / 5G+ / 5G / 4G+ / 4G / 3G+ / 3G / 2G */
+    char link[96];          /* 3 条载波聚合 · 带宽很宽 / 单载波 · 带宽一般 / 不支持载波聚合 */
+    char quality[16];       /* 信号很好 / 信号良好 / 信号一般 / 信号较差 / "" */
+    ui_net_tone_t quality_tone;
+} ui_net_story_t;
+
+void ui_net_story(const ui_net_in_t *in, ui_net_story_t *out);
+
+/* Which card the modem is using. The SIM slot can hold a plain SIM or an
+ * eUICC (eSIM card); it is the eSIM when the modem's ICCID is the ICCID of
+ * the profile lpac reports enabled. ICCIDs compare without the trailing F
+ * padding the modem adds to 19-digit ones, case-insensitively. */
+typedef enum { UI_SIM_NONE = 0, UI_SIM_PLAIN, UI_SIM_ESIM } ui_sim_kind_t;
+int ui_iccid_same(const char *a, const char *b);
+ui_sim_kind_t ui_sim_kind(const char *sim_state, const char *modem_iccid, const char *esim_enabled_iccid);
+
 #endif /* U60PRO_UI_LOGIC_H */

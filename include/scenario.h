@@ -53,4 +53,7 @@ void scenario_get_status(scenario_status_t *out);
  */
 int scenario_chill_set(int on);
 
+/* 下一轮 scenario_poll 立即重读（手动固定情景之后用）。 */
+void scenario_kick(void);
+
 #endif /* U60_SCENARIO_H */

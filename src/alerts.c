@@ -34,6 +34,8 @@
 static char s_pass[128], s_token[80];
 static int  s_pass_loaded;
 static alert_item_t s_items[ALERTS_MAX];
+static health_item_t s_hc[HEALTH_MAX];
+static int  s_hc_n = -1, s_hc_ok;
 static int  s_count, s_unread;
 static char s_err[96];
 static int  s_was_active;
@@ -231,6 +233,81 @@ static void parse_events(char *arr)
     s_count = n;
 }
 
+/* 数组里的下一个对象：就地截成独立字符串（*save 存被截掉的字符），返回对象开头 */
+static char *next_obj(char **pp, char *save)
+{
+    char *p = strchr(*pp, '{'), *q;
+    int depth = 0, instr = 0, esc = 0;
+
+    if (!p) return NULL;
+    for (q = p; *q; q++) {
+        if (instr) {
+            if (esc) esc = 0;
+            else if (*q == '\\') esc = 1;
+            else if (*q == '"') instr = 0;
+        } else if (*q == '"') instr = 1;
+        else if (*q == '{') depth++;
+        else if (*q == '}' && --depth == 0) break;
+    }
+    if (!*q) return NULL;
+    *save = q[1];
+    q[1] = 0;
+    *pp = q + 1;
+    return p;
+}
+
+/* checks: [{level,id,label,detail}]，只留 warn/bad */
+static void parse_checks(char *data)
+{
+    char *p = strstr(data, "\"checks\"");
+    char save, *o;
+
+    s_hc_n = 0;
+    s_hc_ok = 0;
+    if (!p || !(p = strchr(p, '['))) return;
+    /* 数组到配对的 ] 为止（后面还有 crashlogs 的对象，不能扫过去） */
+    char *end = p;
+    {
+        int depth = 0, instr = 0, esc = 0;
+        for (; *end; end++) {
+            if (instr) {
+                if (esc) esc = 0;
+                else if (*end == '\\') esc = 1;
+                else if (*end == '"') instr = 0;
+            } else if (*end == '"') instr = 1;
+            else if (*end == '[') depth++;
+            else if (*end == ']' && --depth == 0) break;
+        }
+    }
+    while ((o = next_obj(&p, &save)) != NULL) {
+        char level[8];
+        if (o > end) { *p = save; break; }
+        json_str(o, "level", level, sizeof level);
+        if (!strcmp(level, "ok")) s_hc_ok++;
+        else if (s_hc_n < HEALTH_MAX && (!strcmp(level, "warn") || !strcmp(level, "bad"))) {
+            health_item_t *h = &s_hc[s_hc_n++];
+            h->bad = !strcmp(level, "bad");
+            json_str(o, "id", h->id, sizeof h->id);
+            json_str(o, "label", h->label, sizeof h->label);
+            json_str(o, "detail", h->detail, sizeof h->detail);
+        }
+        *p = save;
+    }
+}
+
+static void load_health(void)
+{
+    static char data[AL_RESP_MAX];
+    char *b;
+    int code = al_api("GET", "/api/health", NULL, &b);
+
+    if (code != 200 || !b || !json_get(b, "data", data, sizeof data)) {
+        if (s_hc_n == -1) s_hc_n = -2;   /* 从没读到过：页面写「读不到」，别一直「读取中」；读到过就留上一次的 */
+        return;
+    }
+    parse_checks(data);
+}
+
 static int load(void)
 {
     static char data[AL_RESP_MAX];
@@ -267,12 +344,17 @@ int alerts_poll(int active)
     if (!just_shown && s_poll_ms && t - s_poll_ms < AL_TTL_MS) return 0;
     s_poll_ms = t;
     load();
-    snprintf(nums, sizeof nums, "%d/%d", s_count, s_unread);
+    load_health();
+    snprintf(nums, sizeof nums, "%d/%d/%d/%d", s_count, s_unread, s_hc_n, s_hc_ok);
     h = fnv(h, nums);
     h = fnv(h, s_err);
     for (int i = 0; i < s_count; i++) {
         snprintf(nums, sizeof nums, "%ld/%d", s_items[i].seq, s_items[i].unread);
         h = fnv(h, nums);
+    }
+    for (int i = 0; i < s_hc_n; i++) {
+        h = fnv(h, s_hc[i].id);
+        h = fnv(h, s_hc[i].detail);
     }
     if (h == s_sig) return 0;
     s_sig = h;
@@ -287,6 +369,15 @@ void alerts_get(int index, alert_item_t *out)
 {
     if (index < 0 || index >= s_count) { memset(out, 0, sizeof *out); return; }
     *out = s_items[index];
+}
+
+int health_count(void) { return s_hc_n; }
+int health_checked(void) { return s_hc_ok; }
+
+void health_get(int index, health_item_t *out)
+{
+    if (index < 0 || index >= s_hc_n) { memset(out, 0, sizeof *out); return; }
+    *out = s_hc[index];
 }
 
 void alerts_mark_all_read(void)

@@ -31,7 +31,7 @@ X
 #!/bin/sh
 n=\$(cat $T/aps); i=0; while [ \$i -lt \$n ]; do echo "1 root 0 S /usr/sbin/hostapd -g x"; i=\$((i+1)); done
 X
-    printf '#!/bin/sh\nexit 0\n' >"$T/bin/wget"
+    printf '#!/bin/sh\ncase "$*" in *public/status*) cat %s/public 2>/dev/null ;; esac\nexit 0\n' "$T" >"$T/bin/wget"
     chmod +x "$T"/bin/*
     export DOC_UBUS=$T/bin/ubus DOC_UCI=$T/bin/uci DOC_PS=$T/bin/ps DOC_WGET=$T/bin/wget DOC_RC=$T/rc \
         DOC_INITD=$T/initd DOC_UPTIME=$T/uptime DOC_HEARTBEAT=$T/hb DOC_MARKER=$T/marker DOC_ALERTS=$T/alerts \
@@ -65,7 +65,13 @@ check "screen gave up: bad" '[ "$(level screen)" = bad ]'
 check "no SMS number: warn" '[ "$(level sms)" = warn ]'
 mkdir -p "$T/proc/102"; echo zte-agent >"$T/proc/102/comm"; run
 check "two zte-agent processes: bad" '[ "$(level dup-zte-agent)" = bad ]'
-check "Wi-Fi off: warn (could be home)" '[ "$(level wifi)" = warn ]'
+check "Wi-Fi off, scenario did not ask: warn" '[ "$(level wifi)" = warn ]'
+echo '{"ok":true,"data":{"scenario":{"current":"home","wifi_off":true}}}' >"$T/public"; run
+check "Wi-Fi off because the scenario turns it off: ok" '[ "$(level wifi)" = ok ]'
+touch "$T/crash/x.log"; run
+check "crash log, its alert read: ok" '[ "$(level crashes)" = ok ]'
+printf '9\t1\tcrash\tx\ty\n' >"$T/alerts/queue"; run
+check "crash log with unread alerts: warn" '[ "$(level crashes)" = warn ]'
 [ -c "$T/rcd/S99zte_topsw_devui" ] && check "whiteout on a boot-barrier daemon: bad" '[ "$(level whiteout)" = bad ]'
 rm -rf "$T"
 

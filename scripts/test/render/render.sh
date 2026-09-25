@@ -42,7 +42,7 @@ if [ "$mode" = none ]; then
     [ -f "$U60_NUNITO_DIR/u60-cjk-fallback.ttf" ] || { echo "  FAIL no u60-cjk-fallback.ttf in U60_NUNITO_DIR (scripts/fonts/build-cjk-fallback.sh)"; exit 1; }
     cjk=/nonexistent/ZTEZhengYuan.ttf
 fi
-[ -n "$scenes" ] || scenes="good weak nosignal datad-down loading nosim abroad lowbat full-charging long-names empty"
+[ -n "$scenes" ] || scenes="good weak nosignal datad-down loading nosim abroad lowbat full-charging long-names empty nsa lte 3g nodata 5ga edge"
 pngmount=
 [ -n "$png" ] && { mkdir -p "$png"; pngmount="-v $(cd "$png" && pwd):/png"; }
 
@@ -60,9 +60,9 @@ for s in "$@"; do for t in light dark; do
     if [ "$mode" = none ] && ! grep -q "fonts cjk=bundled" /tmp/err.$s.$t; then rc=1; echo "  FAIL [$s/$t] bundled CJK font not used: $(grep "fonts cjk" /tmp/err.$s.$t)"; fi
     [ $r -eq 0 ] || { rc=1; [ $r -ge 124 ] && echo "  FAIL [$s/$t] crashed or hung (exit $r)"; tail -5 /tmp/err.$s.$t; }
 done; done
-# right after a theme switch (--tab=3): a real tap on the other appearance must switch
+# right after a theme switch (--tab=4): a real tap on the other appearance must switch
 for t in light dark; do
-    timeout 60 ./'"$BIN"' --scene=good --theme=$t --launched-tab=3 2>/dev/null | grep -q "exec calls 1" \
-        || { rc=1; echo "  FAIL [good/$t] tap after a --tab=3 start did not switch"; }
+    timeout 60 ./'"$BIN"' --scene=good --theme=$t --launched-tab=4 2>/dev/null | grep -q "exec calls 1" \
+        || { rc=1; echo "  FAIL [good/$t] tap after a --tab=4 start did not switch"; }
 done
 exit $rc' sh "$mode" "$png" "$dump" $scenes

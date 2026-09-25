@@ -36,6 +36,12 @@ typedef struct {
     int  exit_online;
     char health[160];
     int  peers, peers_online, active, direct;
+    /* 详情页（2026-09-25）：本机和 tailnet 的更多信息 */
+    char ip6[48];
+    char os[16];
+    char version[24];     /* "1.102.4"（去掉 -t… 构建后缀） */
+    char tailnet[64];     /* CurrentTailnet.Name */
+    char key_expiry[16];  /* "2027-03-01"；"" = 不过期 / 不知道 */
 } tailscale_status_t;
 
 void tailscale_get_status(tailscale_status_t *out);
@@ -49,6 +55,12 @@ typedef struct {
     char name[40];
     char ip[24];
     int  online, active, direct, exit_node;
+    char os[16];          /* linux / macOS / iOS / windows / android … */
+    char cur_addr[48];    /* 直连时对端的公网地址:端口 */
+    char relay[16];       /* 对端的首选 DERP */
+    long long rx, tx;     /* 本机从它收到 / 发给它的字节（tailscaled 启动以来） */
+    long hs_ago;          /* 距上次握手的秒数，-1 = 从没握手 */
+    long seen_ago;        /* 离线的：最后在线多久了，-1 = 不知道 */
 } tailscale_peer_t;
 int  tailscale_peer_count(void);
 void tailscale_get_peer(int i, tailscale_peer_t *out);

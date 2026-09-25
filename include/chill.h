@@ -16,6 +16,8 @@
 #ifndef U60_CHILL_H
 #define U60_CHILL_H
 
+#include <stddef.h>
+
 /*
  * Poll the API if `active` and the cache has expired. Pass 0 when this screen
  * doesn't need CHILL data (mirrors tailscale_poll()/esim_poll()) — the main
@@ -107,5 +109,9 @@ int devui_restore_stock(void);
 
 /* 面板方向：1 = 转 180°（默认，U60 倒装），0 = 正装。来自配置项 rotate=180|0 */
 int devui_rotate180(void);
+
+/* Node / group name for the device fonts: flag emoji → country code,
+ * other emoji dropped (they render as boxes). netinfo.c uses it too. */
+void chill_sanitize_name(const char *in, char *out, size_t cap);
 
 #endif /* U60_CHILL_H */

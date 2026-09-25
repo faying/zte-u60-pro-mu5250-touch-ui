@@ -188,11 +188,16 @@ static int parse_snapshot(devui_data_t *d, const char *buf)
     if (json_get(buf, "net", sec, sizeof sec)) {
         getstr(sec, "type", d->net_type, sizeof d->net_type);
         getstr(sec, "operator", d->operator_name, sizeof d->operator_name);
+        getstr(sec, "roaming", d->roaming, sizeof d->roaming);
         getstr(sec, "band", d->band, sizeof d->band);
         getstr(sec, "nr_band", d->nr_band, sizeof d->nr_band);
         getstr(sec, "nr_snr", d->nr_snr, sizeof d->nr_snr);
         getstr(sec, "wan_status", d->wan_status, sizeof d->wan_status);
         getstr(sec, "lte_snr", d->lte_snr, sizeof d->lte_snr);
+        getstr(sec, "bandwidth", d->bandwidth, sizeof d->bandwidth);
+        getstr(sec, "operate_mode", d->operate_mode, sizeof d->operate_mode);
+        d->lte_pci = (int)json_get_int(sec, "lte_pci", 0);
+        d->channel = json_get_int(sec, "channel", 0);
         getstr(sec, "nr_bw", d->nr_bw, sizeof d->nr_bw);
         getstr(sec, "nrca", d->nrca, sizeof d->nrca);
         getstr(sec, "lteca", d->lteca, sizeof d->lteca);
@@ -218,6 +223,11 @@ static int parse_snapshot(devui_data_t *d, const char *buf)
         d->nr_pci   = (int)json_get_int(sec, "nr_pci", 0);
         d->nr_cell_id = json_get_int(sec, "nr_cell_id", 0);
         d->nr_channel = json_get_int(sec, "nr_channel", 0);
+        /* Rust datad names them lte_cell_id / lte_channel; the MU5252 path
+         * (and the C datad) cell_id / channel. Take whichever is there. */
+        d->lte_cell_id = json_get_int(sec, "lte_cell_id", 0);
+        if (!d->lte_cell_id) d->lte_cell_id = json_get_int(sec, "cell_id", 0);
+        if (!d->channel) d->channel = json_get_int(sec, "lte_channel", 0);
         {
             const char *cn = mainland_operator_cn(d->mcc, d->mnc, d->operator_name);
             if (cn) snprintf(d->operator_name, sizeof d->operator_name, "%s", cn);
@@ -354,8 +364,12 @@ static int parse_snapshot(devui_data_t *d, const char *buf)
         getstr(sec, "imei", d->imei, sizeof d->imei);
     }
 
-    if (json_get(buf, "sim", sec, sizeof sec))
+    if (json_get(buf, "sim", sec, sizeof sec)) {
         getstr(sec, "state", d->sim_state, sizeof d->sim_state);
+        getstr(sec, "iccid", d->sim_iccid, sizeof d->sim_iccid);
+        getstr(sec, "imsi", d->sim_imsi, sizeof d->sim_imsi);
+        getstr(sec, "msisdn", d->sim_msisdn, sizeof d->sim_msisdn);
+    }
 
     if (force_hsr_enabled()) d->hsr = 1;
 

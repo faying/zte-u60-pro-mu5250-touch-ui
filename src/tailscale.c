@@ -43,6 +43,7 @@ static char s_exit[64];         /* 正在用的出口节点，"" = 没用 */
 static int  s_exit_online;
 static char s_health[160];      /* 第一条健康警告 */
 static int  s_peers, s_peers_online, s_active, s_direct;
+static char s_ip6[48], s_os[16], s_version[24], s_tailnet[64], s_key_expiry[16];
 
 static int      s_was_active;
 static long     s_poll_ms;
@@ -165,6 +166,21 @@ static void join_strings(const char *arr, const char *sep, int max, char *out, s
     }
 }
 
+/* "2026-09-25T03:04:05.123Z" → 距 now 的秒数；零值时间（0001-…）或看不懂 → -1。
+ * tailscaled 按系统时钟写 UTC，设备时钟又是「当地时间标成 UTC」，两边同一个基准，
+ * 相减就对。 */
+static long iso_ago(const char *iso, time_t now)
+{
+    struct tm tm;
+    memset(&tm, 0, sizeof tm);
+    if (sscanf(iso, "%4d-%2d-%2dT%2d:%2d:%2d", &tm.tm_year, &tm.tm_mon, &tm.tm_mday,
+               &tm.tm_hour, &tm.tm_min, &tm.tm_sec) != 6 || tm.tm_year < 2000) return -1;
+    tm.tm_year -= 1900;
+    tm.tm_mon -= 1;
+    time_t t = timegm(&tm);
+    return t > now ? 0 : (long)(now - t);
+}
+
 static tailscale_peer_t s_peer_list[TS_PEER_MAX];
 static int s_peer_list_n;
 
@@ -187,10 +203,29 @@ static void parse_status(char *b)
     else s_health[0] = 0;
 
     s_name[0] = s_ip[0] = s_relay[0] = s_routes[0] = 0;
+    s_ip6[0] = s_os[0] = s_version[0] = s_tailnet[0] = s_key_expiry[0] = 0;
     s_self_online = 0;
+    if (json_get(b, "Version", s_version, sizeof s_version)) {
+        char *dash = strchr(s_version, '-');
+        if (dash) *dash = 0;
+    } else s_version[0] = 0;
+    {
+        char tn[256];
+        if (json_get(b, "CurrentTailnet", tn, sizeof tn) && tn[0] == '{') {
+            if (!json_get(tn, "Name", s_tailnet, sizeof s_tailnet)) s_tailnet[0] = 0;
+        }
+    }
     if (json_get(b, "Self", self, sizeof self)) {
+        char two[128], *comma, ke[40];
         short_name(self, s_name, sizeof s_name);
-        if (json_get(self, "TailscaleIPs", arr, sizeof arr)) join_strings(arr, "", 1, s_ip, sizeof s_ip);
+        if (json_get(self, "TailscaleIPs", arr, sizeof arr)) {
+            join_strings(arr, "", 1, s_ip, sizeof s_ip);
+            join_strings(arr, ",", 2, two, sizeof two);
+            if ((comma = strchr(two, ',')) != NULL) snprintf(s_ip6, sizeof s_ip6, "%s", comma + 1);
+        }
+        if (!json_get(self, "OS", s_os, sizeof s_os)) s_os[0] = 0;
+        if (json_get(self, "KeyExpiry", ke, sizeof ke) && strlen(ke) >= 10 && strncmp(ke, "0001", 4))
+            snprintf(s_key_expiry, sizeof s_key_expiry, "%.10s", ke);
         if (!json_get(self, "Relay", s_relay, sizeof s_relay)) s_relay[0] = 0;
         if (json_get(self, "PrimaryRoutes", arr, sizeof arr)) join_strings(arr, ", ", 4, s_routes, sizeof s_routes);
         s_self_online = json_true(self, "Online");
@@ -232,6 +267,17 @@ static void parse_status(char *b)
                 pe->active = p_active;
                 pe->direct = p_direct;
                 pe->exit_node = json_true(p, "ExitNode");
+                {
+                    char t[48];
+                    time_t now = time(NULL);
+                    if (!json_get(p, "OS", pe->os, sizeof pe->os)) pe->os[0] = 0;
+                    if (!json_get(p, "CurAddr", pe->cur_addr, sizeof pe->cur_addr)) pe->cur_addr[0] = 0;
+                    if (!json_get(p, "Relay", pe->relay, sizeof pe->relay)) pe->relay[0] = 0;
+                    pe->rx = json_get_int(p, "RxBytes", 0);
+                    pe->tx = json_get_int(p, "TxBytes", 0);
+                    pe->hs_ago = json_get(p, "LastHandshake", t, sizeof t) ? iso_ago(t, now) : -1;
+                    pe->seen_ago = json_get(p, "LastSeen", t, sizeof t) ? iso_ago(t, now) : -1;
+                }
                 s_peer_list_n++;
             }
             if (json_true(p, "ExitNode")) {
@@ -308,6 +354,11 @@ void tailscale_get_status(tailscale_status_t *out)
     out->peers_online = s_peers_online;
     out->active = s_active;
     out->direct = s_direct;
+    snprintf(out->ip6, sizeof out->ip6, "%s", s_ip6);
+    snprintf(out->os, sizeof out->os, "%s", s_os);
+    snprintf(out->version, sizeof out->version, "%s", s_version);
+    snprintf(out->tailnet, sizeof out->tailnet, "%s", s_tailnet);
+    snprintf(out->key_expiry, sizeof out->key_expiry, "%s", s_key_expiry);
 }
 
 /* ---- 卡片 ---- */

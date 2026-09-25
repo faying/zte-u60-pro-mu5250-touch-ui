@@ -81,7 +81,10 @@ void uk_show(lv_obj_t *o, int visible)
 
 /* Pressed = one shade towards the page: darker on light, lighter on dark.
  * A filter rather than a fixed colour, so it also works on objects whose
- * background refresh_cb recolours (tiles, options, armed buttons). */
+ * background refresh_cb recolours (tiles, options, armed buttons).
+ * A filter only tints what is drawn, so list rows with a transparent
+ * background also get a real pressed background (uk_tappable). Without it a
+ * press on a row showed nothing at all (2026-09-25). */
 static lv_color_t press_filter_cb(const lv_color_filter_dsc_t *d, lv_color_t c, lv_opa_t opa)
 {
     (void)d;
@@ -95,7 +98,11 @@ void uk_tappable(lv_obj_t *o, lv_event_cb_t cb, void *user)
     if (!init) { lv_color_filter_dsc_init(&s_press_filter, press_filter_cb); init = 1; }
     lv_obj_add_flag(o, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_set_style_color_filter_dsc(o, &s_press_filter, LV_STATE_PRESSED);
-    lv_obj_set_style_color_filter_opa(o, 26, LV_STATE_PRESSED);
+    lv_obj_set_style_color_filter_opa(o, 40, LV_STATE_PRESSED);
+    if (lv_obj_get_style_bg_opa(o, LV_PART_MAIN) < LV_OPA_50) {
+        lv_obj_set_style_bg_color(o, C(T->track), LV_STATE_PRESSED);
+        lv_obj_set_style_bg_opa(o, LV_OPA_COVER, LV_STATE_PRESSED);
+    }
     if (cb) lv_obj_add_event_cb(o, cb, LV_EVENT_CLICKED, user);
     int32_t h = lv_obj_get_style_height(o, 0), w = lv_obj_get_style_width(o, 0);
     int32_t small = LV_MIN(h > 0 && !LV_COORD_IS_SPEC(h) ? h : 40, w > 0 && !LV_COORD_IS_SPEC(w) ? w : 40);
@@ -383,6 +390,29 @@ void uk_battery(uk_battery_t *b, lv_obj_t *p, int xr, int y)
 
 int uk_battery_w(int pct, int charging) { return ui_bat_body_w(pct, charging) + 3; }
 
+/* Centre the digits on their ink, not on the label box: the box carries the
+ * font's descender and side bearings, so box-centred digits sat high and to
+ * the right on the device fonts (reported 2026-09-25). */
+static void bat_digits_place(lv_obj_t *l, const char *s, int x0, int w, int h)
+{
+    const lv_font_t *f = lv_obj_get_style_text_font(l, 0);
+    int pen = 0, il = 0, ir = 0, top = 1000, bot = -1000, any = 0;
+    for (const char *c = s; *c; c++) {
+        lv_font_glyph_dsc_t g;
+        if (!lv_font_get_glyph_dsc(f, &g, (uint32_t)(unsigned char)c[0], (uint32_t)(unsigned char)c[1])) continue;
+        if (!any) il = pen + g.ofs_x;
+        ir = pen + g.ofs_x + g.box_w;
+        int gt = f->line_height - f->base_line - (g.ofs_y + g.box_h);
+        int gb = f->line_height - f->base_line - g.ofs_y;
+        if (gt < top) top = gt;
+        if (gb > bot) bot = gb;
+        pen += g.adv_w;
+        any = 1;
+    }
+    if (!any) { lv_obj_align(l, LV_ALIGN_CENTER, 0, 0); return; }
+    lv_obj_align(l, LV_ALIGN_TOP_LEFT, x0 + (w - (ir - il)) / 2 - il, (h - (bot - top)) / 2 - top);
+}
+
 /* Normal: solid body, digits knocked out in the page colour. Charging: the
  * whole body vivid green (as the approved mock; no bolt, width unchanged).
  * ≤ 20 %: grey body with a red sliver, digits stay clear of it. */
@@ -404,10 +434,9 @@ void uk_battery_set(uk_battery_t *b, int pct, int charging)
     uk_show(b->fill, st == UI_BAT_LOW);
     if (st == UI_BAT_LOW) {
         lv_obj_set_width(b->fill, ui_bat_red_w(pct, w));
-        lv_obj_update_layout(b->digits);
-        lv_obj_align(b->digits, LV_ALIGN_LEFT_MID, 7 + (w - 7 - lv_obj_get_width(b->digits)) / 2, 0);
+        bat_digits_place(b->digits, s, 7, w - 7, 14);
     } else {
-        lv_obj_align(b->digits, LV_ALIGN_CENTER, 0, 0);
+        bat_digits_place(b->digits, s, 0, w, 14);
     }
     uk_bg(b->nub, st == UI_BAT_CHARGING ? T->green : T->t1);
 }

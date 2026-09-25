@@ -22,14 +22,20 @@ typedef struct {
     char net_type[16];
     int  bars;
     char operator_name[48];
+    char roaming[16];       /* datad net.roaming 原样：Home / Roaming / …，"" = 不知道 */
     char band[16];
     char nr_band[16];
     int  nr_rsrp, nr_rsrq, nr_rssi;
     char nr_snr[12];
     int  lte_rsrp, lte_rsrq, lte_rssi;
     char lte_snr[12];
+    int  lte_pci;           /* LTE serving cell (4G, and the NSA anchor) */
+    long channel;           /* datad net.channel: wan_active_channel */
+    char bandwidth[12];     /* datad net.bandwidth, MHz, when it knows */
+    char operate_mode[16];  /* ONLINE / LPM (airplane) / OFFLINE, "" = unknown */
     int  rssi, mcc, mnc, nr_pci;
     long nr_cell_id, nr_channel;
+    long lte_cell_id;          /* net.cell_id: the LTE serving cell */
     char nr_bw[12];
     char nrca[256], lteca[256], ltecasig[256];
     char wan_status[32];
@@ -81,6 +87,9 @@ typedef struct {
     /* sim.state as datad reports it ("sim ready", …); "" when not reported.
      * Only "has no usable SIM" is read from it (ui_logic.h ui_sig_state). */
     char sim_state[24];
+    /* sim.iccid / imsi / msisdn: the card the modem is using (a plain SIM or
+     * the active profile of an eSIM card). iccid may end in an F pad. */
+    char sim_iccid[24], sim_imsi[20], sim_msisdn[24];
 } devui_data_t;
 
 /* Start the backend transport and seed the first visible snapshot if available. */
