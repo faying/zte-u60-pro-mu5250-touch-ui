@@ -11,7 +11,7 @@
 | `src/ui.c`、`src/ui_kit.c`、`src/ui_theme.c` | 5 个标签和各子页面的布局、通用控件、浅色/深色主题和字体加载 |
 | `src/ui_logic.c`、`src/ui_exec.c` | 不依赖 LVGL 的判断逻辑和「点了以后做什么」，可单独测试 |
 | `src/data.c`、`src/json.c` | 从 `zwrt-datad`（`127.0.0.1:9460` 的 `/state` + `/events`）读数据 |
-| `src/esim.c`、`src/chill.c`、`src/tailscale.c`、`src/speedtest.c`、`src/netinfo.c`、`src/scenario.c`、`src/alerts.c` | 各功能的后端：eSIM / APN 等写操作走 zte-agent（`127.0.0.1:9090`），CHILL 走 mihomo 控制接口 |
+| `src/esim.c`、`src/tailscale.c`、`src/speedtest.c`、`src/netinfo.c`、`src/scenario.c`、`src/alerts.c` | 各功能的后端：eSIM / APN 等写操作走 zte-agent（`127.0.0.1:9090`） |
 | `src/drm_disp.c`、`src/touch_input.c`、`src/key_input.c`、`src/backlight.c` | 硬件接口，见 [HARDWARE.md](HARDWARE.md) |
 | `src/uid.c`、`src/uid_core.c` | 屏幕守护进程 `u60-uid`（判断逻辑在 `uid_core.c`，可单独测试） |
 | `include/devui_config.h` | 端口、路径等编译期常量 |

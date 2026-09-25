@@ -180,7 +180,7 @@ ui_rat_t    ui_rat(const char *raw);
 const char *ui_rat_short(const char *raw);   /* "5G" "4G" "3G" "2G"; anything else → "" */
 /* The finer name under the status bar label: "5G SA" "5G NSA"
  * "4G LTE" "3G WCDMA" "3G HSPA+" "2G EDGE"…; "" when not on a network. out ≥ 24. */
-void        ui_rat_long(const char *raw, char *out, int n);
+void        ui_rat_long(const char *raw, int lte_active, char *out, int n);  /* 5G SA / 5G NSA · 4G 锚点 / 4G LTE-A … */
 
 /* The label a phone would show, from the raw type and how many carriers are
  * in use: "2G" "3G" "3G+" "4G" "4G+" "5G" "5G+" "5G-A"; "" when not on a
@@ -221,22 +221,60 @@ typedef struct {
     int  mhz;                   /* their total bandwidth, 0 = unknown          */
     int  sinr_valid;  double sinr;
     int  rsrp_valid;  int rsrp;
+    int  rsrq_valid;  int rsrq; /* serving cell, dB                            */
+    int  mcc, mnc;              /* the network you are on (roaming: the visited one) */
+    int  nr_band;               /* primary NR band number (41, 77 …), 0 = none  */
+    int  nr_mhz;                /* active NR bandwidth                         */
+    long rx_bps;                /* cellular download now, bytes/s              */
+    double ambr_dl;             /* operator cap, Mbps; 0 = unknown             */
     const char *net_select;     /* radio-mode preference (Only_LTE, WL_AND_5G…) */
 } ui_net_in_t;
 
 typedef enum { UI_NET_OK = 0, UI_NET_WARN, UI_NET_BAD, UI_NET_NEUTRAL } ui_net_tone_t;
 
+/* Why it is slow (2026-09-25, docs/designs/home-net-card.md): the first
+ * that holds, in this order. Congestion is only guessed while you are
+ * downloading — with no traffic there is nothing to tell it by. */
+typedef enum { UI_CAUSE_NONE = 0, UI_CAUSE_LIMIT, UI_CAUSE_WEAK, UI_CAUSE_NOISE, UI_CAUSE_CROWD, UI_CAUSE_NARROW } ui_net_cause_t;
+
 typedef struct {
     ui_net_tone_t tone;
-    char headline[32];      /* 网络正常 / 信号偏弱 / 漫游中 / 只有 3G / 没连上网 / 无服务 … */
+    ui_net_cause_t cause;
+    char headline[32];      /* 顺畅 / 慢：信号弱 / 慢：干扰大 / 慢：疑似拥挤 / 漫游中 / 无服务 … */
     char hint[128];         /* what it means / what to do; "" when all is fine */
     char rat[32];           /* the phone-style label: 5G-A / 5G+ / 5G / 4G+ / 4G / 3G+ / 3G / 2G */
     char link[96];          /* 3 条载波聚合 · 带宽很宽 / 单载波 · 带宽一般 / 不支持载波聚合 */
-    char quality[16];       /* 信号很好 / 信号良好 / 信号一般 / 信号较差 / "" */
-    ui_net_tone_t quality_tone;
+    /* three separate things, one word each; none implies another
+     * (strong signal can still be noisy or crowded) */
+    char sig[8];            /* 强 / 中 / 弱 — from the status-bar bars, so the two always agree */
+    ui_net_tone_t sig_tone;
+    char noise[8];          /* 干扰 小 / 中 / 大 from SINR; "" without SINR */
+    ui_net_tone_t noise_tone;
+    char load[12];          /* 负载 正常 / 高; "" when idle or signal too weak to tell */
+    char limit[8];          /* 无 / 有 / — (AMBR unknown)                   */
 } ui_net_story_t;
 
 void ui_net_story(const ui_net_in_t *in, ui_net_story_t *out);
+
+/* Signal tier from the status-bar bars: 2 强 (4–5), 1 中 (3), 0 弱 (1–2), -1 none.
+ * The status bar colours its dots by this and the Home card writes the word. */
+int ui_bars_tier(int bars);
+
+/* The status-bar label (docs/designs/home-net-card.md「状态栏和首页顶行的制式
+ * 叫法」): plain 5G / 4G / 3G / 2G, plus the operator's own name where the
+ * network you are on has one — 5G-A (mainland China: ≥3 NR carriers, or
+ * China Unicom 2 carriers ≥ 200 MHz), 5G UC / 5G UW / 5G+ (T-Mobile n41,
+ * Verizon n77/n48, AT&T n77 or ≥ 50 MHz), 4G+ (Taiwan, Japan: LTE CA),
+ * LTE (US). Roaming uses the visited network's rules: they describe the
+ * network you are actually on. The U60 Pro has no mmWave, so no mmWave rule. */
+void ui_net_badge(const ui_net_in_t *in, char *out, int n);
+
+/* A new verdict has to last 15 s before the headline changes, so it does
+ * not flicker at a threshold. key = anything that tells verdicts apart
+ * (a hash of the headline); returns 1 when the caller should show it. */
+typedef struct { unsigned shown, pending; unsigned since; int have; } ui_net_hold_t;
+#define UI_NET_HOLD_MS 15000u
+int ui_net_hold(ui_net_hold_t *h, unsigned key, unsigned now_ms);
 
 /* Which card the modem is using. The SIM slot can hold a plain SIM or an
  * eUICC (eSIM card); it is the eSIM when the modem's ICCID is the ICCID of

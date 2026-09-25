@@ -461,7 +461,7 @@ body.dark  .sthint.bad { background: #2a1818; color: #ffb6ae; border: 1px solid 
 body.light .sthint.bad { background: #fff0ee; color: #b6362d; border: 1px solid #f0c0ba; }
 .mono { font-family: monospace; font-size: 11px; }
 
-/* ---- CHILL 状态色（决定 2A / 6A）----
+/* ---- 状态色（决定 2A / 6A）----
    深浅主题各配独立色值，不是同一色两档亮度：要同时通过 body.dark(#15161a)/
    .card深(#23262c) 与 body.light(#eceef1)/.card浅(#ffffff) 四种背景下的
    WCAG ≥4.5:1，深浅两端对亮度的要求方向相反，同一色相里很难有一个值两头都过——
@@ -480,41 +480,6 @@ body.light .warn { color: #8e5e0b; }
 body.dark  .bad  { color: #ed645a; }
 body.light .bad  { color: #d01e11; }
 
-/* ---- CHILL 面板 ---- */
-.sc-row { margin: 6px 0 2px 0; font-size: 0; }
-.sc-btn { display: inline-block; width: 32%; margin-right: 2%; padding: 10px 0;
-          text-align: center; border-radius: 8px; background: #2c3444;
-          color: #dfe6f0; font-size: 15px; }
-.sc-btn.sc-w2 { width: 49%; }
-.sc-row a:last-child { margin-right: 0; }
-.sc-btn.cur { background: #2f6b4f; color: #eafff2; }
-.sc-btn.sc-warn { background: #6b3a30; color: #ffe6df; }
-.sc-node { display: block; padding: 9px 10px; margin-bottom: 5px; border-radius: 8px;
-           background: #232a37; color: #cfd8e6; font-size: 14px; }
-.sc-node.cur { background: #2f6b4f; color: #eafff2; }
-.sc-nm { display: inline-block; width: 73%; }
-.sc-dl { display: inline-block; width: 26%; text-align: right;
-         color: #9fb0c4; font-size: 12px; }
-.sc-btn.sc-full { width: 100%; margin-right: 0; }
-.sc-btn.sc-armed { background: #a8402f; color: #fff; }
-.sc-btn.sc-busy { color: #8b97a8; }   /* 测延迟进行中 */
-.sc-grps { font-size: 0; }
-.sc-grp { display: inline-block; padding: 7px 10px; margin: 0 5px 5px 0;
-          border-radius: 7px; background: #2c3444; color: #cfd8e6; font-size: 13px; }
-.sc-grp.cur { background: #2f6b4f; color: #eafff2; }
-.sc-grp.ro  { color: #8b97a8; }
-.sc-node.ro { opacity: 0.75; }
-body.light .sc-grp { background: #e6ebf2; color: #23303f; }
-.sc-dl.ok  { color: #63c98a; }
-.sc-dl.mid { color: #d8b34a; }
-.sc-dl.bad { color: #d2705f; }
-.sc-hint { font-size: 11px; color: #8b97a8; font-weight: normal; }
-.sc-note { padding: 8px 10px; margin-bottom: 6px; border-radius: 7px;
-           background: #3a3327; color: #d8c08a; font-size: 12px; }
-.sc-empty { padding: 14px; text-align: center; color: #8b97a8; }
-body.light .sc-btn  { background: #e6ebf2; color: #23303f; }
-body.light .sc-node { background: #eef2f7; color: #23303f; }
-body.light .sc-dl   { color: #6b7a8c; }
 
 /* ---- eSIM 切换页 ---- */
 .es-prof { display: block; padding: 8px 10px; margin-bottom: 5px; border-radius: 8px;

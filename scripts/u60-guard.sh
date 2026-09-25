@@ -61,7 +61,7 @@ NETDEV=${GUARD_NETDEV:-/proc/net/dev}
 BACKLIGHT=${GUARD_BACKLIGHT:-/sys/class/leds/led:lcd/brightness}
 WAN_IF=${GUARD_WAN_IF:-rmnet_data0}
 TS_IF=${GUARD_TS_IF:-tailscale0}
-STANDBY_PROGS="tailscaled mihomo u60pro-devui zwrt-datad zte-agent"
+STANDBY_PROGS="tailscaled u60pro-devui zwrt-datad zte-agent"
 # LAN IPv6 off (owner's choice, 2026-09-24): while this flag file exists,
 # IPv6 stays disabled on the LAN bridge. With no IPv6 on br-lan, odhcpd has
 # nothing to advertise and clients get no IPv6 at all — the only way that
@@ -70,6 +70,13 @@ STANDBY_PROGS="tailscaled mihomo u60pro-devui zwrt-datad zte-agent"
 # (then: echo 0 > /proc/sys/net/ipv6/conf/br-lan/disable_ipv6).
 LAN_V6_FLAG=${GUARD_LAN_V6_FLAG:-/data/u60-guard/lan-ipv6-off}
 LAN_V6_SYSCTL=${GUARD_LAN_V6_SYSCTL:-/proc/sys/net/ipv6/conf/br-lan/disable_ipv6}
+# Data-service degraded marker (zte-agent datad_feed.rs is its only writer and
+# remover; we only read it). Line 1 = epoch when the agent fell back, line 2 =
+# reason. The agent rewrites it every 60 s while degraded, so an old mtime
+# means the agent itself stopped — that is the heartbeat alert's job, not ours.
+DATAD_MARKER=${GUARD_DATAD_MARKER:-/data/u60-guard/datad-degraded}
+DATAD_FRESH=${GUARD_DATAD_FRESH:-180}  # marker mtime younger than this = agent still vouching for it
+DATAD_AFTER=${GUARD_DATAD_AFTER:-300}  # degraded this long before we text the owner
 
 TAB=$(printf '\t')
 
@@ -197,7 +204,9 @@ end_episode() {
     # We held sleep off. The agent now sits in away until it releases the
     # takeover, and away lets the device sleep — so give that back.
     [ -f "$STATE/sleep-held" ] && set_autosleep true
-    rm -f "$STATE/sleep-held" "$STATE/episode" "$STATE/took-over" "$STATE/next-try" "$STATE/backoff" "$STATE"/alerted-*
+    # Only this episode's flags: alerted-datad-* belongs to datad_round.
+    rm -f "$STATE/sleep-held" "$STATE/episode" "$STATE/took-over" "$STATE/next-try" "$STATE/backoff" \
+        "$STATE/alerted-silent" "$STATE/alerted-restore"
 }
 
 alert_once() { # alert_once <flag> <kind> <text…>
@@ -364,6 +373,7 @@ sms_body() { # <kind> <device-local time>
         agent-hung) m="管理后台卡住了，已强制重启。不用管。" ;;
         agent-crash) m="管理后台意外退出，已自动重启。不用管。" ;;
         datad-crash) m="屏幕的数据服务意外退出，已自动重启。不用管。" ;;
+        datad-degraded) m="屏幕的数据服务超过5分钟不正常，管理后台已改用备用方式读数据。上网不受影响。" ;;
         devui-crash) m="屏幕界面闪退了，已自动重新打开。不用管。" ;;
         devui-gave-up) m="屏幕界面连续打不开，已换成原厂界面，上网不受影响。长按屏幕右下角3秒可换回。" ;;
         sms-test) m="这是测试短信。收到了，说明告警短信能正常发到你手机。" ;;
@@ -543,6 +553,38 @@ standby_round() {
     tail -n 60 "$STANDBY_STAT" >"$STANDBY_STAT.tmp" && mv -f "$STANDBY_STAT.tmp" "$STANDBY_STAT"
 }
 
+# ── data service degraded (marker from zte-agent datad_feed.rs) ─────────────
+#
+# Alert once per degraded episode (an episode = one start time in the marker)
+# when the marker is fresh and the fallback started more than DATAD_AFTER ago.
+# A stale marker is left alone and not alerted: the agent refreshes it every
+# 60 s, so staleness means the agent is gone and agent-silent covers it. We
+# never delete the marker and never ask datad ourselves.
+file_mtime() { # epoch mtime of <file>, empty if unknown
+    date -r "$1" +%s 2>/dev/null || stat -c %Y "$1" 2>/dev/null
+}
+
+datad_round() {
+    mkdir -p "$STATE"
+    if [ ! -f "$DATAD_MARKER" ]; then
+        rm -f "$STATE"/alerted-datad-*
+        return 0
+    fi
+    # Just booted: the marker on /data may be the last boot's, and the agent
+    # deletes it when it starts. Give it the same grace as the heartbeat.
+    [ "$(uptime_s)" -lt "$GRACE" ] && return 0
+    _now=$(wall_s)
+    [ "$_now" -ge "$CLOCK_SANE_AFTER" ] || return 0
+    _start=
+    { read -r _start; read -r _reason; } <"$DATAD_MARKER" 2>/dev/null
+    case "$_start" in '' | *[!0-9]*) return 0 ;; esac
+    _mt=$(file_mtime "$DATAD_MARKER")
+    case "$_mt" in '' | *[!0-9]*) return 0 ;; esac
+    [ $((_now - _mt)) -lt "$DATAD_FRESH" ] || return 0
+    [ $((_now - _start)) -gt "$DATAD_AFTER" ] || return 0
+    alert_once "datad-$_start" datad-degraded "data service degraded for $((_now - _start))s: ${_reason:-unknown}"
+}
+
 lanv6_round() {
     [ -f "$LAN_V6_FLAG" ] || return 0
     _v=; { read -r _v <"$LAN_V6_SYSCTL"; } 2>/dev/null
@@ -553,6 +595,7 @@ lanv6_round() {
 round() {
     guard_round
     rtc_round
+    datad_round
     sms_round
     logcap_round
     standby_round

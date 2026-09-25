@@ -1,6 +1,6 @@
 /*
  * fixtures.c - scene data behind every device-facing interface ui.c uses
- * (data / chill / tailscale / esim / speedtest / scenario / alerts / netinfo /
+ * (data / tailscale / esim / speedtest / scenario / alerts / netinfo /
  * backlight / key / touch / exec). Nothing here touches the system.
  *
  * SPDX-License-Identifier: MIT
@@ -9,7 +9,6 @@
 
 #include "alerts.h"
 #include "backlight.h"
-#include "chill.h"
 #include "data.h"
 #include "esim.h"
 #include "key_input.h"
@@ -31,12 +30,10 @@ ui_launch_t rt_exec_last;
 int  rt_system_calls;
 char rt_system_last[256];
 
-/* CHILL names are what chill.c hands out on the device: flags turned into
- * country codes, other emoji dropped (sanitize_name). */
 static const char *const k_names[RT_SCENES] = {
     "good", "weak", "nosignal", "datad-down", "loading", "nosim",
     "abroad", "lowbat", "full-charging", "long-names", "empty",
-    "nsa", "lte", "3g", "nodata", "5ga", "edge",
+    "nsa", "lte", "3g", "nodata", "5ga", "edge", "crowd", "today", "us", "jp", "nosvc",
 };
 const char *rt_scene_name(int s) { return s >= 0 && s < RT_SCENES ? k_names[s] : "?"; }
 
@@ -162,6 +159,7 @@ static void fill_data(devui_data_t *d)
     case RT_ABROAD:
         cp(d->operator_name, sizeof d->operator_name, "中華電信");
         cp(d->roaming, sizeof d->roaming, "Roaming");
+        d->mcc = 466; d->mnc = 92;
         /* a plain SIM from home, roaming (no eSIM profile matches it) */
         cp(d->sim_iccid, sizeof d->sim_iccid, "8986110000000000077F");
         cp(d->sim_imsi, sizeof d->sim_imsi, "460110000000077");
@@ -203,6 +201,41 @@ static void fill_data(devui_data_t *d)
         cp(d->nr_bw, sizeof d->nr_bw, "160");
         cp(d->nrca, sizeof d->nrca,
            "1,615,1,41,504990,100,0,-92.0,-10.0,15.0,-70.0;2,620,1,78,633984,100,0,-95.0,-11.0,13.0,-72.0;");
+        break;
+    case RT_CROWD:
+        d->bars = 4; d->nr_rsrp = -88; d->nr_rsrq = -18; cp(d->nr_snr, sizeof d->nr_snr, "8.0");
+        d->rx_speed = 150000; d->tx_speed = 20000;
+        break;
+    case RT_TODAY:
+        d->bars = 3; cp(d->band, sizeof d->band, "n5"); cp(d->nr_band, sizeof d->nr_band, "n5");
+        cp(d->nr_bw, sizeof d->nr_bw, "15");
+        d->nr_rsrp = -102; d->nr_rsrq = -17; cp(d->nr_snr, sizeof d->nr_snr, "-1.9");
+        d->nrca[0] = 0; d->rx_speed = 3000; d->tx_speed = 1000;
+        break;
+    case RT_NOSVC:
+        d->bars = 0; cp(d->net_type, sizeof d->net_type, "");
+        d->nr_rsrp = 0; d->nr_rsrq = 0; cp(d->nr_snr, sizeof d->nr_snr, "");
+        cp(d->nr_band, sizeof d->nr_band, ""); cp(d->band, sizeof d->band, "");
+        d->nrca[0] = 0; d->nr_pci = 0; d->nr_channel = 0; d->nr_cell_id = 0;
+        cp(d->wan_status, sizeof d->wan_status, "disconnected");
+        d->rx_speed = 0; d->tx_speed = 0;
+        break;
+    case RT_US:
+        cp(d->operator_name, sizeof d->operator_name, "T-Mobile");
+        cp(d->roaming, sizeof d->roaming, "Roaming"); d->mcc = 310; d->mnc = 260;
+        cp(d->band, sizeof d->band, "n41"); cp(d->nr_band, sizeof d->nr_band, "n41");
+        cp(d->nr_bw, sizeof d->nr_bw, "100"); d->nrca[0] = 0;
+        break;
+    case RT_JP:
+        cp(d->operator_name, sizeof d->operator_name, "SoftBank");
+        cp(d->roaming, sizeof d->roaming, "Roaming"); d->mcc = 440; d->mnc = 20;
+        cp(d->net_type, sizeof d->net_type, "LTE");
+        d->nr_rsrp = 0; cp(d->nr_snr, sizeof d->nr_snr, ""); cp(d->nr_band, sizeof d->nr_band, "");
+        d->nrca[0] = 0; d->nr_pci = 0;
+        cp(d->band, sizeof d->band, "LTE BAND 1"); cp(d->bandwidth, sizeof d->bandwidth, "20");
+        d->lte_rsrp = -92; d->lte_rsrq = -9; cp(d->lte_snr, sizeof d->lte_snr, "16.0");
+        cp(d->lteca, sizeof d->lteca,
+           "0,120,1,1,300,20,0,-92.0,-9.0,16.0,-60.0;1,121,1,3,1850,20,0,-95.0,-10.0,12.0,-63.0;");
         break;
     case RT_EDGE:
         cp(d->net_type, sizeof d->net_type, "EDGE"); d->bars = 3;
@@ -248,84 +281,6 @@ int sms_mark_read_id(long id) { (void)id; return 0; }
 int sms_mark_all_read(void) { return 0; }
 int sms_delete_id(long id) { (void)id; return 0; }
 
-/* ------------------------------------------------------------------ chill */
-static int chill_up(void) { return !EMPTY; }
-int chill_poll(int active) { (void)active; return 1; }
-const char *chill_card_html(int locked) { (void)locked; return ""; }
-const char *chill_core(void) { return chill_up() ? "运行中" : "已停止"; }
-const char *chill_mode(void) { return !chill_up() ? "-" : IS(RT_ABROAD) ? "直连·AI 不动" : "代理"; }
-const char *chill_exit_raw(void) { return !chill_up() ? "" : IS(RT_ABROAD) ? "direct_keep_ai" : "proxy"; }
-int chill_set_exit(const char *state) { (void)state; return 1; }
-const char *chill_mode_raw(void) { return chill_up() ? "rule" : ""; }
-const char *chill_group(void) { return chill_up() ? "节点选择" : ""; }
-const char *chill_node(void)
-{
-    if (!chill_up()) return "";
-    return LONG_NAMES ? "TW 台湾 Taiwan 01 | IEPL 专线 x2.0 | Netflix Disney+ HBO" : "TW 台湾 01";
-}
-const char *chill_traffic(void) { return chill_up() ? "↓12.4G ↑1.1G" : ""; }
-const char *chill_speed(void) { return !chill_up() ? "" : IS(RT_FULL_CHARGING) ? "↓88.2M/s ↑9.1M/s" : "↓1.2M/s ↑45K/s"; }
-const char *chill_chain(void) { return chill_up() ? "节点选择 → TW 台湾 01" : ""; }
-int chill_restart_armed(void) { return 0; }
-const char *chill_conns(void) { return chill_up() ? "37" : "0"; }
-int chill_online(void) { return chill_up(); }
-const char *chill_conn_split(void) { return chill_up() ? "代理 21 · 直连 16" : ""; }
-const char *chill_grouplist_html(void) { return ""; }
-int chill_select_group(int i) { (void)i; return 1; }
-int chill_group_selectable(void) { return 1; }
-
-static const char *const k_groups[] = { "节点选择", "AI", "流媒体", "苹果服务" };
-int chill_group_count(void) { return chill_up() ? 4 : 0; }
-void chill_get_group(int i, chill_group_info_t *o)
-{
-    memset(o, 0, sizeof *o);
-    if (i < 0 || i >= 4) return;
-    cp(o->name, sizeof o->name, k_groups[i]);
-    o->selected = i == 0;
-    o->auto_pick = i == 3;
-}
-const char *chill_nodelist_html(void) { return ""; }
-static const struct { const char *n; int delay; } k_nodes[] = {
-    { "TW 台湾 01", 42 }, { "TW 台湾 02", 55 }, { "JP 日本 01", 71 }, { "US 美国 01", 168 },
-    { "SG 新加坡 01", 0 }, { "KR 韩国 01", 93 }, { "HK 香港 01", -1 }, { "US 美国 02", 201 },
-    { "JP 日本 02", 66 }, { "TW 台湾 03", 48 },
-};
-int chill_node_count(void) { return chill_up() ? 10 : 0; }
-void chill_get_node(int i, chill_node_info_t *o)
-{
-    memset(o, 0, sizeof *o);
-    if (i < 0 || i >= 10) return;
-    if (LONG_NAMES && i == 0) cp(o->name, sizeof o->name, "TW 台湾 Taiwan 01 | IEPL 专线 x2.0 | Netflix Disney+ HBO Max");
-    else cp(o->name, sizeof o->name, k_nodes[i].n);
-    o->delay = k_nodes[i].delay;
-    o->selected = i == 0;
-}
-static const struct { const char *n, *t; long b; } k_pairs[] = {
-    { "AI → US 美国 01", "↓820M ↑95M", 915000000 },
-    { "节点选择 → TW 台湾 01", "↓640M ↑41M", 681000000 },
-    { "流媒体 → JP 日本 01", "↓2.1G ↑12M", 2112000000L },
-    { "苹果服务 → DIRECT", "↓120M ↑8M", 128000000 },
-    { "漏网之鱼 → TW 台湾 02", "↓12M ↑2M", 14000000 },
-    { "Google → TW 台湾 01", "↓3M ↑1M", 4000000 },
-};
-int chill_top_pair_count(void) { return chill_up() ? 6 : 0; }
-void chill_get_top_pair(int i, chill_traffic_item_t *o)
-{
-    memset(o, 0, sizeof *o);
-    if (i < 0 || i >= 6) return;
-    cp(o->name, sizeof o->name, k_pairs[i].n);
-    cp(o->traffic, sizeof o->traffic, k_pairs[i].t);
-    o->bytes = k_pairs[i].b;
-}
-int chill_set_mode(const char *m) { (void)m; return 1; }
-int chill_select_node(int i) { (void)i; return 1; }
-int chill_restart_core(void) { return 1; }
-const char *chill_profile_raw(void) { return "standard"; }
-const char *chill_profile_effective_raw(void) { return "standard"; }
-int chill_thermal_eco(void) { return 0; }
-int chill_set_profile(const char *p) { (void)p; return 1; }
-int chill_test_delay(void) { return 1; }
-int chill_delay_pending(void) { return 0; }
 int devui_restore_stock(void) { return 0; }
 int devui_rotate180(void) { return 0; }
 
@@ -451,19 +406,16 @@ void scenario_get_status(scenario_status_t *o)
     memset(o, 0, sizeof *o);
     o->available = 1;
     o->enabled = 1;
-    o->chill_on = EMPTY ? 0 : 1;
     if (IS(RT_LOADING)) return;                    /* 判定中 */
     if (IS(RT_ABROAD)) {
         cp(o->name, sizeof o->name, "国外");
         o->abroad = 1;
-        o->auto_direct = 1;
     } else {
         cp(o->name, sizeof o->name, "在家");
         o->wifi_off = 1;
     }
     o->last_switch = rt_now - 3 * 3600;
 }
-int scenario_chill_set(int on) { (void)on; return 1; }
 void scenario_kick(void) {}
 
 /* ----------------------------------------------------------------- alerts */
@@ -522,7 +474,7 @@ const netinfo_t *netinfo_get(void)
         static const struct { const char *id, *name; int wifi_off, abroad; const char *when, *does; } k_sc[3] = {
             { "home", "在家", 1, 0, "附近有 Wi-Fi「My-Home-5G」「My-Home」时", "关 Wi-Fi · 不休眠，Tailscale 一直连得上" },
             { "away", "外出", 0, 0, "其他情景都不符合时（默认）", "开 Wi-Fi" },
-            { "abroad", "国外", 0, 1, "插的不是中国的卡时（当地卡、境外 eSIM）", "开 Wi-Fi · CHILL 改成直连" },
+            { "abroad", "国外", 0, 1, "插的不是中国的卡时（当地卡、境外 eSIM）", "开 Wi-Fi" },
         };
         n->scene_known = 1;
         n->scene_enabled = 1;
@@ -564,11 +516,6 @@ const netinfo_t *netinfo_get(void)
     cp(n->nbr_state, sizeof n->nbr_state, "unsupported");
     cp(n->nbr_err, sizeof n->nbr_err, "原厂扫描会断网且拿不到数据，已停用");
     if (IS(RT_GOOD) || LONG_NAMES) {
-        n->chill_running = 1;
-        n->proxy.present = 1;
-        cp(n->proxy.ip, sizeof n->proxy.ip, "198.51.100.7");
-        cp(n->proxy.geo, sizeof n->proxy.geo, "日本 东京都");
-        cp(n->proxy.node, sizeof n->proxy.node, LONG_NAMES ? "JP 东京 03 | IPLC 专线 x1.5 超长节点名字测试" : "JP 03");
         /* 邻区：原厂扫描已停用（agent 报 unsupported）；搜过一次网 */
         cp(n->nbr_state, sizeof n->nbr_state, "unsupported");
         cp(n->nbr_err, sizeof n->nbr_err, "原厂扫描会断网且拿不到数据，已停用");
@@ -593,13 +540,10 @@ const netinfo_t *netinfo_get(void)
         cp(n->ops[2].plmn, 8, "46000"); cp(n->ops[2].name, 48, "中国移动"); cp(n->ops[2].country, 24, "中国"); cp(n->ops[2].rat, 8, "7"); cp(n->ops[2].status, 4, "3");
     }
     if (IS(RT_ABROAD)) {
-        /* 国内卡在日本漫游，CHILL 出口切到直连：两个 IP 一样，合成一行 */
+        /* 国内卡在台湾漫游 */
         cp(n->direct.ip, sizeof n->direct.ip, "198.51.100.40");
         cp(n->direct.geo, sizeof n->direct.geo, "中国台湾 台北市");
         cp(n->direct.isp, sizeof n->direct.isp, "中华电信");
-        n->chill_running = 1;
-        n->proxy = n->direct;
-        cp(n->proxy.node, sizeof n->proxy.node, "DIRECT");
         ni_oper(&n->serving, "中华电信", "中国台湾", "466", "92");
         n->roaming = 1;
         cp(n->selection, sizeof n->selection, "manual");

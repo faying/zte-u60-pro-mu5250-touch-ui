@@ -23,13 +23,13 @@ zwrt-datad :9460 ──▶ 触屏界面 ──(eSIM 页)──▶ zte-agent :909
 浏览器 ──▶ zte-agent :9090（API + 管理网页）
 ```
 
-触屏界面从 `zwrt-datad` 读实时数据，eSIM、CHILL、APN 等操作交给 `zte-agent`。三样由 manager 仓库的装机包一起装到设备上。
+触屏界面从 `zwrt-datad` 读实时数据，eSIM、APN 等操作交给 `zte-agent`。三样由 manager 仓库的装机包一起装到设备上。
 
 ## 功能
 
 - 底部 5 个标签，按「我想做什么」分：**首页 · 蜂窝 · Wi-Fi · 出口 · 系统**。首页大字是一句结论（网络正常 / 信号偏弱 / 漫游中）。
 - 蜂窝：载波、信号、网络模式、APN、SIM 与 eSIM 切换（经 zte-agent 调 lpac）。
-- 出口：CHILL（mihomo）状态、出口模式、档位、节点；Tailscale。
+- 出口：出口 IP 与归属地；Tailscale。不带代理功能，要的话见 manager 仓库的 [docs/PROXY.md](https://github.com/faying/zte-u60-pro-mu5250-manager/blob/main/docs/PROXY.md)。
 - 系统：亮度、息屏、浅色 / 深色 / 自动，电池与负载、告警详情。
 - 每次点击都有即时反馈；要确认的操作按两次。
 - **u60-uid**：屏幕唯一的主人。拉起或接管界面，崩了自动拉起并记告警；连续两次起不来就交还原厂界面（避免被固件升级成整机重启），长按屏幕右下角 3 秒回来。
@@ -62,7 +62,6 @@ scripts/build-docker.sh      # → out/u60pro-devui-lvgl.stripped（界面）、
 
 - [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)：代码结构、构建、测试、真机试跑
 - [docs/HARDWARE.md](docs/HARDWARE.md)：屏幕、触摸、按键、背光等硬件接口
-- [docs/CHILL.md](docs/CHILL.md)：CHILL 页（mihomo 控制）
 - [docs/ESIM.md](docs/ESIM.md)：eSIM 切换页与 zte-agent 接口
 - [docs/SPEEDTEST.md](docs/SPEEDTEST.md)：可选测速后端
 - 设计规范：manager 仓库 [docs/DESIGN.md](https://github.com/faying/zte-u60-pro-mu5250-manager/blob/main/docs/DESIGN.md) §4
@@ -70,7 +69,7 @@ scripts/build-docker.sh      # → out/u60pro-devui-lvgl.stripped（界面）、
 ## 致谢
 
 - [33333s](https://github.com/33333s)：感谢 [u60pro-devui](https://github.com/33333s/u60pro-devui)（本仓库的起点）和 [zwrt-datad](https://github.com/33333s/zwrt-datad)（界面读取的本机数据服务）。
-- Wei REN：LVGL 重写、u60-uid、CHILL、eSIM、Tailscale、可靠性脚本。
+- Wei REN：LVGL 重写、u60-uid、eSIM、Tailscale、可靠性脚本。
 - [Jesther Silvestre](https://github.com/jesther-ai)：[open-u60-pro](https://github.com/jesther-ai/open-u60-pro)，zte-agent 的起点。
 
 ## 许可证与免责声明

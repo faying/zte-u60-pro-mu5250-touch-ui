@@ -45,7 +45,7 @@ AGENT=${PS_AGENT:-http://127.0.0.1:9090/api/public/status}
 TS_CLI=${PS_TS_CLI:-/data/tailscale/tailscale}
 CURL=${PS_CURL:-/usr/bin/curl}
 STEP=5                  # battery / cpuidle every STEP seconds
-PROGS="tailscaled mihomo u60pro-devui zwrt-datad zte-agent"
+PROGS="tailscaled u60pro-devui zwrt-datad zte-agent"
 
 # ── pure helpers (also exercised by scripts/test/power-sample) ──────────────
 
@@ -259,7 +259,7 @@ run_window() {
     } > "$report"
 
     tsv=$OUT_DIR/summary.tsv
-    [ -f "$tsv" ] || printf 'stamp\tlabel\tmin\tinvalid\tmw_charge\tmw_vi\twan_busy_s\tquiet10_pct\tmedian_gap_s\tppm\tppm_no_ts\tdeep_idle_pct\tbusy_pct\ttailscaled_wps\tmihomo_wps\tdevui_wps\tdatad_wps\tagent_wps\tnr_rsrp\tband\trat\tscenario\tpeers\tsampler_pct\n' > "$tsv"
+    [ -f "$tsv" ] || printf 'stamp\tlabel\tmin\tinvalid\tmw_charge\tmw_vi\twan_busy_s\tquiet10_pct\tmedian_gap_s\tppm\tppm_no_ts\tdeep_idle_pct\tbusy_pct\ttailscaled_wps\tdevui_wps\tdatad_wps\tagent_wps\tnr_rsrp\tband\trat\tscenario\tpeers\tsampler_pct\n' > "$tsv"
     wps=$(awk -F'\t' -v s="$secs" 'NR == FNR {p[$1] = $2; w[$1] = $3; next}
         { if ($3 == "-" || w[$1] == "-" || $2 != p[$1]) printf "-\t"; else printf "%.1f\t", ($3 - w[$1]) / s }' "$W/wk0" "$W/wk1")
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s%s\t%s\t%s\t%s\t%s\t%s\n' \

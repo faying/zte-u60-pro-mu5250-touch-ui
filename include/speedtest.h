@@ -16,7 +16,7 @@
 #define U60_SPEEDTEST_H
 
 /* Poll /api/speedtest/progress if `active` and the cache has expired —
- * mirrors chill_poll()/esim_poll(). Returns 1 if a fetch actually ran. */
+ * mirrors esim_poll(). Returns 1 if a fetch actually ran. */
 int speedtest_poll(int active);
 
 typedef enum {

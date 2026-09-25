@@ -84,7 +84,7 @@ static void load_conf(void)
     fclose(fp);
 }
 
-/* ---- minimal HTTP (same shape as chill.c/esim.c) ---- */
+/* ---- minimal HTTP (same shape as esim.c) ---- */
 
 static int wait_ready(int fd, int write_side, int ms)
 {

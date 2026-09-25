@@ -11,7 +11,6 @@
 #include "drm_disp.h"
 #include "data.h"
 #include "json.h"
-#include "chill.h"
 #include "esim.h"
 #include "tailscale.h"
 #include "touch_input.h"
@@ -1151,12 +1150,10 @@ static int path_is_esim(const char *path)
     return !strcmp(base, "esim.html");
 }
 
-static int path_is_chill(const char *path)
-{
-    const char *base = strrchr(path, '/');
-    if (!base) base = path; else base++;
-    return !strcmp(base, "chill.html");
-}
+/* 面板方向：U60 倒装，转 180°。 */
+static int devui_rotate180(void) { return 1; }
+/* 一键退回原厂 UI：派后台子进程 2 秒后拉起原厂 init，自己退出让出 DRM。 */
+static int devui_restore_stock(void) { return system("( sleep 2; /etc/init.d/zte_topsw_devui start ) >/dev/null 2>&1 &") >= 0; }
 
 static int path_is_signal_detail(const char *path)
 {
@@ -4802,30 +4799,6 @@ static int build_kv(struct kv *t, const char *path)
     t[i++] = (struct kv){ "LOCKCLASS", lock_enabled() ? "on" : "off" };
     t[i++] = (struct kv){ "LOCKSTATE", lock_enabled() ? "已开启" : "已关闭" };
 
-    /* ---- CHILL 面板（ShellCrash/mihomo，直连本机 clash API，见 chill.c）----
-     * 这里只读缓存，请求在主循环的 chill_poll 里发（门控在首页/CHILL 页才
-     * 轮询，见 2026-09-17 设计审查关于"无条件轮询"的记录）。 */
-    t[i++] = (struct kv){ "CHILLCARD", chill_card_html(g_lock_state == 1) };
-    t[i++] = (struct kv){ "SC_CORE",    chill_core() };
-    t[i++] = (struct kv){ "SC_MODE",    chill_mode() };
-    t[i++] = (struct kv){ "SC_GROUP",   chill_group() };
-    t[i++] = (struct kv){ "SC_NODE",    chill_node() };
-    t[i++] = (struct kv){ "SC_TRAFFIC", chill_traffic() };
-    t[i++] = (struct kv){ "SC_SPEED",   chill_speed() };
-    t[i++] = (struct kv){ "SC_CHAIN",   chill_chain() };
-    t[i++] = (struct kv){ "SC_RESTART_LBL", chill_restart_armed() ? "再按一次" : "重启内核" };
-    t[i++] = (struct kv){ "SC_RESTART_CLS", chill_restart_armed() ? "sc-armed" : "" };
-    t[i++] = (struct kv){ "SC_CONNS",   chill_conns() };
-    t[i++] = (struct kv){ "SC_NODELIST", chill_nodelist_html() };
-    t[i++] = (struct kv){ "SC_GROUPLIST", chill_grouplist_html() };
-    t[i++] = (struct kv){ "SC_CONNSPLIT", chill_conn_split() };
-    t[i++] = (struct kv){ "SC_GRPNOTE", chill_group_selectable() ? "" : "（自动选择，不可手动切换）" };
-    t[i++] = (struct kv){ "SC_DELAY_LBL", chill_delay_pending() ? "测试中…" : "测延迟" };
-    t[i++] = (struct kv){ "SC_DELAY_CLS", chill_delay_pending() ? "sc-busy" : "" };
-    /* 给三个模式按钮加高亮用的 class */
-    t[i++] = (struct kv){ "SC_CLS_RULE",   !strcmp(chill_mode_raw(), "rule")   ? "cur" : "" };
-    t[i++] = (struct kv){ "SC_CLS_GLOBAL", !strcmp(chill_mode_raw(), "global") ? "cur" : "" };
-    t[i++] = (struct kv){ "SC_CLS_DIRECT", !strcmp(chill_mode_raw(), "direct") ? "cur" : "" };
 
     /* ---- eSIM 切换页（调本机 zte-agent，见 esim.c）。这里只读缓存，请求在主循环的 esim_poll 里发 ---- */
     t[i++] = (struct kv){ "ES_CUR",   esim_current() };
@@ -6219,25 +6192,6 @@ int main(void)
                             last_act = now;
                             need_render = 1;
                         }
-                        else if (!strncmp(a, "scmode:", 7)) {
-                            int ok = chill_set_mode(a + 7);
-                            snprintf(g_toast, sizeof g_toast, ok ? "模式已切换" : "切换失败");
-                            g_toast_until = now + 1600;
-                            invalidate_render_html_cache();
-                            last_act = now; need_render = 1;
-                        }
-                        else if (!strncmp(a, "scgrp:", 6)) {
-                            chill_select_group(atoi(a + 6));
-                            invalidate_render_html_cache();
-                            last_act = now; need_render = 1;
-                        }
-                        else if (!strncmp(a, "scnode:", 7)) {
-                            int ok = chill_select_node(atoi(a + 7));
-                            snprintf(g_toast, sizeof g_toast, ok ? "已切换节点" : "切换失败");
-                            g_toast_until = now + 1600;
-                            invalidate_render_html_cache();
-                            last_act = now; need_render = 1;
-                        }
                         else if (!strcmp(a, "exitstock")) {
                             /* 两段式：误触会把屏幕换掉，代价不小 */
                             static long arm;
@@ -6255,22 +6209,6 @@ int main(void)
                                 snprintf(g_toast, sizeof g_toast, "再按一次切回原厂界面");
                                 g_toast_until = now + 5000;
                             }
-                            invalidate_render_html_cache();
-                            last_act = now; need_render = 1;
-                        }
-                        else if (!strcmp(a, "screstart")) {
-                            int done = chill_restart_core();
-                            snprintf(g_toast, sizeof g_toast,
-                                     done ? "内核已重启" : "再按一次确认重启");
-                            g_toast_until = now + (done ? 2500 : 4000);
-                            invalidate_render_html_cache();
-                            last_act = now; need_render = 1;
-                        }
-                        else if (!strcmp(a, "scdelay")) {
-                            int ok = chill_test_delay();   /* 异步：结果到了自动填进列表 */
-                            snprintf(g_toast, sizeof g_toast,
-                                     ok == 2 ? "延迟测试进行中" : ok ? "已开始测延迟，稍候刷新" : "测试失败");
-                            g_toast_until = now + 1600;
                             invalidate_render_html_cache();
                             last_act = now; need_render = 1;
                         }
@@ -6696,16 +6634,6 @@ action_done:
             if (esim_poll(es_on) && es_on) need_render = 1;
         }
 
-        /* CHILL 首页卡片 + 面板页：首页（含锁屏预览）或 CHILL 页亮着时才读
-         * clash API（chill_poll 自己节流）。之前是从 build_kv 无条件调用，
-         * 每次渲染任何页面都会打一轮 /configs+/group+/connections+最多 3 跳
-         * /proxies 请求，跟看没看 CHILL 相关页面无关——2026-09-17 设计审查
-         * 发现的问题，改成跟 Tailscale/eSIM 一样的门控写法。 */
-        if (!dragging && !scroll_inertia) {
-            int ch_on = !menu && backlight_is_on() &&
-                        (path_is_signal_home(CUR_PATH) || path_is_chill(CUR_PATH));
-            if (chill_poll(ch_on) && ch_on) need_render = 1;
-        }
 
         if (need_render && backlight_is_on()) {
             if (ext_ok && devui_ext_active(&ext) && !g_lock_state)

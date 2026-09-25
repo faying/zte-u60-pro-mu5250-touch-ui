@@ -128,7 +128,7 @@ static void load_conf(void)
     if (!s_pass[0]) read_agent_password();
 }
 
-/* ---- minimal HTTP（和 chill.c 同一套写法，多返回一个状态码用来认 401）---- */
+/* ---- minimal HTTP（和 speedtest.c 同一套写法，多返回一个状态码用来认 401）---- */
 
 static int wait_ready(int fd, int write_side, int ms)
 {

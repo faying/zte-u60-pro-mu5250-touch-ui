@@ -38,10 +38,10 @@ STANDBY_BASE=${DOC_STANDBY_BASE:-/data/u60-guard/standby.baseline}
 CLOCK_SANE_AFTER=1704067200
 
 # Standby sentinel. u60-guard writes one line per screen-off minute:
-#   <uptime> <cellular pkts/min> <tunnel pkts/min> <wakeups/s ×5 programs | ->
+#   <uptime> <cellular pkts/min> <tunnel pkts/min> <wakeups/s per program | ->
 # Columns 2-8 are judged against a baseline of median and MAD (median
 # absolute deviation) taken from those same records.
-standby_labels='- 蜂窝包/分 Tailscale隧道包/分 tailscaled唤醒/秒 mihomo唤醒/秒 触屏唤醒/秒 数据服务唤醒/秒 后台唤醒/秒'
+standby_labels='- 蜂窝包/分 Tailscale隧道包/分 tailscaled唤醒/秒 触屏唤醒/秒 数据服务唤醒/秒 后台唤醒/秒'
 
 calibrate_standby() {
     n=$(wc -l <"$STANDBY_STAT" 2>/dev/null || echo 0)

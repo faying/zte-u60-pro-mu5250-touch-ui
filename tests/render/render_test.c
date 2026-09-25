@@ -314,7 +314,6 @@ static void to_tab(int i)
 {
     sub_close();
     power_menu_set(0);
-    exit_menu_set(0);
     lv_tileview_set_tile_by_index(s_tv, i, 0, LV_ANIM_OFF);
     update_tabs();
     bench_gate();
@@ -337,8 +336,7 @@ static void to_sub(int id, int parent)
 static const struct { int id, parent; const char *name; } k_subs[] = {
     { SUB_SMS, -1, "sms" }, { SUB_SMS_DETAIL, SUB_SMS, "sms-detail" },
     { SUB_CELL, -1, "cell" }, { SUB_LOCK, -1, "lock" }, { SUB_SPEED, -1, "speed" },
-    { SUB_CHILL, -1, "chill" }, { SUB_CHILL_NODES, SUB_CHILL, "chill-nodes" },
-    { SUB_CHILL_PAIRS, SUB_CHILL, "chill-pairs" }, { SUB_ESIM, -1, "esim" },
+    { SUB_ESIM, -1, "esim" },
     { SUB_TS, -1, "tailscale" }, { SUB_ALERTS, -1, "alerts" },
     { SUB_ALERT_DETAIL, SUB_ALERTS, "alert-detail" }, { SUB_PERF, -1, "perf" },
     { SUB_NET, -1, "net" }, { SUB_SCENE, -1, "scene" }, { SUB_APN, -1, "apn" },
@@ -459,10 +457,6 @@ int main(int argc, char **argv)
 
     /* overlays */
     to_tab(TAB_HOME);
-    exit_menu_set(1);
-    settle(200);
-    texts_clear(); collect(s_xm); shot("exit-menu", 0); page_done("exit-menu");
-    exit_menu_set(0);
     power_menu_set(1);
     settle(200);
     texts_clear(); collect(s_power_menu); shot("power-menu", 0); page_done("power-menu");
@@ -628,10 +622,13 @@ int main(int argc, char **argv)
             else ok("");
         }
         net_clear_arms();
-        to_sub(SUB_CHILL_NODES, SUB_CHILL);
-        swipe_at(8, 300, 120);
-        if (s_sub_cur != SUB_CHILL) bad("edge swipe on a child page: sub %d, want CHILL", s_sub_cur);
-        else ok("");
+        s_smsd_id = s_sms_row_id[0];
+        to_sub(SUB_SMS_DETAIL, SUB_SMS);
+        if (s_sub_cur == SUB_SMS_DETAIL) {   /* 没有短信的场景里详情页打不开 */
+            swipe_at(8, 300, 120);
+            if (s_sub_cur != SUB_SMS) bad("edge swipe on a child page: sub %d, want 短信", s_sub_cur);
+            else ok("");
+        }
         to_sub(SUB_SCENE, -1);
         swipe_at(150, y, 290);                       /* 不是从边缘起：不返回 */
         if (s_sub_cur != SUB_SCENE) bad("a swipe from mid-screen went back");

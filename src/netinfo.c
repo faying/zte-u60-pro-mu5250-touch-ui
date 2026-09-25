@@ -9,7 +9,6 @@
  */
 #include "netinfo.h"
 #include "json.h"
-#include "chill.h"
 
 #include <arpa/inet.h>
 #include <errno.h>
@@ -207,12 +206,7 @@ static void parse_exit(const char *data, const char *key, ni_exit_t *e)
     jstr(o, "ip", e->ip, sizeof e->ip);
     jstr(o, "geo", e->geo, sizeof e->geo);
     jstr(o, "isp", e->isp, sizeof e->isp);
-    {
-        /* 节点名里的国旗 emoji 设备字体画不出来：和 CHILL 页一样转成国家码 */
-        char raw[sizeof e->node * 2];
-        jstr(o, "node", raw, sizeof raw);
-        chill_sanitize_name(raw, e->node, sizeof e->node);
-    }
+    jstr(o, "node", e->node, sizeof e->node);
     jstr(o, "error", e->err, sizeof e->err);
 }
 
@@ -248,8 +242,6 @@ static void parse(const char *data)
     s_ni.now = json_get_int(data, "now", 0);
     parse_exit(data, "direct", &s_ni.direct);
     parse_exit(data, "proxy", &s_ni.proxy);
-    jstr(data, "chill_running", tmp, sizeof tmp);
-    s_ni.chill_running = !strcmp(tmp, "true");
     parse_oper(data, "home_operator", &s_ni.home);
     parse_oper(data, "serving_operator", &s_ni.serving);
     jstr(data, "roaming", tmp, sizeof tmp);

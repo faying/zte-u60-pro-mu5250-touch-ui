@@ -43,7 +43,6 @@ APP_SRCS=(
   devui_ext
   drm_disp
   json
-  chill
   esim
   tailscale
   key_input

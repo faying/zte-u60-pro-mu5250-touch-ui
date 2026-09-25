@@ -184,6 +184,11 @@ static int sim_usable(const char *st)
     return strstr(st, "ready") != NULL;          /* datad: "sim ready" */
 }
 
+int ui_bars_tier(int bars)
+{
+    return bars <= 0 ? -1 : bars >= 4 ? 2 : bars == 3 ? 1 : 0;
+}
+
 ui_sig_state_t ui_sig_state(int ever_valid, int valid, const char *sim_state, int bars, int sinr_valid, double sinr)
 {
     if (!ever_valid) return UI_SIG_LOADING;
@@ -286,21 +291,44 @@ ui_rat_t ui_rat(const char *raw)
 
 void ui_net_label(const char *raw, int nr_active, int lte_active, char *out, int n)
 {
+    /* region-free: only what the modem itself says (a raw "5G-A" / "LTE-A").
+     * Carrier counts no longer make 5G+ / 5G-A / 4G+ here: those names mean
+     * different things per operator (ui_net_badge). */
     ui_rat_t r = ui_rat(raw);
     const char *l = "";
+    (void)nr_active; (void)lte_active;
     switch (r) {
-    case UI_RAT_5G_SA: case UI_RAT_5G_NSA:
-        l = (ci_has5a(raw) || nr_active >= 3) ? "5G-A" : nr_active == 2 ? "5G+" : "5G";
-        break;
-    case UI_RAT_4G:
-        l = (has_ci(raw, "LTE-A") || has_ci(raw, "LTE_A") || has_ci(raw, "LTE_CA") || has_ci(raw, "4G+") ||
-             has_ci(raw, "LTE+") || lte_active >= 2) ? "4G+" : "4G";
-        break;
-    case UI_RAT_3G: l = (has_ci(raw, "HSPA+") || has_ci(raw, "DC-HSPA") || has_ci(raw, "HSPAP")) ? "3G+" : "3G"; break;
+    case UI_RAT_5G_SA: case UI_RAT_5G_NSA: l = ci_has5a(raw) ? "5G-A" : "5G"; break;
+    case UI_RAT_4G: l = "4G"; break;
+    case UI_RAT_3G: l = "3G"; break;
     case UI_RAT_2G: l = "2G"; break;
     default: break;
     }
     snprintf(out, (size_t)n, "%s", l);
+}
+
+void ui_net_badge(const ui_net_in_t *in, char *out, int n)
+{
+    ui_rat_t r = ui_rat(in->net_type);
+    int us = in->mcc >= 310 && in->mcc <= 316;
+    ui_net_label(in->net_type, in->nr_active, in->lte_active, out, n);
+    if (has_ci(in->net_type, "LIMIT") || has_ci(in->net_type, "EMERGENCY")) { snprintf(out, (size_t)n, "SOS"); return; }
+    if (r == UI_RAT_5G_SA || r == UI_RAT_5G_NSA) {
+        if (in->mcc == 460) {
+            int unicom = in->mnc == 1 || in->mnc == 6 || in->mnc == 9;
+            if (in->nr_active >= 3 || (unicom && in->nr_active >= 2 && in->nr_mhz >= 200))
+                snprintf(out, (size_t)n, "5G-A");
+        } else if (in->mcc == 310 && in->mnc == 260) {
+            if (in->nr_band == 41) snprintf(out, (size_t)n, "5G UC");
+        } else if (in->mcc == 311 && in->mnc == 480) {
+            if (in->nr_band == 77 || in->nr_band == 48) snprintf(out, (size_t)n, "5G UW");
+        } else if (in->mcc == 310 && in->mnc == 410) {
+            if (in->nr_band == 77 || in->mhz >= 50) snprintf(out, (size_t)n, "5G+");
+        }
+    } else if (r == UI_RAT_4G) {
+        if (in->lte_active >= 2 && (in->mcc == 466 || in->mcc == 440)) snprintf(out, (size_t)n, "4G+");
+        else if (us) snprintf(out, (size_t)n, "LTE");
+    }
 }
 
 const char *ui_rat_family(const char *raw)
@@ -331,15 +359,15 @@ const char *ui_rat_short(const char *raw)
     }
 }
 
-void ui_rat_long(const char *raw, char *out, int n)
+void ui_rat_long(const char *raw, int lte_active, char *out, int n)
 {
     /* the finer name under the status bar's short label: the status bar
      * already says 5G-A / 4G+ …, so this says how (SA/NSA) or which (WCDMA…) */
     const char *fam = ui_rat_family(raw);
     switch (ui_rat(raw)) {
     case UI_RAT_5G_SA:  snprintf(out, (size_t)n, "5G SA"); break;
-    case UI_RAT_5G_NSA: snprintf(out, (size_t)n, "5G NSA"); break;
-    case UI_RAT_4G:     snprintf(out, (size_t)n, "4G LTE"); break;
+    case UI_RAT_5G_NSA: snprintf(out, (size_t)n, "5G NSA · 4G 锚点"); break;
+    case UI_RAT_4G:     snprintf(out, (size_t)n, lte_active >= 2 ? "4G LTE-A" : "4G LTE"); break;
     case UI_RAT_3G:     snprintf(out, (size_t)n, "3G%s%s", fam[0] ? " " : "", fam); break;
     case UI_RAT_2G:     snprintf(out, (size_t)n, "2G%s%s", fam[0] ? " " : "", fam); break;
     default:            snprintf(out, (size_t)n, "%s", ""); break;
@@ -416,7 +444,7 @@ void ui_net_story(const ui_net_in_t *in, ui_net_story_t *o)
     o->tone = UI_NET_OK;
 
     /* the label a phone would show */
-    ui_net_label(in->net_type, in->nr_active, in->lte_active, o->rat, sizeof o->rat);
+    ui_net_badge(in, o->rat, sizeof o->rat);
 
     /* the link, as a judgement: SA / NSA, how many carriers, how wide */
     if (rat == UI_RAT_2G) {
@@ -435,58 +463,97 @@ void ui_net_story(const ui_net_in_t *in, ui_net_story_t *o)
         snprintf(o->link, sizeof o->link, "%s%s%s", n, w[0] ? " · " : "", w);
     }
 
-    /* signal quality, as a judgement (SINR first: it is what limits speed) */
-    if (in->sinr_valid || in->rsrp_valid) {
-        int q;   /* 3 very good … 0 poor */
-        if (in->sinr_valid) q = in->sinr >= 20 ? 3 : in->sinr >= 13 ? 2 : in->sinr >= 0 ? 1 : 0;
-        else q = 2;
-        if (in->rsrp_valid && in->rsrp < -110 && q > 0) q = 0;
-        else if (in->rsrp_valid && in->rsrp < -100 && q > 1) q = 1;
-        static const char *const words[4] = { "信号较差", "信号一般", "信号良好", "信号很好" };
-        snprintf(o->quality, sizeof o->quality, "%s", words[q]);
-        o->quality_tone = q >= 2 ? UI_NET_OK : q == 1 ? UI_NET_WARN : UI_NET_BAD;
+    /* three separate things, one word each (docs/designs/home-net-card.md) */
+    int st = ui_bars_tier(in->bars);
+    if (st >= 0) {
+        static const char *const w[3] = { "弱", "中", "强" };
+        snprintf(o->sig, sizeof o->sig, "%s", w[st]);
+        o->sig_tone = st == 2 ? UI_NET_OK : st == 1 ? UI_NET_WARN : UI_NET_BAD;
     }
+    int nq = -1;   /* 2 小, 1 中, 0 大 */
+    if (in->sinr_valid) {
+        static const char *const w[3] = { "大", "中", "小" };
+        nq = in->sinr >= 13 ? 2 : in->sinr >= 0 ? 1 : 0;
+        snprintf(o->noise, sizeof o->noise, "%s", w[nq]);
+        o->noise_tone = nq == 2 ? UI_NET_OK : nq == 1 ? UI_NET_WARN : UI_NET_BAD;
+    }
+    /* congestion: good RSRP but poor RSRQ, judged only while downloading */
+    int busy = in->rx_bps >= 125000;                     /* ≥ 1 Mbps */
+    int nr = rat == UI_RAT_5G_SA || rat == UI_RAT_5G_NSA;
+    int crowd = 0;
+    if (busy && in->rsrp_valid && in->rsrp >= -100 && in->rsrq_valid) {
+        crowd = in->rsrq < (nr ? -15 : -12);
+        snprintf(o->load, sizeof o->load, "%s", crowd ? "高" : "正常");
+    }
+    int capped = in->ambr_dl > 0 && in->ambr_dl < 10;
+    snprintf(o->limit, sizeof o->limit, "%s", in->ambr_dl <= 0 ? "—" : capped ? "有" : "无");
+    int narrow = in->n_active == 1 && in->mhz > 0 && in->mhz <= 20 &&
+                 (rat == UI_RAT_4G || nr);
 
     /* the headline, in priority order: the first thing that is wrong wins */
-#define SAY(t, h, ...) do { o->tone = (t); snprintf(o->headline, sizeof o->headline, "%s", (h)); \
-                            snprintf(o->hint, sizeof o->hint, __VA_ARGS__); return; } while (0)
-    if (!in->ever_valid) SAY(UI_NET_NEUTRAL, "正在读取…", "%s", "");
-    if (!in->valid)      SAY(UI_NET_NEUTRAL, "读不到数据", "%s", "数据服务没响应，下面的数字停在最后一次");
+#define SAY(c, t, h, ...) do { o->cause = (c); o->tone = (t); snprintf(o->headline, sizeof o->headline, "%s", (h)); \
+                               snprintf(o->hint, sizeof o->hint, __VA_ARGS__); return; } while (0)
+    if (!in->ever_valid) SAY(0, UI_NET_NEUTRAL, "正在读取…", "%s", "");
+    if (!in->valid)      SAY(0, UI_NET_NEUTRAL, "读不到数据", "%s", "数据服务没响应，数字停在最后一次");
     if (!sim_usable(in->sim_state))
-        SAY(UI_NET_BAD, "无 SIM", "%s", "插卡，或在「功能 → eSIM」启用一个配置");
+        SAY(0, UI_NET_BAD, "无 SIM", "%s", "插卡，或在「功能 → eSIM」启用");
     if (in->airplane)
-        SAY(UI_NET_NEUTRAL, "移动网络已关", "%s", "飞行模式开着：在管理网页「移动网络」里关掉");
+        SAY(0, UI_NET_NEUTRAL, "移动网络已关", "%s", "飞行模式开着，去管理网页关掉");
     if (limited)
-        SAY(UI_NET_BAD, "只能紧急呼叫", "%s", in->roaming == 1
-            ? "卡没注册上：在国外要这张卡开了漫游，或换当地卡"
-            : "卡没注册上运营商：可能欠费、停机，或这里没有这家的网");
-    if (in->bars <= 0 || rat == UI_RAT_NONE)
-        SAY(UI_NET_BAD, "无服务", "%s", pin
-            ? "正在搜网。制式被限定了，去「锁频」改回自动试试"
-            : "正在搜网。换个位置试试；锁过频就去「锁频」恢复默认");
-    if (!in->data_up)
-        SAY(UI_NET_BAD, "没连上网", "%s", in->roaming == 1
-            ? "已注册但数据没拨上：确认这张卡开了数据漫游，设备也允许漫游"
-            : "已注册但数据没拨上：检查流量开关、APN，或是否欠费");
-    {
-        int weak = in->bars <= 2 || (in->sinr_valid && in->sinr < 0) || (in->rsrp_valid && in->rsrp < -110);
-        if (weak)
-            SAY(UI_NET_WARN, "信号偏弱", "%s", in->roaming == 1
-                ? "网速会受影响。换个位置试试，靠窗通常更好；现在是漫游，注意流量"
-                : "网速会受影响。换个位置试试，靠窗通常更好");
+        SAY(0, UI_NET_BAD, "只能紧急呼叫", "%s", in->roaming == 1
+            ? "没注册上：卡要开漫游，或换当地卡"
+            : "没注册上：欠费、停机，或这里没这家的网");
+    if (in->bars <= 0 || rat == UI_RAT_NONE) {
+        snprintf(o->rat, sizeof o->rat, "无服务");   /* 状态栏也写出来，不只靠信号格 */
+        SAY(0, UI_NET_BAD, "无服务", "%s", pin
+            ? "正在搜网；制式被限定，去「锁频」改回自动"
+            : "正在搜网，换个位置试试");
     }
+    if (!in->data_up)
+        SAY(0, UI_NET_BAD, "没连上网", "%s", in->roaming == 1
+            ? "数据没拨上：确认卡和设备都允许数据漫游"
+            : "数据没拨上：查流量开关、APN 或欠费");
+    if (capped)
+        SAY(UI_CAUSE_LIMIT, UI_NET_WARN, "慢：限速", "运营商限到 %d Mbps，换位置没用", (int)(in->ambr_dl + 0.5));
+    /* weak = far from the cell (bars / RSRP); noisy = interference (SINR).
+     * Either can happen without the other. The number goes in the hint. */
+    if (st == 0 || (in->rsrp_valid && in->rsrp < -110)) {
+        if (in->rsrp_valid)
+            SAY(UI_CAUSE_WEAK, UI_NET_WARN, "慢：信号弱", "RSRP %d：离基站远，靠窗通常好些%s", in->rsrp,
+                in->roaming == 1 ? "；漫游中" : "");
+        SAY(UI_CAUSE_WEAK, UI_NET_WARN, "慢：信号弱", "离基站远，靠窗通常好些%s", in->roaming == 1 ? "；漫游中" : "");
+    }
+    if (nq == 0)
+        SAY(UI_CAUSE_NOISE, UI_NET_WARN, "慢：干扰大", "SINR %.1f：杂波多，挪个位置或换个朝向%s", in->sinr,
+            in->roaming == 1 ? "；漫游中" : "");
+    if (crowd)
+        SAY(UI_CAUSE_CROWD, UI_NET_WARN, "慢：疑似拥挤", "RSRQ %d：人多抢网，换位置帮助不大", in->rsrq);
     if (rat == UI_RAT_2G)
-        SAY(UI_NET_WARN, "只有 2G", "%s", pin ? "制式被限定为只用 2G，去「锁频」改回自动"
-                                              : "只能打电话发短信，上网会非常慢；附近可能没有 4G/5G");
+        SAY(0, UI_NET_WARN, "只有 2G", "%s", pin ? "制式被限定只用 2G，去「锁频」改回"
+                                                 : "上网会非常慢，附近可能没有 4G/5G");
     if (rat == UI_RAT_3G)
-        SAY(UI_NET_WARN, !strcmp(o->rat, "3G+") ? "只有 3G+" : "只有 3G", "%s",
-            pin ? "制式被限定为只用 3G，去「锁频」改回自动" : "能上网但比较慢；附近可能没有 4G/5G");
+        SAY(0, UI_NET_WARN, "只有 3G", "%s",
+            pin ? "制式被限定只用 3G，去「锁频」改回" : "能上网但较慢，附近可能没有 4G/5G");
+    if (narrow)
+        SAY(UI_CAUSE_NARROW, UI_NET_WARN, "慢：载波窄", "这里只给了 1 条 %d MHz", in->mhz);
     if (in->roaming == 1)
-        SAY(UI_NET_WARN, "漫游中", "%s", "按漫游计费，注意流量用量");
+        SAY(0, UI_NET_WARN, "漫游中", "%s", "按漫游计费，注意流量");
     if (pin && rat == UI_RAT_4G)
-        SAY(UI_NET_OK, "网络正常", "%s", "制式被限定为只用 4G；想用 5G 去「锁频」改回自动");
-    SAY(UI_NET_OK, "网络正常", "%s", "");
+        SAY(0, UI_NET_OK, "顺畅", "%s", "制式限定只用 4G，去「锁频」改回");
+    SAY(0, UI_NET_OK, "顺畅", "%s", "");
 #undef SAY
+}
+
+int ui_net_hold(ui_net_hold_t *h, unsigned key, unsigned now_ms)
+{
+    if (!h->have || key == h->shown) {      /* first verdict shows at once */
+        h->have = 1; h->shown = h->pending = key; h->since = now_ms;
+        return 1;
+    }
+    if (key != h->pending) { h->pending = key; h->since = now_ms; return 0; }
+    if (now_ms - h->since < UI_NET_HOLD_MS) return 0;
+    h->shown = key;
+    return 1;
 }
 
 static size_t iccid_len(const char *s)

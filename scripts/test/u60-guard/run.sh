@@ -83,6 +83,7 @@ EOF
     export GUARD_UCI=$T/bin/uci GUARD_UBUS=$T/bin/ubus GUARD_PS=$T/bin/ps
     export GUARD_SLEEP=$T/bin/sleep GUARD_KILL=$T/bin/kill GUARD_JSONFILTER=$T/bin/jsonfilter
     export ALERT_DIR=$T/alerts ALERT_UPTIME_FILE=$T/uptime
+    export GUARD_DATAD_MARKER=$T/datad-degraded
     export GUARD_WALL_NOW=1758600000
     unset GUARD_LOCK_WAIT
     # The cases below jump the clock between rounds freely; sleep detection
@@ -408,13 +409,13 @@ sround
 check "first round: nothing recorded yet" '[ ! -s "$T/standby.stat" ]'
 netdev 1600 160; tsproc 500 1600; up 1060
 sround
-check "dark round: rates recorded" '[ "$(cat "$T/standby.stat")" = "1060 600 60 10.0 - - - -" ]'
+check "dark round: rates recorded" '[ "$(cat "$T/standby.stat")" = "1060 600 60 10.0 - - -" ]'
 echo 255 >"$T/bl"; netdev 2000 200; up 1120
 sround
 check "lit screen: not recorded" '[ "$(wc -l <"$T/standby.stat")" = 1 ]'
 echo 0 >"$T/bl"; netdev 2600 260; tsproc 501 50; up 1180
 sround
-check "restarted program: -" '[ "$(tail -n 1 "$T/standby.stat")" = "1180 600 60 - - - - -" ]'
+check "restarted program: -" '[ "$(tail -n 1 "$T/standby.stat")" = "1180 600 60 - - - -" ]'
 GUARD_WAKE_GAP=150; export GUARD_WAKE_GAP; netdev 3000 300; up 1500
 sround
 check "rounds too far apart (slept): not recorded" '[ "$(wc -l <"$T/standby.stat")" = 2 ]'
@@ -436,6 +437,52 @@ check "already off: not logged again" '[ "$(grep -c "disabled it on br-lan" "$T/
 echo 0 >"$T/disable_ipv6"; round
 check "turned back on (firmware): disabled again" '[ "$(cat "$T/disable_ipv6")" = 1 ]'
 unset GUARD_LAN_V6_FLAG GUARD_LAN_V6_SYSCTL
+teardown
+
+echo "## data service degraded marker (datad_feed.rs writes, we only read)"
+# The marker's mtime is the container's real clock; GUARD_WALL_NOW is set
+# relative to it. A fresh heartbeat keeps the agent alerts out of the queue.
+dmark() { # dmark <start-offset-from-mtime> — (re)write the marker, set M = its mtime
+    printf '%s\n%s\n' "$(( $(date +%s) + $1 ))" "datad v2 unreachable" >"$T/datad-degraded"
+    M=$(date -r "$T/datad-degraded" +%s)
+}
+dcount() { cat "$T/alerts/queue" 2>/dev/null | grep -c "${TAB}datad-degraded${TAB}"; }
+setup
+up 2000; hb 1990
+dmark -100; GUARD_WALL_NOW=$((M + 10)) round
+check "fresh marker, degraded < 5 min: no alert" '[ "$(dcount)" = 0 ]'
+dmark -400; GUARD_WALL_NOW=$((M + 120)) round
+check "fresh marker, started > 5 min ago: alerts" '[ "$(dcount)" = 1 ]'
+check "alert text carries the reason" 'grep -q "datad v2 unreachable" "$T/alerts/queue"'
+GUARD_WALL_NOW=$((M + 150)) round
+check "next round, same episode: not again" '[ "$(dcount)" = 1 ]'
+up 2400; rm -f "$T/heartbeat"; GUARD_STALE=100 GUARD_WALL_NOW=$((M + 160)) round
+up 2410; hb 2405; GUARD_WALL_NOW=$((M + 170)) round
+check "agent outage ended meanwhile (end_episode): still not again" '[ "$(dcount)" = 1 ] && [ ! -f $T/state/episode ]'
+rm -f "$T/datad-degraded"; GUARD_WALL_NOW=$((M + 180)) round
+check "recovered (agent deleted marker): no alert, dedup flag cleared" '[ "$(dcount)" = 1 ] && ! ls $T/state/alerted-datad-* >/dev/null 2>&1'
+dmark -400; GUARD_WALL_NOW=$((M + 120)) round
+check "new episode (new start time): alerts again" '[ "$(dcount)" = 2 ]'
+teardown
+
+setup
+up 100
+dmark -900; GUARD_WALL_NOW=$((M + 10)) round
+check "inside the boot grace (marker may be last boot's): no alert" '[ "$(dcount)" = 0 ]'
+teardown
+
+setup
+up 2000; hb 1990
+dmark -900; GUARD_WALL_NOW=$((M + 200)) round
+check "stale marker (mtime > 3 min): no alert, marker left in place" '[ "$(dcount)" = 0 ] && [ -f $T/datad-degraded ]'
+teardown
+
+setup
+up 2000; hb 1990
+GUARD_WALL_NOW=$(( $(date +%s) + 60 )) round
+check "no marker (recovered / never degraded): no alert" '[ "$(dcount)" = 0 ]'
+printf 'garbage\n' >"$T/datad-degraded"; GUARD_WALL_NOW=$(( $(date +%s) + 60 )) round
+check "unparsable start: no alert, marker not touched" '[ "$(dcount)" = 0 ] && [ "$(cat $T/datad-degraded)" = garbage ]'
 teardown
 
 echo

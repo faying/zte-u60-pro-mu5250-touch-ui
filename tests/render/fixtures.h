@@ -20,11 +20,11 @@ typedef enum {
     RT_DATAD_DOWN,     /* had data, then the data service went away                   */
     RT_LOADING,        /* nothing has arrived since start                             */
     RT_NOSIM,          /* sim.state says no SIM                                       */
-    RT_ABROAD,         /* 国外 scenario, CHILL exit direct/AI kept                     */
+    RT_ABROAD,         /* 国外 scenario, roaming on a local network                    */
     RT_LOW_BAT,        /* 8 %, not charging                                           */
     RT_FULL_CHARGING,  /* 100 % + charging + unread alerts + large rates (worst bar)  */
     RT_LONG_NAMES,     /* every name at its buffer limit                              */
-    RT_EMPTY,          /* no SMS, no clients, CHILL stopped, Tailscale needs login,
+    RT_EMPTY,          /* no SMS, no clients, services stopped, Tailscale needs login,
                           no eSIM profile, speed test service unreachable            */
     RT_NSA,            /* 5G NSA: NR n78 + LTE anchor B3 + B1                          */
     RT_LTE,            /* 4G, one carrier, no lteca (serving cell only in lte_*)      */
@@ -32,6 +32,11 @@ typedef enum {
     RT_NODATA,         /* registered on 5G, but the data call is down                 */
     RT_5GA,            /* SA with three active NR carriers → 5G-A                     */
     RT_EDGE,           /* EDGE (2G)                                                   */
+    RT_CROWD,          /* good RSRP, poor RSRQ, downloading → 疑似拥挤                  */
+    RT_TODAY,          /* the device on 2026-09-25: SA, one n5 15 MHz, SINR -1.9       */
+    RT_US,             /* mainland SIM roaming on T-Mobile n41 → 5G UC                 */
+    RT_JP,             /* mainland SIM roaming on SoftBank, LTE 2 carriers → 4G+       */
+    RT_NOSVC,          /* SIM fine, not even emergency service → 无服务 in the status bar */
     RT_SCENES
 } rt_scene_t;
 

@@ -858,8 +858,8 @@ int data_refresh_live(devui_data_t *d)
  * ---- SMS actions ----
  * Fire-and-forget: connect, write the /control request, don't wait for the
  * response. See data.h — waiting here would block the same single thread
- * that also drives touch/render (this is exactly the bug chill_select_node()
- * had before it was made async).
+ * that also drives touch/render (an earlier synchronous control call froze
+ * the screen exactly this way before it was made async).
  *
  * But don't close at once either: datad's HTTP server drops a request whose
  * client has already hung up before the handler runs. Measured 2026-09-23
@@ -978,7 +978,7 @@ int sms_delete_id(long id)
     return 1;
 }
 
-/* 删除误触代价大（不可撤销），照搬 CHILL 重启内核和 eSIM 切换卡那套两段式
+/* 删除误触代价大（不可撤销），照搬 eSIM 切换卡那套两段式
  * 确认：长按只是"举手"，隔一小段防抖再点一下同一行才真的删。按短信 id 记
  * 谁被举手了，列表在两次操作之间重读过也不会点错行。 */
 #define SMS_ARM_MS          4000

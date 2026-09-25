@@ -9,7 +9,7 @@ Sources
 -------
 - 33333s/u60pro-devui (MIT): https://github.com/33333s/u60pro-devui
 - Later changes by Wei REN: LVGL rewrite (default build), u60-uid screen
-  owner, CHILL panel, eSIM switching page, Tailscale card, supervision and
+  owner, eSIM switching page, Tailscale card, supervision and
   Wi-Fi safety-net scripts.
 
 This repository starts from a cleaned snapshot of that work, not from its git

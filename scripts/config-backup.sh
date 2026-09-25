@@ -12,7 +12,7 @@
 # backups are only ever stored on that computer.
 #
 # Configuration only, never runtime state (review X10): the scenario engine's
-# state/pin/log, alert history, crash logs, CHILL's downloaded providers and
+# state/pin/log, alert history, crash logs, downloaded providers and
 # rule sets are all left out — restoring them would replay another moment's
 # state onto a device. Tailscale's state is the node's identity: restoring it
 # onto a second device while the first is online makes two machines claim to
@@ -39,12 +39,8 @@ FILES="
 /data/local/tmp/doh_config.json              json
 /data/local/tmp/scheduler.json               json
 /data/local/tmp/sms_forward.json             json-secret
-/data/chill/chill.env                        secret
-/data/chill/template.yaml                    secret
-/data/chill/confirmed                        plain
 /data/region/active                          plain
 /data/plugins/u60pro-devui/devui.conf        plain
-/data/plugins/u60pro-devui/chill.conf        plain
 /data/plugins/u60pro-devui/esim.conf         secret
 /data/ssh/authorized_keys                    secret
 /data/homemode/ssids                         plain

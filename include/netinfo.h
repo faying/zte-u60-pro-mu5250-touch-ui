@@ -18,11 +18,11 @@
 #define NI_MAX_APNS   10
 
 typedef struct {
-    int  present;           /* agent 给了这一项（CHILL 没开时 proxy 不给） */
+    int  present;           /* agent 给了这一项（没有第二个出口时 proxy 不给） */
     char ip[48];
     char geo[64];
     char isp[48];
-    char node[64];          /* 只有 CHILL 出口有：当前节点 */
+    char node[64];          /* 只有第二个出口（proxy）有：当前节点 */
     char err[80];
 } ni_exit_t;
 
@@ -80,7 +80,6 @@ typedef struct {
     long now;
 
     ni_exit_t direct, proxy;
-    int  chill_running;
 
     ni_oper_t home, serving;
     int  roaming;           /* 1 漫游 0 本地 -1 不知道 */

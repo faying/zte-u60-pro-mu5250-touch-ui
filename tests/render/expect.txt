@@ -21,21 +21,12 @@ good	home	中国电信
 good	cellular	QCI 9
 good	cellular	AMBR 1668/1008
 good	home	中国电信 · 5G SA · 本地
-good	home	2 条载波聚合
-good	home	带宽充足
-good	home	n78 100M · n1 20M
-good	home	信号良好
-good	home	120 MHz
-good	home	MHz
-good	home	网络正常
+good	home	n78 100M + n1 20M
+good	home	顺畅
 good	home	今日 2.4GB · 本月 59.5GB
 good	home	n78 100M
 good	cellular	ARFCN 627264
 good	cellular	PCI 603
-good	home	RSRP
-good	home	SINR
-good	home	-87
-good	home	17.7
 good	home	n1
 good	home	20M
 good	cellular	ARFCN 426030
@@ -56,22 +47,6 @@ good	home	子网
 good	home	10.0.66.0/24
 good	exit	Tailscale
 good	exit	已连接 · 在线 3/5
-good	home	CHILL
-good	exit	运行中
-good	exit	代理 · TW 台湾 01
-good	exit	代理 21 · 直连 16
-good	exit	↓12.4G ↑1.1G
-good	exit	规则 → 节点
-good	exit	AI → 
-good	exit	美国 01
-good	exit	↓820M ↑95M
-good	exit	节点选择 → 
-good	exit	台湾 01
-good	exit	↓640M ↑41M
-good	exit	流媒体 → 
-good	exit	苹果服务 → DIRECT
-good	exit	漏网之鱼 → 
-good	exit	↓1.2M/s ↑45K/s
 abroad	home	国外
 *	system	CPU
 *	system	内存
@@ -90,13 +65,11 @@ good	system	近 5 分钟
 *	cellular	小区信息
 *	cellular	锁频
 *	exit	测速
-*	exit	CHILL
 *	cellular	SIM 与 eSIM
 *	system	性能测试
 good	cellular	3 条 · 2 未读
 good	cellular	自动
 good	exit	↓ 812 · ↑ 96 Mbps
-good	exit	运行中 · 代理
 good	cellular	eSIM · 中国联通 · 主号
 good	system	调试页
 *	system	屏幕
@@ -181,7 +154,7 @@ good	alerts	触屏界面闪退，已自动重新打开
 good	alerts	exit 139 (SIGSEGV)
 good	alerts	开机后1分
 empty	alerts	没有告警记录
-!lte	cell	5G 服务小区
+!lte,jp	cell	5G 服务小区
 *	cell	频段
 *	cell	ARFCN
 *	cell	PCI
@@ -244,36 +217,6 @@ good	speed	服务器
 good	speed	自动（最佳服务器）
 good	speed	China Unicom · Shanghai, China
 empty	speed	连不上测速服务
-*	chill	连接
-*	chill	流量
-*	chill	出口
-*	chill	代理
-*	chill	全局
-*	chill	直连·AI 不动
-*	chill	全部直连
-*	chill	节点
-*	chill	规则 → 节点
-good	chill	运行中
-good	chill	代理 21 · 直连 16
-good	chill	↓12.4G ↑1.1G
-good	chill	4 组 · 10 个
-good	chill	6 条
-good	chill-nodes	策略组
-good	chill-nodes	节点选择
-good	chill-nodes	AI
-good	chill-nodes	流媒体
-good	chill-nodes	苹果服务
-good	chill-nodes	节点
-good	chill-nodes	测延迟
-good	chill-nodes	台湾 01
-good	chill-nodes	42 ms
-good	chill-nodes	超时
-good	chill-nodes	美国 02
-good	chill-nodes	201 ms
-good	chill-pairs	规则 → 节点流量
-good	chill-pairs	↓2.1G ↑12M
-good	chill-pairs	Google → 
-good	chill-pairs	↓3M ↑1M
 good	esim	当前配置
 good	esim	使用中 · eSIM
 good	esim	卡信息
@@ -321,28 +264,18 @@ good	tailscale	离线
 good	tailscale	old-ipad
 *	perf	渲染刷新率
 *	perf	触控上报率
-*	exit-menu	在国外 · CHILL 怎么走
-*	exit-menu	代理（和在国内一样）
-*	exit-menu	全局
-*	exit-menu	直连 · AI 不动
-*	exit-menu	全部直连（AI 也直连）
-!empty	exit-menu	关闭 CHILL（最省电）
-*	exit-menu	取消
 *	power-menu	电源
 *	power-menu	关机
 *	power-menu	重启
 *	power-menu	取消
-empty	exit-menu	打开 CHILL
-weak	home	信号偏弱
+weak	home	慢：信号弱
 nosim	home	没有 SIM 卡
 nosim	home	在「功能 → eSIM」启用
 loading	home	正在读取…
 datad-down	home	数据服务掉线 · 数字停在
 empty	exit	需要登录
 empty	home	在管理网页打开登录链接
-empty	exit	已关闭
 abroad	home	出口节点
-abroad	home	直连·AI 不动
 lowbat	home	电量低，尽快充电
 full-charging	system	充电中
 !loading,datad-down	charts-collecting	正在收集 · 1 分钟后出现曲线
@@ -350,11 +283,7 @@ empty	wifi	还没有设备连上
 empty	esim	现在插的是普通 SIM 卡
 *	cellular	运营商选择
 good	exit	203.0.113.24
-good	exit	198.51.100.7
-good	exit	蜂窝直连
-good	exit	CHILL
 good	exit	中国 广东 深圳 · 电信
-good	exit	日本 东京都 · JP 03
 good	net	中国电信 46011
 good	net	本地
 good	net	自动
@@ -365,7 +294,6 @@ good	net	禁止
 good	net	搜索网络
 good	net	恢复自动
 abroad	exit	出口 IP
-abroad	exit	CHILL 直连
 abroad	net	中华电信（中国台湾）46692
 abroad	net	漫游中
 abroad	net	手动
@@ -385,42 +313,33 @@ good	scene	按下面每个情景的条件自己切换
 good	scene	不碰蜂窝网络
 full-charging	scene	已固定
 full-charging	scene	点「自动」才恢复自动判断
-abroad	scene	CHILL 出口
-good	home	网络
 good	exit	203.0.113.24
 good	home	本地
-good	home	CHILL · 日本 东京都
 abroad	home	漫游中
 abroad	exit	中国台湾 台北市 · 中华电信
-abroad	home	CHILL 直连
 abroad	home	漫游中
-abroad	home	按漫游计费，注意流量用量
+abroad	home	按漫游计费，注意流量
 good	home	U60-Test · 6 台
-weak	home	换个位置试试，靠窗通常更好
+weak	home	RSRP -112：离基站远，靠窗通常好些
 datad-down	home	读不到数据
 nosignal	home	只能紧急呼叫
 nosignal	home	正在搜网
-nosignal	home	卡没注册上运营商
-nsa	home	中国电信 · 5G NSA · 本地
-nsa	home	4G 锚点 + 5G，3 条载波 · 带宽充足
-nsa	home	n78 100M · B3 20M · B1 20M
+nosignal	home	没注册上：欠费
+nsa	home	中国电信 · 5G NSA · 4G 锚点 · 本地
+nsa	home	n78 100M + B3 20M + B1 20M
 lte	home	中国电信 · 4G LTE · 本地
-lte	home	单载波 · 带宽偏窄
 lte	home	B3 20M
-lte	home	制式被限定为只用 4G
+lte	home	慢：载波窄
 3g	home	只有 3G
-3g	home	这个制式没有载波聚合
 3g	home	中国电信 · 3G WCDMA · 本地
 3g	home	B1
-3g	home	RSSI -75 dBm
+3g	home	只有 3G
 nodata	home	没连上网
-nodata	home	已注册但数据没拨上
-weak	home	信号较差
+nodata	home	数据没拨上
 5ga	home	中国电信 · 5G SA · 本地
-5ga	home	3 条载波聚合 · 带宽很宽
 5ga	home	5G-A
 edge	home	只有 2G
-edge	home	只能打电话发短信
+edge	home	上网会非常慢
 edge	home	中国电信 · 2G EDGE · 本地
 edge	home	GSM 900
 nsa	home	5G
@@ -462,6 +381,44 @@ good	apn-armed	再点一次确认
 good	apn-armed	改用「CTNET」
 good	apn-pending	切换中…
 good	apn-pending	正在切换到「CTNET」
-good	exit	代理与测速
 nosim	esim	没插卡
 nosim	cellular	没插卡
+# 2026-09-25 首页网络卡片（docs/designs/home-net-card.md）
+*	home	载波
+good	home	顺畅
+good	home	信号强
+good	home	干扰小 · 负载正常
+good	home	激活 2/3
+good	home	↓ n78 100M + n1 20M   ↑ n78
+crowd	home	慢：疑似拥挤
+crowd	home	RSRQ -18：人多抢网，换位置帮助不大
+crowd	home	干扰中 · 负载高
+today	home	慢：干扰大
+today	home	SINR -1.9：杂波多，挪个位置或换个朝向
+today	home	信号中
+today	home	单载波
+today	home	↓ n5 15M   ↑ n5
+today	home	直连 · 中国 深圳
+5ga	home	3 载波聚合
+nsa	home	3 载波聚合
+3g	home	无聚合
+3g	home	RSSI -75 dBm
+lte	home	单载波
+# 状态栏叫法按所在网络（home-net-card.md）
+good	home	5G
+us	home	5G UC
+us	home	T-Mobile · 5G SA · 漫游
+jp	home	4G+
+jp	home	SoftBank · 4G LTE-A · 漫游
+jp	home	2 载波聚合
+abroad	home	中華電信 · 5G SA · 漫游
+nosignal	home	SOS
+nosvc	home	无服务
+nosvc	home	正在搜网，换个位置试试
+good	exit	连接与测速
+
+# public build: the 出口 row and 出口 tab show the cellular (direct) egress only
+good	home	直连 · 中国 深圳
+abroad	home	直连 · 中国台湾 台北市
+good	exit	出口 IP
+good	exit	连接与测速

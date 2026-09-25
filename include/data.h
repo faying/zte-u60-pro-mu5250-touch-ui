@@ -111,10 +111,9 @@ int data_refresh(devui_data_t *d);
 int data_refresh_live(devui_data_t *d);
 
 /*
- * SMS actions — fire-and-forget POST to zwrt-datad's /control (mirrors
- * chill.c's sc_send_async: waiting for the ubus round-trip here would
- * freeze the UI thread the same way chill_select_node() used to before
- * that was fixed). Results show up on the next /state refresh, not as a
+ * SMS actions — fire-and-forget POST to zwrt-datad's /control (waiting for
+ * the ubus round-trip here would freeze the UI thread, which also drives
+ * touch and rendering). Results show up on the next /state refresh, not as a
  * return value.
  *
  * `index` is into the UI-visible snapshot (the one data_refresh() fills),

@@ -12,7 +12,6 @@
 #include "key_input.h"
 #include "touch_input.h"
 #include "backlight.h"
-#include "chill.h"
 #include "tailscale.h"
 #include "scenario.h"
 #include "esim.h"
@@ -40,7 +39,7 @@ extern unsigned long g_frame_count;   /* defined in main.c */
 /* ---- navigation model (2026-09-21) ----
  * Four swipeable top-level pages plus a subpage layer, mirroring the litehtml
  * UI this device already runs (信号 / 图表 / 功能磁贴 / 系统 + 二级页). The
- * previous flat 6-tab layout had no room for 短信/CHILL/信令读取/锁频/测速 and
+ * previous flat 6-tab layout had no room for 短信/信令读取/锁频/测速 and
  * had invented a "网络" page that only duplicated Home's cellular card. */
 /* 2026-09-25 起按「我想做什么」分 5 个标签（docs/designs/touch-menu-tabs.md，
  * 在 manager 仓库）：每个功能只有一个家。原「图表」并进系统，原「功能」磁贴墙
@@ -50,25 +49,8 @@ enum { TAB_HOME, TAB_CELL, TAB_WIFI, TAB_EXIT, TAB_SYS };
 /* Subpages: opened from a tab's › rows, drawn over the tileview on the
  * active screen (so the shared top bar and tab bar, which live on
  * lv_layer_top(), still paint above them). */
-enum { SUB_SMS, SUB_CELL, SUB_LOCK, SUB_SPEED, SUB_CHILL, SUB_ESIM, SUB_PERF,
+enum { SUB_SMS, SUB_CELL, SUB_LOCK, SUB_SPEED, SUB_ESIM, SUB_PERF,
        SUB_TS,   /* not on the tile wall: opened by tapping the Home Tailscale card */
-       /* Not on the tile wall either: opened by tapping a nav row on the CHILL
-        * page itself (see sub_open_child()/s_sub_parent). Splitting these out
-        * keeps the CHILL page itself light — it used to build a 200-slot node
-        * list, a 12-button group grid, and a 6-row traffic card all on one
-        * scrollable page, which is exactly the "一屏展示了很多的东西，会卡"
-        * complaint from 2026-09-22: heavy even before you scroll into any of
-        * it, because everything is pre-built and stacked on the same page.
-        * 策略组 and 节点 stay ON THE SAME subpage (SUB_CHILL_NODES) — a
-        * first cut split them into two separate subpages, which broke the
-        * one relationship that actually matters: tapping a group is supposed
-        * to load THAT group's member nodes right there, not send you off to
-        * an unrelated page (2026-09-22 follow-up: "策略组下面展开节点啊，
-        * 这两个是紧密关联的" — same shape mihomo's own dashboards use,
-        * yacd/metacubexd/zashboard all show a group's proxies inline under
-        * it). Only 规则→节点流量 is a genuinely separate concept (traffic
-        * accounting, not node selection), so that one keeps its own page. */
-       SUB_CHILL_NODES, SUB_CHILL_PAIRS,
        /* Not on the tile wall: one message in full, opened from the SMS list
         * (sub_open_child, so 返回 goes back to the list). */
        SUB_SMS_DETAIL,
@@ -78,7 +60,7 @@ enum { SUB_SMS, SUB_CELL, SUB_LOCK, SUB_SPEED, SUB_CHILL, SUB_ESIM, SUB_PERF,
        /* 网络：出口 IP/运营商/手动选网/邻区（netinfo.c）。放在最后，前面的
         * 数组都按下标顺序填，插在中间会把磁贴名字整体错位。 */
        SUB_NET,
-       /* 2026-09-25：情景单独一页（只管 Wi-Fi / CHILL / Tailscale，不碰蜂窝），
+       /* 2026-09-25：情景单独一页（只管 Wi-Fi、Tailscale 这些，不碰蜂窝），
         * APN 在蜂窝标签下 */
        SUB_SCENE, SUB_APN,
        /* 健康与告警里点一行：体检项或告警的全文（列表里只放得下一行） */
@@ -87,7 +69,7 @@ enum { SUB_SMS, SUB_CELL, SUB_LOCK, SUB_SPEED, SUB_CHILL, SUB_ESIM, SUB_PERF,
 
 /* ---- shared widget handles ---- */
 /* Home page: signal card (status block + carrier rows + traffic), 情景,
- * CHILL, Tailscale — stacked, reflowed every refresh (home_reflow). */
+ * Tailscale — stacked, reflowed every refresh (home_reflow). */
 /* 5 carrier slots: 3 NR + 2 LTE covers EN-DC on this modem with headroom. */
 #define CA_SLOTS 5
 typedef struct {
@@ -101,18 +83,19 @@ static uk_hero_t s_cc_hero;
 /* 首页层级（2026-09-24 评审：Wi-Fi 用户视角 + 设计视角，用户选「结论优先 +
  * 双磁贴」）：拿起设备先要知道「能不能上网、好不好、会不会多花钱」，所以
  * 状态卡的大字是一句结论，不是聚合带宽；下面三行是 Wi-Fi 和设备数、流量、
- * 载波摘要（聚合带宽降到这里，点它滚到载波明细）。情景和 CHILL 两块磁贴
- * 并排，再下面是出口卡。载波明细、CHILL 明细（规则 → 节点）、Tailscale
- * 明细都还在首页，往下滚就是，一样没删。 */
+ * 载波摘要（聚合带宽降到这里，点它滚到载波明细）。下面是情景磁贴和
+ * Tailscale 卡。 */
 typedef struct { lv_obj_t *box, *key, *val; } home_row_t;
 static home_row_t s_hr_wifi, s_hr_traf, s_hr_ca, s_hr_exit;
+/* 载波、出口两行各带一行小字（2026-09-25 home-net-card.md）：
+ * 载波 = 基站配了几条 / 在用几条 + 下行、上行各用哪条；
+ * 出口 = 流量从哪出去的一句话，有另一条路时小字补上 */
+static lv_obj_t *s_hr_ca_sub, *s_hr_exit_sub;
 static lv_obj_t *s_ch_net_card;                 /* 网速图（首页，原图表页第一张） */
 static lv_obj_t *s_cell_scroll, *s_cell_rest;  /* 蜂窝标签：载波卡在上，其余跟在下面 */
 static void cell_reflow(void);
-static lv_obj_t *s_hr_ca_link, *s_hr_ca_list;    /* 载波块：解读一行 + 每个在用载波 */
 static lv_obj_t *s_ca_card, *s_ca_qos;          /* 载波明细卡 */
 #define CA_CARD_TOP 34
-static lv_obj_t *s_ct_tile, *s_ct_state, *s_ct_rate, *s_ct_line;   /* CHILL 磁贴 */
 #define HOME_TILE_W 145
 #define HOME_TILE_H 92
 /* 情景 — zte-agent 情景引擎的当前判定，只读。 */
@@ -123,14 +106,6 @@ static lv_obj_t *s_nh_card, *s_nh_ip, *s_nh_geo, *s_nh_tsrow, *s_nh_tsval;
 static void nh_card_cb(lv_event_t *e);
 static lv_obj_t *s_sc_card, *s_sc_state, *s_sc_note;
 static int s_sc_force;          /* 情景卡片要按新状态重画 */
-/* 国外时点情景卡片弹出的「CHILL 出口」面板（见 build_exit_menu） */
-enum { XM_PROXY, XM_GLOBAL, XM_KEEP_AI, XM_ALL, XM_OFF, XM_N };
-static lv_obj_t *s_xm, *s_xm_btn[XM_N], *s_xm_lbl[XM_N], *s_xm_foot, *s_xm_ok[XM_N];
-static uk_sheet_t s_xm_sheet;
-static uint32_t s_xm_off_arm;   /* 「关闭」点了第一下的时刻，0 = 没准备 */
-#define XM_ARM_MS 4000
-static lv_obj_t *s_cp_sw;       /* CHILL 页的总开关 */
-static lv_obj_t *s_cp_exit_note;  /* CHILL 页「出口」行右边的说明 */
 /* Home Tailscale: a grouped list; rows past the first hide when not running. */
 #define TS_HOME_ROWS 5     /* Tailscale · 本机 · 节点 · 子网 · 出口/提示 */
 static lv_obj_t *s_ts_card, *s_ts_dot, *s_ts_val[TS_HOME_ROWS], *s_ts_key[TS_HOME_ROWS], *s_ts_sep[TS_HOME_ROWS];
@@ -156,59 +131,6 @@ static lv_obj_t *s_exit_nav_sec, *s_exit_nav_card;
 
 /* 标签页上「›」行右边的状态字（原功能磁贴的副标题） */
 static lv_obj_t *s_tile_sub[SUB_N];
-/* CHILL — home card shows the real "规则 -> 节点" traffic breakdown directly
- * (top N pairs), not a one-line "X 等 N 个" summary with the actual numbers
- * hidden a scroll away on the detail page (2026-09-22 user feedback: the fix
- * belongs on the card people actually look at). Node and group used to be
- * two independent top-N lists stacked together, which looks like row i of
- * one corresponds to row i of the other but doesn't — they're unrelated
- * rankings (2026-09-22 follow-up: "不同的分流规则到底具体走的哪个节点，
- * 没有放出来"). Now one list, keyed by (group, node), so each row directly
- * answers "this rule's traffic went through this node". */
-#define CHILL_HOME_ROWS 5
-#define CHILL_HOME_ROW_H 36
-#define CHILL_HOME_TOP   100   /* pair rows start here */
-static lv_obj_t *s_chill_card, *s_chill_state, *s_chill_rate, *s_chill_split, *s_chill_line, *s_chill_total,
-                *s_chill_pair_name[CHILL_HOME_ROWS], *s_chill_pair_val[CHILL_HOME_ROWS],
-                *s_chill_pair_sep[CHILL_HOME_ROWS];
-static int s_chill_rows = 1;
-/* 2026-09-22：新增的手动选节点组一个就有 168 个节点，8 太小——家宽/NX 节点
- * 排在后面，直接被截没，界面上看起来像是"消失了"。卡片本来就在可滚动的
- * 容器里（build_sub_chill_nodes 的 uk_scroll），提高上限只是多建几个隐藏行，
- * 没有别的副作用；配 chill.c 的 SC_MAX_NODE=200。 */
-#define CHILL_MAX_NODES 200
-#define CHILL_MAX_GROUPS 12
-#define CHILL_GRP_COLS 3
-static lv_obj_t *s_cp_core, *s_cp_conns, *s_cp_traffic,
-                *s_cp_mode_btn[4], *s_cp_node_card, *s_cp_node_row[CHILL_MAX_NODES],
-                *s_cp_node_name[CHILL_MAX_NODES], *s_cp_node_dl[CHILL_MAX_NODES],
-                *s_cp_grp_card, *s_cp_grp_btn[CHILL_MAX_GROUPS], *s_cp_grp_lbl[CHILL_MAX_GROUPS],
-                *s_cp_delay_lbl, *s_cp_node_ok[CHILL_MAX_NODES], *s_cp_node_sec, *s_cp_scroll_nodes;
-static uk_hero_t s_cp_hero;
-static uk_opt_t  s_cp_opt[4];
-static uk_opt_t  s_cp_prof[3];     /* CHILL 页「档位」三项 */
-static lv_obj_t *s_cp_prof_note;   /* 「档位」行右边：降温中 / 切换说明 */
-static const char *const k_profile[3] = { "eco", "standard", "perf" };
-/* 流量分布：一张"规则 -> 节点"卡，跟上面的"节点"卡不是一回事——那张卡是
- * 节点选择器（点了会切换节点），这张是只读统计，数字来自 chill_top_pair()，
- * 跟 chill.h 里的大注释对应：反映规则模式下流量实际去哪了，不是"配置了哪个
- * 节点"。曾经拆成按节点、按分流组两张独立卡，各自的 top N 排名互不相干，
- * 摆在一起容易被误读成一一对应（2026-09-22 反馈：具体哪条规则走了哪个
- * 节点，没有放出来）——改成一张卡，一行就是一对真实关系。行数跟 chill.c 的
- * SC_TOP_SHOW 对齐，改一边要记得改另一边。 */
-#define CHILL_TRAF_ROWS 6
-static lv_obj_t *s_cp_pair_card, *s_cp_pair_name[CHILL_TRAF_ROWS], *s_cp_pair_val[CHILL_TRAF_ROWS],
-                *s_cp_pair_sep[CHILL_TRAF_ROWS];
-/* CHILL page nav rows — 策略组/节点/规则→节点 used to be built inline on the
- * CHILL page itself (12 group buttons + up to 200 node rows + 6 pair rows,
- * all pre-built whether you ever scroll to them or not). One screen showing
- * everything at once was the 2026-09-22 "会卡" complaint, so the heavy
- * content moved to drill-down subpages and the CHILL page itself only keeps
- * a one-line summary + chevron per section. 策略组+节点 share ONE row/page
- * (SUB_CHILL_NODES) — they're the same picker, not two unrelated lists. */
-#define CHILL_NAV_ROWS 2
-enum { CHILL_NAV_NODES, CHILL_NAV_PAIRS };
-static lv_obj_t *s_cp_nav_val[CHILL_NAV_ROWS];
 /* WiFi page */
 #define WIFI_MAX_CLI 5    /* fixed sub-card slots; backend reports up to 16 */
 static lv_obj_t *s_w_ssid, *s_w_pass, *s_w_enc, *s_w_state;
@@ -306,7 +228,7 @@ static lv_obj_t   *s_sub_layer, *s_sub_title, *s_sub_page[SUB_N];
 static int         s_sub_cur = -1;
 /* -1 = s_sub_cur is a top-level subpage (opened from a tile or the Home
  * Tailscale card); otherwise the id to return to when 返回 is tapped, set by
- * sub_open_child() for the CHILL nav-row drill-down pages. One level deep
+ * sub_open_child() for drill-down pages (短信详情 etc.). One level deep
  * only — these child pages don't open further children. */
 static int         s_sub_parent = -1;
 static key_input_t s_key;
@@ -520,7 +442,7 @@ static void appearance_set(ui_appear_t a)
  * test, an eSIM switch waiting for its answer. */
 static int ui_busy(void)
 {
-    if (speedtest_running() || chill_delay_pending()) return 1;
+    if (speedtest_running()) return 1;
     for (int i = 0; i < esim_profile_count(); i++) {
         esim_profile_t p;
         esim_get_profile(i, &p);
@@ -745,7 +667,6 @@ static void sub_close(void);
 static void sub_back(void);
 static void tile_click_cb(lv_event_t *e);   /* › rows and Home cards: open a subpage */
 static void tab_go_cb(lv_event_t *e);       /* Home summary rows: jump to a tab */
-static void chill_nav_cb(lv_event_t *e);    /* CHILL page's 策略组/节点/规则→节点 rows */
 static void open_alerts_cb(lv_event_t *e);  /* status-bar alert dot, 系统 page's 健康 row */
 static void sc_card_cb(lv_event_t *e);      /* Home 情景 card: opens the 情景 page */
 static void tab_go(int idx);
@@ -776,9 +697,8 @@ static void sub_show(int id)
     /* 标题 = 入口上的字。按下标写，插页不会错位。 */
     static const char *const k_sub_title[SUB_N] = {
         [SUB_SMS] = "短信", [SUB_CELL] = "小区信息", [SUB_LOCK] = "锁频",
-        [SUB_SPEED] = "测速", [SUB_CHILL] = "CHILL", [SUB_ESIM] = "SIM 与 eSIM",
-        [SUB_PERF] = "性能测试", [SUB_TS] = "Tailscale", [SUB_CHILL_NODES] = "节点",
-        [SUB_CHILL_PAIRS] = "规则 → 节点", [SUB_SMS_DETAIL] = "短信详情",
+        [SUB_SPEED] = "测速", [SUB_ESIM] = "SIM 与 eSIM",
+        [SUB_PERF] = "性能测试", [SUB_TS] = "Tailscale", [SUB_SMS_DETAIL] = "短信详情",
         [SUB_ALERTS] = "健康与告警", [SUB_NET] = "运营商选择", [SUB_SCENE] = "情景", [SUB_APN] = "APN",
         [SUB_ALERT_DETAIL] = "详情",
     };
@@ -816,8 +736,8 @@ static void sub_close(void)
     update_tabs();
 }
 
-/* Open a page one level below a top-level subpage (currently only the CHILL
- * nav rows). 返回 from here goes back to `parent`, not all the way out —
+/* Open a page one level below a top-level subpage (短信详情, 告警详情 and
+ * similar drill-downs). 返回 from here goes back to `parent`, not all the way out —
  * see sub_back(). */
 static void sub_open_child(int id, int parent)
 {
@@ -835,7 +755,7 @@ static void sub_back(void)
 }
 static void sub_back_cb(lv_event_t *e) { LV_UNUSED(e); sub_back(); }
 
-/* Visibility predicates for the pollers (Tailscale/eSIM/CHILL only talk to
+/* Visibility predicates for the pollers (Tailscale/eSIM only talk to
  * their backend while their own page is on a lit screen). */
 static int tab_visible(int tab)
 {
@@ -857,7 +777,7 @@ static int sub_visible(int id)
  * card per metric, cutting per-metric chrome (own card + own title row) to
  * zero while keeping every field. */
 
-/* ---- Home: 信号 / 邻区 / Tailscale / CHILL ----
+/* ---- Home: 信号 / 邻区 / Tailscale ----
  * Mirrors ui/01-signal.html section for section. The headline is the
  * aggregate line ("5G SA · 3 NR 载波 · 240 MHz"): mode, carrier count and
  * TOTAL aggregated bandwidth. An earlier pass showed only the primary
@@ -906,7 +826,7 @@ static int sim_usable_ui(const char *st) { return !st || !*st || strstr(st, "rea
 
 static void build_home(lv_obj_t *t)
 {
-    /* Worst case (5 active carriers, 5 CHILL pairs, 5 Tailscale rows) is
+    /* Worst case (5 active carriers, 5 Tailscale rows, …) is
      * ~1010; the spacer is moved by home_reflow to the real height. */
     t = s_home_scroll = uk_scroll(t, 0, UI_VIEW_H, 1100);
 
@@ -921,32 +841,35 @@ static void build_home(lv_obj_t *t)
     lv_label_set_long_mode(s_cc_hero.st, LV_LABEL_LONG_MODE_DOTS);
     /* 摘要行（2026-09-25 按任务分标签）：蜂窝 / Wi-Fi / 出口 各一行，点了跳到
      * 那个标签；流量只读，没有 ›、没有按下态。 */
-    home_row(&s_hr_ca, c, "蜂窝", tab_go_cb, (void *)(intptr_t)TAB_CELL);
+    home_row(&s_hr_ca, c, "载波", tab_go_cb, (void *)(intptr_t)TAB_CELL);
     home_row(&s_hr_wifi, c, "Wi-Fi", tab_go_cb, (void *)(intptr_t)TAB_WIFI);
     home_row(&s_hr_exit, c, "出口", tab_go_cb, (void *)(intptr_t)TAB_EXIT);
     home_row(&s_hr_traf, c, "流量", NULL, NULL);
-    /* 载波块：第一行「制式 · N 载波 · 总带宽」，下面逐个列在用的载波，
-     * 放不下就折行（NSA 的 LTE 锚点 + NR、4G 多载波聚合都要列得下）。 */
-    uk_text_color(s_hr_ca.val, T->t2);
-    s_hr_ca_link = uk_label_w(s_hr_ca.box, UF.cj14, T->t1, UK_PAD, 34, UK_CARD_W - 2 * UK_PAD - 16, 1, "");
-    s_hr_ca_list = uk_label_w(s_hr_ca.box, UF.n12, T->t3, UK_PAD, 56, UK_CARD_W - 2 * UK_PAD - 16, 1, "");
-    /* 第一次有数据之前也要排好（refresh_cb 之后按提示行重排） */
+    s_hr_ca_sub = uk_label_w(s_hr_ca.box, UF.cj12, T->t3, UK_PAD, 34, UK_CARD_W - 2 * UK_PAD - 16, 0, "");
+    s_hr_exit_sub = uk_label_w(s_hr_exit.box, UF.cj12, T->t3, UK_PAD, 34, UK_CARD_W - 2 * UK_PAD - 16, 0, "");
+    lv_obj_t *subs[2] = { s_hr_ca_sub, s_hr_exit_sub };
+    for (int i = 0; i < 2; i++) {
+        lv_obj_set_height(subs[i], 18);
+        lv_label_set_long_mode(subs[i], LV_LABEL_LONG_MODE_DOTS);
+    }
     lv_obj_set_y(s_hr_ca.box, UK_HERO_H);
     lv_obj_set_y(s_hr_wifi.box, UK_HERO_H + UK_ROW_H);
     lv_obj_set_y(s_hr_exit.box, UK_HERO_H + 2 * UK_ROW_H);
     lv_obj_set_y(s_hr_traf.box, UK_HERO_H + 3 * UK_ROW_H);
     lv_label_set_text(s_hr_wifi.val, "—");
-    lv_label_set_text(s_hr_exit.val, "—");
-    lv_obj_set_width(s_hr_exit.val, 210);
-    lv_obj_set_style_text_align(s_hr_exit.val, LV_TEXT_ALIGN_RIGHT, 0);
-    lv_label_set_long_mode(s_hr_exit.val, LV_LABEL_LONG_MODE_DOTS);
-    lv_obj_set_style_text_font(s_hr_exit.val, UF.cj14, 0);
-    lv_obj_set_height(s_hr_exit.val, 20);    /* 一行：放不下末尾「…」，不折行 */
-    lv_obj_align(s_hr_exit.val, LV_ALIGN_TOP_RIGHT, -(UK_PAD + 16), 11);
+    for (int i = 0; i < 2; i++) {
+        lv_obj_t *v = i ? s_hr_ca.val : s_hr_exit.val;
+        lv_label_set_text(v, "—");
+        lv_obj_set_width(v, 210);
+        lv_obj_set_style_text_align(v, LV_TEXT_ALIGN_RIGHT, 0);
+        lv_label_set_long_mode(v, LV_LABEL_LONG_MODE_DOTS);
+        lv_obj_set_style_text_font(v, UF.cj14, 0);
+        lv_obj_set_height(v, 20);    /* 一行：放不下末尾「…」，不折行 */
+        lv_obj_align(v, LV_ALIGN_TOP_RIGHT, -(UK_PAD + 16), 11);
+    }
     lv_label_set_text(s_hr_traf.val, "—");
-    lv_label_set_text(s_hr_ca_link, "—");
 
-    /* 情景 | CHILL, side by side: the two things you change from here */
+    /* 情景: what the device decided about where it is (opens the 情景 page) */
     s_sc_card = uk_card(t, UK_MARGIN, 0, HOME_TILE_W, HOME_TILE_H);
     uk_label(s_sc_card, UF.cj12, T->t3, 12, 10, "情景");
     s_sc_state = uk_label_w(s_sc_card, UF.cj17b, T->t1, 12, 27, HOME_TILE_W - 24, 0, "");
@@ -954,13 +877,6 @@ static void build_home(lv_obj_t *t)
     uk_label_r(s_sc_card, UF.cj15, T->t3, HOME_TILE_W - 12, 6, "›");   /* 开页：有 ›（DESIGN.md §4 导航） */
     uk_tappable(s_sc_card, sc_card_cb, NULL);
     uk_show(s_sc_card, 0);
-    s_ct_tile = uk_card(t, UK_MARGIN + HOME_TILE_W + 10, 0, HOME_TILE_W, HOME_TILE_H);
-    uk_label(s_ct_tile, UF.cj12, T->t3, 12, 10, "CHILL");
-    s_ct_state = uk_label_r(s_ct_tile, UF.cj12, T->okT, HOME_TILE_W - 12, 10, "");
-    s_ct_rate = uk_label_w(s_ct_tile, UF.n15, T->t1, 12, 28, HOME_TILE_W - 24, 0, "");
-    s_ct_line = home_tile_note(s_ct_tile);
-    uk_tappable(s_ct_tile, tile_click_cb, (void *)(intptr_t)SUB_CHILL);
-    uk_show(s_ct_tile, 0);
 
     /* 出口: the public IP and where it is; Tailscale's one-line summary */
     s_nh_card = uk_card(t, UK_MARGIN, 0, UK_CARD_W, NET_EXIT_ROW_H);
@@ -986,7 +902,6 @@ static void build_home(lv_obj_t *t)
         lv_obj_t *gone = lv_obj_create(t);
         lv_obj_remove_style_all(gone);
         lv_obj_add_flag(gone, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_set_parent(s_ct_tile, gone);
         lv_obj_set_parent(s_nh_card, gone);
     }
 
@@ -1016,28 +931,6 @@ static void build_home(lv_obj_t *t)
     }
 
 
-    /* CHILL: status, live rate, exit · node · delay, connections, traffic,
-     * and the real top rule → node pairs (one list keyed by the pair, so
-     * each row answers "this rule's traffic went through this node"). */
-    s_chill_card = uk_card(t, UK_MARGIN, 300, UK_CARD_W, CHILL_HOME_TOP + CHILL_HOME_ROW_H);
-    lv_obj_t *h = s_chill_card;
-    uk_label(h, UF.cj12, T->t3, UK_PAD, 10, "CHILL");
-    s_chill_state = uk_label_r(h, UF.cj12, T->okT, UK_CARD_W - UK_PAD - 16, 10, "");
-    uk_label_r(h, UF.cj15, T->t3, UK_CARD_W - UK_PAD, 6, "›");
-    s_chill_rate  = uk_label(h, UF.n17, T->t1, UK_PAD, 27, "");
-    s_chill_split = uk_label_r(h, UF.cj12, T->t2, UK_CARD_W - UK_PAD, 31, "");
-    s_chill_line  = uk_label_w(h, UF.cj12, T->t2, UK_PAD, 52, 170, 0, "");
-    s_chill_total = uk_label_r(h, UF.n12, T->t3, UK_CARD_W - UK_PAD, 51, "");
-    uk_box(h, 0, 74, UK_CARD_W, 1, T->sep, 0);
-    uk_label(h, UF.cj12, T->t3, UK_PAD, 81, "规则 → 节点");
-    for (int i = 0; i < CHILL_HOME_ROWS; i++) {
-        int y = CHILL_HOME_TOP + i * CHILL_HOME_ROW_H;
-        s_chill_pair_sep[i] = i ? uk_sep(h, y) : NULL;
-        s_chill_pair_name[i] = uk_label_w(h, UF.cj13, T->t1, UK_PAD, y + 10, 180, 0, "");
-        s_chill_pair_val[i] = uk_label_r(h, UF.n12, T->t2, UK_CARD_W - UK_PAD, y + 11, "");
-    }
-    uk_tappable(h, tile_click_cb, (void *)(intptr_t)SUB_CHILL);
-    uk_show(h, 0);
 
     /* Tailscale: hidden entirely when the device has no tailscaled. The card
      * is the entry to the peer list (no 功能 tile for it). */
@@ -1080,7 +973,7 @@ static void home_reflow(void)
         y += (int)lv_obj_get_style_height(s_ch_net_card, 0) + UK_MARGIN;
     }
     uk_scroll_extent(s_home_scroll, y + UK_TAB_PAD);
-    /* 载波、CHILL、Tailscale 卡在别的标签上，显隐变了那边也要重排 */
+    /* 载波等卡片在别的标签上，显隐变了那边也要重排 */
     cell_reflow();
     net_relayout();
 }
@@ -1122,11 +1015,8 @@ static void home_signal_down(void)
     uk_text_color(s_hr_traf.val, T->t3);
     uk_text_color(s_hr_exit.val, T->t3);
     uk_text_color(s_hr_ca.val, T->t3);
-    uk_text_color(s_hr_ca_list, T->t3);
-    uk_text_color(s_hr_ca_link, T->t3);
     uk_text_color(s_cc_hero.r1, T->t3);
     uk_text_color(s_nh_ip, T->t3);
-    uk_text_color(s_ct_rate, T->t3);
     home_reflow();
 }
 
@@ -1246,7 +1136,7 @@ static void wifi_sw_cb(lv_event_t *e)
     system(cmd);
 }
 
-/* A card row with a label, a state word and a switch (WiFi, CHILL). */
+/* A card row with a label, a state word and a switch (e.g. Wi-Fi). */
 static lv_obj_t *toggle_row(lv_obj_t *c, int y, const char *name, int first, lv_obj_t **state,
                             lv_event_cb_t cb, void *user)
 {
@@ -1898,289 +1788,14 @@ static void build_sub_sms_detail(lv_obj_t *t)
     s_smsd_del_btn = uk_button(sc, 0, 0, UK_CARD_W, 40, "删除这条", UK_BTN_DANGER, smsd_delete_cb, NULL, &s_smsd_del_lbl);
 }
 
-static const char *const k_exit_state[4] = { "proxy", "global", "direct_keep_ai", "direct_all" };
-static void chill_mode_cb(lv_event_t *e)
-{
-    int idx = (int)(intptr_t)lv_event_get_user_data(e);
-    chill_set_exit(k_exit_state[idx]);
-}
 
-static void chill_node_cb(lv_event_t *e)
-{
-    int idx = (int)(intptr_t)lv_event_get_user_data(e);
-    /* 对勾当场挪过去；mihomo 回来后下一轮刷新按真实结果画（没切成就挪回去） */
-    if (chill_select_node(idx))
-        for (int i = 0; i < CHILL_MAX_NODES; i++) uk_show(s_cp_node_ok[i], i == idx);
-}
-
-static void chill_group_cb(lv_event_t *e)
-{
-    int idx = (int)(intptr_t)lv_event_get_user_data(e);
-    /* 选中的分组当场高亮；节点列表等下一轮读到新组再画 */
-    if (chill_select_group(idx))
-        for (int i = 0; i < CHILL_MAX_GROUPS; i++) uk_chip_set(s_cp_grp_btn[i], s_cp_grp_lbl[i], i == idx);
-}
-
-static void chill_delay_cb(lv_event_t *e) { LV_UNUSED(e); chill_test_delay(); }
-static void chill_profile_cb(lv_event_t *e)
-{
-    int idx = (int)(intptr_t)lv_event_get_user_data(e);
-    if (!strcmp(chill_profile_raw(), k_profile[idx])) return;
-    if (chill_set_profile(k_profile[idx]))
-        for (int i = 0; i < 3; i++) uk_opt_set(&s_cp_prof[i], i == idx, 0);
-}
-
-#define CHILL_GRP_ROWS ((CHILL_MAX_GROUPS + CHILL_GRP_COLS - 1) / CHILL_GRP_COLS)
-/* 策略组卡永远按 CHILL_MAX_GROUPS 的满槽位留高度，不跟着实际组数收缩（这张
- * 卡本来就是这么建的，不是我这次改的）——所以它的高度是个编译期常量，
- * 一个宏就够，refresh_cb 给流量卡定位时要用同一个数，不能各算各的。 */
-#define CHILL_GRP_H (30 + CHILL_GRP_ROWS * 36 - 6 + 8)
-
-/* 一张"按 X 统计流量"卡：标题 + 最多 CHILL_TRAF_ROWS 行（名字左，流量右），
- * 固定槽位建好、按实际条目数隐藏/显示——跟节点卡、策略组卡同一个规矩，不
- * 跟着数据量动态建对象。返回卡片高度，调用方拿去算下一张卡的 y。 */
-
-/* ---- 国外时的 CHILL 出口面板 ----
- * 在国外换了当地卡：大部分流量直连就好，但 🤖 AI（按地区限制、IP 突变会触发风控）
- * 和 📞 VoWiFi（运营商的 Wi-Fi 通话通常只认本国 IP）要固定走原来的节点。四个选项就是用户实际会用的
- * 四种状态；「关闭」会让 AI 和 VoWiFi 也直连，所以要点两下并写明代价。
- * 回国（换回国内卡）后 agent 自动回到「代理」、打开在国外关掉的 CHILL。 */
-static void exit_menu_refresh(void)
-{
-    static const char *const k_lbl[XM_N] = {
-        "代理（和在国内一样）", "全局", "直连 · AI 不动", "全部直连（AI 也直连）", "关闭 CHILL（最省电）",
-    };
-    scenario_status_t sc;
-    scenario_get_status(&sc);
-    const char *x = chill_exit_raw();
-    int on = sc.chill_on != 0;
-    for (int i = 0; i < XM_N; i++) {
-        int cur = on && ((i == XM_PROXY && !strcmp(x, "proxy")) ||
-                         (i == XM_GLOBAL && !strcmp(x, "global")) ||
-                         (i == XM_KEEP_AI && !strcmp(x, "direct_keep_ai")) ||
-                         (i == XM_ALL && !strcmp(x, "direct_all")));
-        const char *t = k_lbl[i];
-        uint32_t col = on ? T->accT : T->t3;   /* CHILL 关着时前四项没意义 */
-        uint32_t bg = 0;
-        if (i == XM_OFF) {
-            if (!on)               { t = "打开 CHILL"; col = T->okT; }
-            else if (s_xm_off_arm) { t = "再点一下：关闭（AI、VoWiFi 也直连）"; col = 0xffffff; bg = T->fillOrange; }
-            else                   col = T->badT;
-        }
-        lv_label_set_text(s_xm_lbl[i], t);
-        uk_text_color(s_xm_lbl[i], col);
-        lv_obj_set_style_text_font(s_xm_lbl[i], cur ? UF.cj17b : UF.cj15, 0);
-        lv_obj_set_style_bg_opa(s_xm_btn[i], bg ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
-        if (bg) uk_bg(s_xm_btn[i], bg);
-        /* ✓ from the symbol font: the device CJK font has none */
-        uk_show(s_xm_ok[i], cur);
-        if (cur) {
-            lv_obj_update_layout(s_xm_lbl[i]);
-            lv_obj_set_pos(s_xm_ok[i], lv_obj_get_x(s_xm_lbl[i]) - 22, 11);
-        }
-    }
-    lv_label_set_text(s_xm_foot, sc.auto_direct
-        ? "换国外卡已自动切到「直连 · AI 不动」，回国自动回到「代理」"
-        : "换回国内卡后自动回到「代理」");
-    uk_text_color(s_xm_foot, T->t3);
-}
-
-static void exit_menu_set(int v)
-{
-    s_xm_off_arm = 0;
-    if (v) exit_menu_refresh();
-    uk_sheet_show(&s_xm_sheet, v);
-    update_tabs();
-}
-
-static void exit_menu_fail(void)
-{
-    lv_label_set_text(s_xm_foot, "没成功（后台没回应或 CHILL 没在运行），稍后再试");
-    uk_text_color(s_xm_foot, T->warnT);
-}
-
-static void exit_pick_cb(lv_event_t *e)
-{
-    static const char *const k_state[4] = { "proxy", "global", "direct_keep_ai", "direct_all" };
-    int i = (int)(intptr_t)lv_event_get_user_data(e);
-    scenario_status_t sc;
-    scenario_get_status(&sc);
-    if (i == XM_OFF) {
-        if (sc.chill_on == 0) {                     /* 打开 */
-            if (scenario_chill_set(1)) exit_menu_set(0); else exit_menu_fail();
-            s_sc_force = 1;
-            return;
-        }
-        uint32_t now = lv_tick_get();
-        if (s_xm_off_arm && now - s_xm_off_arm < XM_ARM_MS) {
-            if (scenario_chill_set(0)) exit_menu_set(0); else exit_menu_fail();
-            s_sc_force = 1;
-        } else {
-            s_xm_off_arm = now ? now : 1;
-            exit_menu_refresh();
-        }
-        return;
-    }
-    if (sc.chill_on == 0) return;
-    if (chill_set_exit(k_state[i])) exit_menu_set(0); else exit_menu_fail();
-    s_sc_force = 1;
-}
-
-static void exit_cancel_cb(lv_event_t *e) { LV_UNUSED(e); exit_menu_set(0); }
-
-#define XM_TOP 62
-static void build_exit_menu(void)
-{
-    uk_sheet(&s_xm_sheet, XM_TOP + XM_N * 40 + 4, exit_cancel_cb);
-    s_xm = s_xm_sheet.scrim;
-    lv_obj_t *p = s_xm_sheet.panel;
-    lv_obj_t *title = uk_label(p, UF.cj13, T->t3, 0, 0, "在国外 · CHILL 怎么走");
-    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 8);
-    s_xm_foot = uk_label_w(p, UF.cj12, T->t3, 12, 27, UK_W - 16 - 24, 1, "");
-    lv_obj_set_style_text_align(s_xm_foot, LV_TEXT_ALIGN_CENTER, 0);
-    for (int i = 0; i < XM_N; i++) {
-        s_xm_lbl[i] = uk_sheet_item(&s_xm_sheet, XM_TOP + i * 40, "", T->accT, exit_pick_cb, (void *)(intptr_t)i, &s_xm_btn[i]);
-        s_xm_ok[i] = uk_label(s_xm_btn[i], &lv_font_montserrat_16, T->accT, 0, 11, LV_SYMBOL_OK);
-        uk_show(s_xm_ok[i], 0);
-    }
-}
-
-/* 情景卡：任何时候都能点，进「情景」页（手动固定情景；在国外时那里有
- * 「CHILL 出口」一行，就是以前点卡片弹出的那个面板）。 */
+/* 情景卡：任何时候都能点，进「情景」页（手动固定情景）。 */
 static void sc_card_cb(lv_event_t *e)
 {
     LV_UNUSED(e);
     sub_open(SUB_SCENE);
 }
 
-/* CHILL 页总开关。agent 拒绝或连不上就把开关拨回去。 */
-static void chill_master_cb(lv_event_t *e)
-{
-    lv_obj_t *sw = lv_event_get_target(e);
-    int on = lv_obj_has_state(sw, LV_STATE_CHECKED);
-    if (!scenario_chill_set(on)) sw_apply(sw, !on);
-}
-
-static void build_sub_chill(lv_obj_t *t)
-{
-    t = uk_scroll(t, 0, UI_SUB_VIEW, 4 + UK_HERO_H + 80 + 10 + 20 + 124 + 10 + 20 + 70 + 10 + 80 + 16);
-    /* status block: node (big), delay, group; the master switch top right */
-    lv_obj_t *st = uk_card(t, UK_MARGIN, 4, UK_CARD_W, UK_HERO_H + 2 * UK_ROW_H);
-    uk_hero(&s_cp_hero, st, UF.cj22b);
-    lv_obj_set_width(s_cp_hero.big, 180);
-    lv_label_set_long_mode(s_cp_hero.big, LV_LABEL_LONG_MODE_DOTS);
-    lv_obj_set_height(s_cp_hero.big, lv_font_get_line_height(UF.cj22b));
-    s_cp_core = s_cp_hero.st;
-    s_cp_sw = uk_toggle(st, UK_CARD_W - UK_PAD, 6, chill_master_cb, NULL);
-    uk_show(s_cp_sw, 0);          /* 知道开关状态后才显示 */
-    s_sc_force = 1;               /* 下一轮按已知状态同步 */
-    uk_show(s_cp_hero.rtop, 0);
-    s_cp_conns = uk_row(st, UK_HERO_H, "连接", 1);
-    s_cp_traffic = uk_row(st, UK_HERO_H + UK_ROW_H, "流量", 0);
-    int y = 4 + UK_HERO_H + 2 * UK_ROW_H + 10;
-
-    uk_section(t, y, "出口");
-    s_cp_exit_note = uk_label_r(t, UF.cj12, T->t3, UK_W - UK_MARGIN - 6, y, "");
-    y += 20;
-    lv_obj_t *md = uk_card(t, UK_MARGIN, y, UK_CARD_W, 124);
-    static const char *const labels[4] = { "代理", "全局", "直连·AI 不动", "全部直连" };
-    static const char *const subs[4] = { "规则分流", "全部走代理", "国外卡用", "AI 也直连" };
-    for (int i = 0; i < 4; i++) {
-        uk_opt(&s_cp_opt[i], md, 12 + (i % 2) * 142, 12 + (i / 2) * 54, labels[i], subs[i], chill_mode_cb, (void *)(intptr_t)i);
-        s_cp_mode_btn[i] = s_cp_opt[i].obj;
-        uk_opt_set(&s_cp_opt[i], 0, 0);
-    }
-    y += 124 + 10;
-
-    /* 档位：三项一排（uk_opt 默认 134 宽是两列用的，这里改成 88） */
-    uk_section(t, y, "档位");
-    s_cp_prof_note = uk_label_r(t, UF.cj12, T->t3, UK_W - UK_MARGIN - 6, y, "");
-    y += 20;
-    lv_obj_t *pf = uk_card(t, UK_MARGIN, y, UK_CARD_W, 70);
-    static const char *const plabels[3] = { "省电", "标准", "性能" };
-    static const char *const psubs[3] = { "更凉更省", "默认", "切换更快" };
-    for (int i = 0; i < 3; i++) {
-        uk_opt(&s_cp_prof[i], pf, 12 + i * 94, 12, plabels[i], psubs[i], chill_profile_cb, (void *)(intptr_t)i);
-        lv_obj_set_width(s_cp_prof[i].obj, 88);
-        uk_opt_set(&s_cp_prof[i], i == 1, 0);
-    }
-    y += 70 + 10;
-
-    lv_obj_t *nav = uk_card(t, UK_MARGIN, y, UK_CARD_W, CHILL_NAV_ROWS * UK_ROW_H);
-    static const char *const k_nav_cap[CHILL_NAV_ROWS] = { "节点", "规则 → 节点" };
-    static const int k_nav_child[CHILL_NAV_ROWS] = { SUB_CHILL_NODES, SUB_CHILL_PAIRS };
-    for (int i = 0; i < CHILL_NAV_ROWS; i++)
-        s_cp_nav_val[i] = uk_row_nav(nav, i * UK_ROW_H, k_nav_cap[i], i == 0, chill_nav_cb, (void *)(intptr_t)k_nav_child[i]);
-    lv_obj_scroll_to_y(t, 0, LV_ANIM_OFF);
-}
-
-/* 策略组 chips flow like band chips; the node list follows them. */
-static void chill_nodes_layout(int ng)
-{
-    int x = UK_PAD, y = 12, maxx = UK_CARD_W - UK_PAD;
-    for (int i = 0; i < ng; i++) {
-        lv_obj_update_layout(s_cp_grp_lbl[i]);
-        int w = lv_obj_get_width(s_cp_grp_lbl[i]) + 22;
-        lv_obj_set_width(s_cp_grp_btn[i], w);
-        if (x + w > maxx) { x = UK_PAD; y += 36; }
-        lv_obj_set_pos(s_cp_grp_btn[i], x, y);
-        x += w + 6;
-    }
-    int gh = y + 28 + 12;
-    lv_obj_set_height(s_cp_grp_card, gh);
-    int ny = 24 + gh + 10;
-    lv_obj_set_y(s_cp_node_sec, ny);
-    lv_obj_align(s_cp_delay_lbl, LV_ALIGN_TOP_RIGHT, -(UK_MARGIN + 6), ny);
-    lv_obj_set_y(s_cp_node_card, ny + 20);
-}
-
-static void build_sub_chill_nodes(lv_obj_t *t)
-{
-    t = s_cp_scroll_nodes = uk_scroll(t, 0, UI_SUB_VIEW, 200 + CHILL_MAX_NODES * UK_ROW_H);
-    uk_section(t, 4, "策略组");
-    s_cp_grp_card = uk_card(t, UK_MARGIN, 24, UK_CARD_W, 52);
-    for (int i = 0; i < CHILL_MAX_GROUPS; i++) {
-        s_cp_grp_btn[i] = uk_chip(s_cp_grp_card, UK_PAD, 12, "", &s_cp_grp_lbl[i]);
-        lv_obj_set_style_text_font(s_cp_grp_lbl[i], UF.cj13, 0);
-        lv_obj_set_y(s_cp_grp_lbl[i], 6);
-        uk_tappable(s_cp_grp_btn[i], chill_group_cb, (void *)(intptr_t)i);
-        uk_show(s_cp_grp_btn[i], 0);
-    }
-    s_cp_node_sec = uk_section(t, 90, "节点");
-    s_cp_delay_lbl = uk_label(t, UF.cj13, T->accT, 0, 90, "测延迟");
-    lv_obj_add_flag(s_cp_delay_lbl, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_set_ext_click_area(s_cp_delay_lbl, 14);
-    lv_obj_add_event_cb(s_cp_delay_lbl, chill_delay_cb, LV_EVENT_CLICKED, NULL);
-    s_cp_node_card = uk_card(t, UK_MARGIN, 110, UK_CARD_W, UK_ROW_H);
-    for (int i = 0; i < CHILL_MAX_NODES; i++) {
-        lv_obj_t *row = uk_box(s_cp_node_card, 0, i * UK_ROW_H, UK_CARD_W, UK_ROW_H, T->card, 0);
-        lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
-        uk_tappable(row, chill_node_cb, (void *)(intptr_t)i);
-        s_cp_node_row[i] = row;
-        if (i) uk_sep(row, 0);
-        s_cp_node_ok[i] = uk_label(row, &lv_font_montserrat_14, T->accT, UK_PAD, 12, LV_SYMBOL_OK);
-        s_cp_node_name[i] = uk_label_w(row, UF.cj14, T->t1, UK_PAD + 22, 11, UK_CARD_W - 2 * UK_PAD - 22 - 70, 0, "");
-        s_cp_node_dl[i] = uk_label_r(row, UF.n15, T->t3, UK_CARD_W - UK_PAD, 10, "");
-        uk_show(row, 0);
-    }
-    chill_nodes_layout(0);
-    lv_obj_scroll_to_y(t, 0, LV_ANIM_OFF);
-}
-
-static void build_sub_chill_pairs(lv_obj_t *t)
-{
-    t = uk_scroll(t, 0, UI_SUB_VIEW, 24 + CHILL_TRAF_ROWS * UK_ROW_H + 16);
-    uk_section(t, 4, "规则 → 节点流量");
-    s_cp_pair_card = uk_card(t, UK_MARGIN, 24, UK_CARD_W, CHILL_TRAF_ROWS * UK_ROW_H);
-    for (int i = 0; i < CHILL_TRAF_ROWS; i++) {
-        s_cp_pair_sep[i] = i ? uk_sep(s_cp_pair_card, i * UK_ROW_H) : NULL;
-        s_cp_pair_name[i] = uk_label_w(s_cp_pair_card, UF.cj13, T->t1, UK_PAD, i * UK_ROW_H + 12, 190, 0, "");
-        s_cp_pair_val[i] = uk_label_r(s_cp_pair_card, UF.n12, T->t2, UK_CARD_W - UK_PAD, i * UK_ROW_H + 13, "");
-        uk_show(s_cp_pair_name[i], 0);
-        uk_show(s_cp_pair_val[i], 0);
-    }
-    lv_obj_scroll_to_y(t, 0, LV_ANIM_OFF);
-}
 
 /* Tailscale 页（2026-09-25 加详）：本机一块，每台节点三行——名字和怎么连着、
  * IP 和系统、跟本机之间的连接（直连地址或经哪个 DERP、上次握手、收发了多少）。 */
@@ -2574,7 +2189,7 @@ static void build_sub_speed(lv_obj_t *t)
 #define NET_CL_H     50
 static lv_obj_t *s_net_cl_state, *s_net_cl_row[NI_MAX_CLIENTS], *s_net_cl_name[NI_MAX_CLIENTS],
                 *s_net_cl_tot[NI_MAX_CLIENTS], *s_net_cl_sub[NI_MAX_CLIENTS];
-#define NET_SCENE_ROWS (1 + NI_MAX_SCENES + 1)   /* 自动 + 各情景 + CHILL 出口 */
+#define NET_SCENE_ROWS (1 + NI_MAX_SCENES + 1)   /* 自动 + 各情景 + 1 行备用 */
 #define NET_SC_NOTE_H  44
 
 static lv_obj_t *s_net_sec[6], *s_net_card[6];
@@ -2726,14 +2341,14 @@ static void net_nbr_cb(lv_event_t *e)
     net_paint(1);
 }
 
-/* 情景行：0 = 自动，1..n = 固定到 scenes[i-1]，最后一行 = CHILL 出口。
+/* 情景行：0 = 自动，1..n = 固定到 scenes[i-1]，最后一行另有用途。
  * 换情景可能开关 Wi-Fi，所以两步：第一下整行变色、写出后果，4 秒内再点才发；
  * 发出后显示「切换中…」直到真的切过去。 */
 static void net_sc_cb(lv_event_t *e)
 {
     int i = (int)(intptr_t)lv_event_get_user_data(e);
     const netinfo_t *n = netinfo_get();
-    if (i == NET_SCENE_ROWS - 1) { exit_menu_set(1); return; }
+    if (i == NET_SCENE_ROWS - 1) return;
     if (i > n->nscenes) return;
     if (s_sc_pend >= 0) {
         net_flash(&s_sc_flash, T->t2, 3000, "正在切换到「%s」，稍等", s_sc_pend_name);
@@ -2917,13 +2532,6 @@ static void net_reflow(int err_h, int scene_rows, int exits, int ops, int cells)
     }
     lv_obj_set_y(s_net_btns, NET_STAT_H + ops * NET_OP_H);
     lv_obj_set_y(s_net_sc_note, scene_rows + 8);
-    /* 出口标签：出口 IP 下面是 CHILL 卡，再是 › 行 */
-    lv_obj_t *cards[1] = { s_chill_card };
-    for (int i = 0; i < 1; i++) {
-        if (lv_obj_has_flag(cards[i], LV_OBJ_FLAG_HIDDEN)) continue;
-        lv_obj_set_y(cards[i], y[NH_EXIT]);
-        y[NH_EXIT] += (int)lv_obj_get_style_height(cards[i], 0) + 10;
-    }
     lv_obj_set_y(s_exit_nav_sec, y[NH_EXIT]);
     lv_obj_set_y(s_exit_nav_card, y[NH_EXIT] + 20);
     y[NH_EXIT] += 20 + (int)lv_obj_get_style_height(s_exit_nav_card, 0) + 10;
@@ -3216,7 +2824,7 @@ static void net_paint(int changed)
 
     set_label_fmt(s_net_err, c_err, sizeof c_err, "%s", n->err);
 
-    /* 情景：自动 + 各情景（可固定）+ 在国外时的 CHILL 出口 */
+    /* 情景：自动 + 各情景（可固定） */
     static char c_scn[NET_SCENE_ROWS][48], c_sct[NET_SCENE_ROWS][32], c_scnote[160];
     static char c_scw[NET_SCENE_ROWS][120], c_scd[NET_SCENE_ROWS][120];
     int scene_px = 0;
@@ -3225,6 +2833,7 @@ static void net_paint(int changed)
         int cur_abroad = 0;
         for (int i = 0; i < n->nscenes; i++)
             if (!strcmp(n->scenes[i].id, n->scene_current)) { cur_name = n->scenes[i].name; cur_abroad = n->scenes[i].abroad; }
+        (void)cur_abroad;
         int usable = n->scene_known && n->scene_enabled && n->nscenes > 0;
         for (int i = 0; i < NET_SCENE_ROWS; i++) {
             int show = 0;
@@ -3249,11 +2858,6 @@ static void net_paint(int changed)
                 if (!strcmp(n->scene_pin, sc->id)) { tag = "已固定"; tag_col = T->accT; }
                 else if (!strcmp(n->scene_current, sc->id)) { tag = "现在"; tag_col = T->accT; }
                 else if (sc->wifi_off && !does[0]) tag = "会关 Wi-Fi";
-            } else if (i == NET_SCENE_ROWS - 1 && usable && cur_abroad) {
-                show = 1;
-                name = "CHILL 出口";
-                snprintf(buf2, sizeof buf2, "%s ›", chill_mode());
-                tag = buf2;
             }
             int is_exit = i == NET_SCENE_ROWS - 1;
             int sel = usable && !is_exit &&
@@ -3271,7 +2875,7 @@ static void net_paint(int changed)
             lv_obj_set_style_bg_opa(s_net_sc_mark[i], sel ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
             lv_obj_set_style_border_color(s_net_sc_mark[i], lv_color_hex(sel ? T->fillBlue : T->t3), 0);
             lv_obj_set_x(s_net_sc_name[i], usable && !is_exit ? UK_PAD + 26 : UK_PAD);
-            /* 有说明的行三行高，圈对齐第一行；没说明的（CHILL 出口、读不到时）一行高 */
+            /* 有说明的行三行高，圈对齐第一行；没说明的（读不到时）一行高 */
             /* 条件那行放不下就折成两行（Wi-Fi 名可以很长），再长末尾「…」 */
             int lh = lv_font_get_line_height(UF.cj12), wl = 1;
             if (when[0]) {
@@ -3322,21 +2926,18 @@ static void net_paint(int changed)
         else if (n->scene_pin[0])
             snprintf(buf, sizeof buf, "手动固定后一直保持（重启也是），点「自动」才恢复自动判断");
         else
-            snprintf(buf, sizeof buf, "情景只管 Wi-Fi、CHILL 这些，不碰蜂窝网络。点一个情景就固定在它，点「自动」恢复");
+            snprintf(buf, sizeof buf, "情景只管 Wi-Fi 这些，不碰蜂窝网络。点一个情景就固定在它，点「自动」恢复");
         set_label_fmt(s_net_sc_note, c_scnote, sizeof c_scnote, "%s", buf);
         uk_text_color(s_net_sc_note, note_col);
     }
 
-    /* 出口：CHILL 没开 → 一行；开着但出口一样（主组直连）→ 一行标注；不一样 → 两行 */
-    int two = n->proxy.present && strcmp(n->proxy.ip, n->direct.ip);
-    int same = n->proxy.present && !two;
-    for (int i = 0; i < 2; i++) {
-        const ni_exit_t *e = i ? &n->proxy : &n->direct;
-        const char *key = i ? "CHILL" : two ? "蜂窝直连" : "出口 IP";
+    /* 出口：蜂窝直连出去的公网 IP，一行（第二行备用，不显示） */
+    int two = 0;
+    for (int i = 0; i < 1; i++) {
+        const ni_exit_t *e = &n->direct;
+        const char *key = "出口 IP";
         char extra[80] = "";
-        if (i) snprintf(extra, sizeof extra, "%s", e->node);
-        else if (same) snprintf(extra, sizeof extra, "%s%sCHILL 直连", e->isp, e->isp[0] ? " · " : "");
-        else snprintf(extra, sizeof extra, "%s", e->isp);
+        snprintf(extra, sizeof extra, "%s", e->isp);
         net_exit_sub(buf, sizeof buf, e, extra);
         set_label_fmt(s_net_ex_key[i], c_key[i], sizeof c_key[i], "%s", key);
         set_label_fmt(s_net_ex_ip[i], c_ip[i], sizeof c_ip[i], "%s",
@@ -3494,10 +3095,6 @@ static void tile_click_cb(lv_event_t *e)
     sub_open((int)(intptr_t)lv_event_get_user_data(e));
 }
 
-static void chill_nav_cb(lv_event_t *e)
-{
-    sub_open_child((int)(intptr_t)lv_event_get_user_data(e), SUB_CHILL);
-}
 
 /* 标签页上的一张「›」行卡片：每行开一个二级页，右边是 refresh_cb 写的状态字。 */
 static lv_obj_t *s_nav_sec, *s_nav_card;   /* 最近一张（出口标签要跟着出口 IP 挪） */
@@ -3553,15 +3150,14 @@ static void cell_reflow(void)
     uk_scroll_extent(s_cell_scroll, y + (int)lv_obj_get_style_height(s_cell_rest, 0) - 10 + UK_TAB_PAD);
 }
 
-/* 出口：流量从哪出去（CHILL、Tailscale）、出去有多快。 */
+/* 出口：流量从哪出去（Tailscale）、出去有多快。 */
 static void build_exit(lv_obj_t *t)
 {
-    static const int ids[] = { SUB_CHILL, SUB_TS, SUB_SPEED };
-    static const char *const names[] = { "CHILL", "Tailscale", "测速" };
+    static const int ids[] = { SUB_TS, SUB_SPEED };
+    static const char *const names[] = { "Tailscale", "测速" };
     t = s_nh_scroll[NH_EXIT] = uk_scroll(t, 0, UI_VIEW_H, 1000);
-    lv_obj_set_parent(s_chill_card, t);   /* 原首页的 CHILL 卡；Tailscale 卡 9-25 回到首页 */
-    s_nh_base[NH_EXIT] = 4;   /* 出口 IP（build_sub_net）在最上面，这张卡跟在后面（net_reflow） */
-    nav_card(t, 4, "代理与测速", ids, names, 3);
+    s_nh_base[NH_EXIT] = 4;   /* 出口 IP（build_sub_net）在最上面，› 行跟在后面（net_reflow） */
+    nav_card(t, 4, "连接与测速", ids, names, 2);
     s_exit_nav_sec = s_nav_sec;
     s_exit_nav_card = s_nav_card;
 }
@@ -3793,19 +3389,10 @@ static void refresh_cb(lv_timer_t *t)
      * datad is down would turn a datad outage into a false "agent lost". */
     data_set_pace(backlight_panel_lit());
     int sc_changed = scenario_poll(tab_visible(TAB_HOME));
-    if (s_xm_off_arm && lv_tick_get() - s_xm_off_arm >= XM_ARM_MS) { s_xm_off_arm = 0; exit_menu_refresh(); }
     if (s_vendor_arm && lv_tick_get() - s_vendor_arm >= 5000) {
         s_vendor_arm = 0;
         uk_button_kind(s_vendor_btn, s_vendor_lbl, UK_BTN_PLAIN);
         lv_label_set_text(s_vendor_lbl, "切换到原厂界面");
-    }
-    {
-        /* 情景卡片上写着 CHILL 的出口，出口变了也要重画 */
-        static char last_exit[20];
-        if (strcmp(last_exit, chill_exit_raw())) {
-            snprintf(last_exit, sizeof last_exit, "%s", chill_exit_raw());
-            s_sc_force = 1;
-        }
     }
     if (s_sc_force) { s_sc_force = 0; sc_changed = 1; }
     agent_health_t ah;
@@ -3876,7 +3463,9 @@ static void refresh_cb(lv_timer_t *t)
      * dots, reused here for the always-visible summary. */
     {
         static char c_net[16] = "";
-        uint32_t sig_col = d.bars <= 1 ? T->red : d.bars <= 2 ? T->orange : T->green;
+        /* 和首页右边的「信号强/中/弱」同一套：4–5 格绿、3 格橙、1–2 格红 */
+        int tier = ui_bars_tier(d.bars);
+        uint32_t sig_col = tier == 2 ? T->green : tier == 1 ? T->orange : T->red;
         static uint32_t c_sig[5];
         for (int i = 0; i < 5; i++) {
             uint32_t col = i < d.bars ? sig_col : T->track;
@@ -3885,6 +3474,8 @@ static void refresh_cb(lv_timer_t *t)
         /* the phone-style label (5G-A / 5G+ / 4G+ / 3G …) needs the carrier
          * counts, so the signal card below writes it (s_top_label) */
         set_label_fmt(s_top_net, c_net, sizeof c_net, "%s", s_top_label[0] ? s_top_label : ui_rat_short(d.net_type));
+        /* 「无服务」这类中文要中文字体，数字字体里没有 */
+        lv_obj_set_style_text_font(s_top_net, (unsigned char)c_net[0] >= 0x80 ? UF.cj12 : UF.n12, 0);
         char dn[16], up[16], dn2[16], up2[16], full[48], shrt[48], down[24];
         fmt_rate_top(dn, sizeof dn, d.rx_speed, s_cf_speed_bits, 0);
         fmt_rate_top(up, sizeof up, d.tx_speed, s_cf_speed_bits, 0);
@@ -3978,6 +3569,16 @@ static void refresh_cb(lv_timer_t *t)
                 act_n++; act_bw += ca[i].bw;
                 if (pfx[i] == 'n') act_nr++; else act_lte++;
             }
+        /* 状态栏叫法要主 NR 载波的频段和 NR 总带宽（ui_net_badge） */
+        int nr_band0 = 0, nr_mhz = 0;
+        for (int i = 0; i < ca_n; i++)
+            if (ca[i].active && pfx[i] == 'n') {
+                if (!nr_band0) {
+                    if (ca[i].band) nr_band0 = ca[i].band;
+                    else { char bs[16]; ui_band_short(d.nr_band, 1, bs, sizeof bs); nr_band0 = atoi(bs + 1); }
+                }
+                nr_mhz += ca[i].bw;
+            }
         /* 漫游：datad 的 net.roaming（Home / Roaming / …） */
         const char *rm = d.roaming;
         int roam = rm[0] && strcmp(rm, "Home") && strcmp(rm, "home") && strcmp(rm, "0");
@@ -3992,18 +3593,35 @@ static void refresh_cb(lv_timer_t *t)
             .roaming = !rm[0] ? -1 : roam, .n_active = act_n, .nr_active = act_nr, .lte_active = act_lte,
             .mhz = act_bw,
             .sinr_valid = ca_n > 0, .sinr = sinr0, .rsrp_valid = ca_n > 0, .rsrp = ca_n ? (int)ca[0].rsrp : 0,
+            .rsrq_valid = ca_n > 0 && ca[0].rsrq != 0, .rsrq = ca_n ? (int)ca[0].rsrq : 0,
+            .rx_bps = d.rx_speed, .ambr_dl = d.ambr_dl,
+            .mcc = d.mcc, .mnc = d.mnc, .nr_band = nr_band0, .nr_mhz = nr_mhz,
             .net_select = d.net_select,
         };
         ui_net_story_t story;
         ui_net_story(&nin, &story);
+        /* 大字换结论要先稳 15 秒（阈值附近别来回闪）；没服务、没卡这类马上显示。
+         * 下面五行一直是实时的。 */
+        static ui_net_story_t shown;
+        static ui_net_hold_t hold;
+        {
+            unsigned key = 5381;
+            for (const char *p = story.headline; *p; p++) key = key * 33u + (unsigned char)*p;
+            if (story.tone >= UI_NET_BAD || shown.tone >= UI_NET_BAD) hold.have = 0;
+            if (ui_net_hold(&hold, key, lv_tick_get())) {
+                shown.tone = story.tone; shown.cause = story.cause;
+                memcpy(shown.headline, story.headline, sizeof shown.headline);
+                memcpy(shown.hint, story.hint, sizeof shown.hint);
+            }
+        }
         snprintf(s_top_label, sizeof s_top_label, "%s", story.rat);
         static uint32_t nosig_since;
         int nosvc = !strcmp(story.headline, "无服务") || !strcmp(story.headline, "只能紧急呼叫");
         if (nosvc) { if (!nosig_since) nosig_since = lv_tick_get() ? lv_tick_get() : 1; }
         else nosig_since = 0;
-        int tone = story.tone == UI_NET_OK ? 0 : story.tone == UI_NET_WARN ? 1 : story.tone == UI_NET_BAD ? 2 : 3;
+        int tone = shown.tone == UI_NET_OK ? 0 : shown.tone == UI_NET_WARN ? 1 : shown.tone == UI_NET_BAD ? 2 : 3;
         if (tone != s_cc_tone) { s_cc_tone = tone; uk_hero_tone(&s_cc_hero, tone); }
-        const char *hint = story.hint;
+        const char *hint = shown.hint;
         /* 顶行：谁的网 · 什么网 · 本地/漫游 */
         if (!sim_usable_ui(d.sim_state))
             set_label_fmt(s_cc_hero.st, c_st, sizeof c_st, "%s", "没有 SIM 卡");
@@ -4011,35 +3629,37 @@ static void refresh_cb(lv_timer_t *t)
         {
             /* 顶栏已经是简写（5G-A / 4G+ …），这里写更细的：怎么组网、哪种技术 */
             char fine[32];
-            ui_rat_long(d.net_type, fine, sizeof fine);
+            ui_rat_long(d.net_type, act_lte, fine, sizeof fine);
             set_label_fmt(s_cc_hero.st, c_st, sizeof c_st, "%s%s%s%s",
                           d.operator_name[0] ? d.operator_name : "未注册",
                           fine[0] ? " · " : "", fine,
                           !rm[0] || nosvc ? "" : roam ? " · 漫游" : " · 本地");
         }
-        set_label_fmt(s_cc_hero.big, c_big, sizeof c_big, "%s", story.headline);
+        set_label_fmt(s_cc_hero.big, c_big, sizeof c_big, "%s", shown.headline);
         if (nosvc) {
             uint32_t mins = (lv_tick_get() - nosig_since) / 60000;
             if (mins) set_label_fmt(s_cc_hero.rtop, c_rtop, sizeof c_rtop, "已 %u 分钟", (unsigned)mins);
             else      set_label_fmt(s_cc_hero.rtop, c_rtop, sizeof c_rtop, "%s", "刚刚");
         } else
             set_label_fmt(s_cc_hero.rtop, c_rtop, sizeof c_rtop, "%s", "");
-        /* 右边：信号好坏的一句评价，下面是依据 */
-        if (story.quality[0] && !nosvc) {
-            char sinr_s[16];
-            snprintf(sinr_s, sizeof sinr_s, "%.1f", sinr0);
-            set_label_fmt(s_cc_hero.r1, c_r1, sizeof c_r1, "%s", story.quality);
-            set_label_fmt(s_cc_hero.r2, c_r2, sizeof c_r2, "SINR %s · RSRP %d", sinr_s, (int)ca[0].rsrp);
-            uk_text_color(s_cc_hero.r1, story.quality_tone == UI_NET_OK ? T->okT :
-                                        story.quality_tone == UI_NET_WARN ? T->warnT : T->badT);
-        } else if (!nosvc && d.rssi && (ui_rat(d.net_type) == UI_RAT_3G || ui_rat(d.net_type) == UI_RAT_2G)) {
-            set_label_fmt(s_cc_hero.r1, c_r1, sizeof c_r1, "%s", d.bars >= 3 ? "信号良好" : "信号一般");
-            set_label_fmt(s_cc_hero.r2, c_r2, sizeof c_r2, "RSSI %d dBm", d.rssi);
-            uk_text_color(s_cc_hero.r1, d.bars >= 3 ? T->okT : T->warnT);
-        } else {
-            set_label_fmt(s_cc_hero.r1, c_r1, sizeof c_r1, "%s", nosvc ? "正在搜网" : "");
-            set_label_fmt(s_cc_hero.r2, c_r2, sizeof c_r2, "%s", "");
-            uk_text_color(s_cc_hero.r1, T->t1);
+        /* 右边：三件互不决定的事，位置固定。
+         *   上：信号强/中/弱（就是状态栏的格数，颜色也一样）
+         *   下：干扰小/中/大 · 负载正常/高（没在下载时不写负载）
+         * 数字只在大字下面那行提示里，跟着「为什么慢」走。 */
+        {
+            char a[40] = "", b[64] = "";
+            ui_net_tone_t at = story.sig_tone;
+            if (nosvc) snprintf(a, sizeof a, "正在搜网");
+            else if (story.sig[0]) {
+                snprintf(a, sizeof a, "信号%s", story.sig);
+                size_t bo = 0;
+                if (story.noise[0]) bo += (size_t)snprintf(b + bo, sizeof b - bo, "干扰%s", story.noise);
+                if (story.load[0])  bo += (size_t)snprintf(b + bo, sizeof b - bo, "%s负载%s", bo ? " · " : "", story.load);
+                if (!bo && d.rssi) snprintf(b, sizeof b, "RSSI %d dBm", d.rssi);
+            }
+            set_label_fmt(s_cc_hero.r1, c_r1, sizeof c_r1, "%s", a);
+            set_label_fmt(s_cc_hero.r2, c_r2, sizeof c_r2, "%s", b);
+            uk_text_color(s_cc_hero.r1, nosvc ? T->t1 : at == UI_NET_OK ? T->okT : at == UI_NET_WARN ? T->warnT : T->badT);
         }
         uk_hero_layout(&s_cc_hero);
 
@@ -4048,50 +3668,61 @@ static void refresh_cb(lv_timer_t *t)
         if (hint[0]) {
             static char c_hint[96];
             set_label_fmt(s_cc_hint, c_hint, sizeof c_hint, "%s", hint);
-            lv_obj_set_y(s_cc_hint, y + 10);
-            y += 46;
+            lv_obj_set_y(s_cc_hint, y + 8);
+            lv_obj_update_layout(s_cc_hint);
+            y += 8 + lv_obj_get_height(s_cc_hint) + 8;
         }
-        /* 载波块：标题行右边是在用总带宽；第一行是解读（几条载波聚合、带宽
-         * 宽不宽，3G/2G 写不支持聚合），第二行才是每个载波的频段和带宽。
-         * 未激活的只在下面的载波明细卡里。 */
+        /* 载波：基站配了几条、在用几条；小字是下行用哪几条、上行用哪条。
+         * 配了没激活的 = RSRP 在 -140 底值的那几条；服务小区在 nrca 里会以
+         * 未激活的样子再出现一次，按 PCI + 频段去重。上行只写主载波：
+         * 上行聚合的数据还没对上（home-net-card.md「待确认」）。 */
         {
-            static char c_cas[32], c_qos[48], c_link[96], c_list[160];
-            char list[160] = "";
+            static char c_cas[48], c_sub[160];
+            char list[120] = "", first[20] = "", val[48], sub[160];
             size_t lo = 0;
+            int cfg = 0;
+            for (int i = 0; i < ca_n; i++) {
+                int dup = 0;
+                for (int j = 0; j < i; j++)
+                    if (pfx[j] == pfx[i] && ca[j].pci == ca[i].pci &&
+                        (ca[j].band == ca[i].band || !ca[j].band || !ca[i].band)) dup = 1;
+                if (!dup) cfg++;
+            }
             for (int i = 0; i < ca_n && lo + 16 < sizeof list; i++) {
                 char b[20];
                 if (!ca[i].active) continue;
                 if (ca[i].band) snprintf(b, sizeof b, "%c%d", pfx[i], ca[i].band);
                 else if (pfx[i] == 'n') ui_band_short(d.nr_band, 1, b, sizeof b);
                 else ui_band_short(d.band, 0, b, sizeof b);
-                if (ca[i].bw) lo += (size_t)snprintf(list + lo, sizeof list - lo, "%s%s %dM", lo ? " · " : "", b, ca[i].bw);
-                else          lo += (size_t)snprintf(list + lo, sizeof list - lo, "%s%s", lo ? " · " : "", b);
+                if (!first[0]) snprintf(first, sizeof first, "%s", b);
+                if (ca[i].bw) lo += (size_t)snprintf(list + lo, sizeof list - lo, "%s%s %dM", lo ? " + " : "", b, ca[i].bw);
+                else          lo += (size_t)snprintf(list + lo, sizeof list - lo, "%s%s", lo ? " + " : "", b);
             }
             ui_rat_t r2 = ui_rat(d.net_type);
             if (!act_n && (r2 == UI_RAT_3G || r2 == UI_RAT_2G)) {
-                /* 小字：具体是哪种（WCDMA / EDGE / CDMA2000 …）和频段 */
                 char bs[16] = "";
                 if (d.band[0]) ui_band_short(d.band, 0, bs, sizeof bs);
-                snprintf(list, sizeof list, "%s", bs);   /* 技术名已经在顶行 */
+                snprintf(val, sizeof val, "无聚合");
+                snprintf(sub, sizeof sub, "%s", bs);
+            } else if (!act_n) {
+                snprintf(val, sizeof val, "%s", nosvc ? "没连上基站" : "—");
+                sub[0] = 0;
+            } else {
+                /* 3GPP 的说法：基站配置（configured）几条、激活（activated）几条 */
+                if (cfg > act_n) snprintf(val, sizeof val, "激活 %d/%d", act_n, cfg);
+                else if (act_n > 1) snprintf(val, sizeof val, "%d 载波聚合", act_n);
+                else snprintf(val, sizeof val, "单载波");
+                snprintf(sub, sizeof sub, "↓ %s   ↑ %s", list, first);
             }
-            if (act_bw) set_label_fmt(s_hr_ca.val, c_cas, sizeof c_cas, "%d MHz", act_bw);
-            else        set_label_fmt(s_hr_ca.val, c_cas, sizeof c_cas, "%s", "");
-            set_label_fmt(s_hr_ca_link, c_link, sizeof c_link, "%s",
-                          story.link[0] ? story.link : nosvc ? "没连上基站" : "没有在用的载波");
-            uk_text_color(s_hr_ca_link, story.link[0] ? T->t1 : T->t3);
-            set_label_fmt(s_hr_ca_list, c_list, sizeof c_list, "%s", list);
-            uk_show(s_hr_ca_list, list[0] != 0);
-            lv_obj_update_layout(s_hr_ca_link);
-            int ly = 34 + lv_obj_get_height(s_hr_ca_link);
-            lv_obj_set_y(s_hr_ca_list, ly + 2);
-            if (list[0]) {
-                lv_obj_update_layout(s_hr_ca_list);
-                ly += 2 + lv_obj_get_height(s_hr_ca_list);
-            }
-            int ch = ly + 10;
+            set_label_fmt(s_hr_ca.val, c_cas, sizeof c_cas, "%s", val);
+            uk_text_color(s_hr_ca.val, shown.cause == UI_CAUSE_NARROW ? T->warnT : act_n ? T->t1 : T->t3);
+            set_label_fmt(s_hr_ca_sub, c_sub, sizeof c_sub, "%s", sub);
+            uk_show(s_hr_ca_sub, sub[0] != 0);
+            int ch = sub[0] ? 60 : UK_ROW_H;
             lv_obj_set_height(s_hr_ca.box, ch);
             lv_obj_set_y(s_hr_ca.box, y);
             y += ch;
+            static char c_qos[48];
             set_label_fmt(s_ca_qos, c_qos, sizeof c_qos, "QCI %d · AMBR %d/%d", d.qci, (int)d.ambr_dl, (int)d.ambr_ul);
         }
         /* Wi-Fi · 设备数（点进 Wi-Fi 页） */
@@ -4106,9 +3737,13 @@ static void refresh_cb(lv_timer_t *t)
             lv_obj_set_y(s_hr_wifi.box, y);
             y += UK_ROW_H;
         }
-        /* 出口：CHILL 经哪出去，没开就是蜂窝直连的归属地（值在「出口 (Home)」那段写） */
-        lv_obj_set_y(s_hr_exit.box, y);
-        y += UK_ROW_H;
+        /* 出口：一行；有另一条路时两行（小字写另一条路），和下面写字的条件一致 */
+        {
+            int eh = UK_ROW_H;
+            lv_obj_set_height(s_hr_exit.box, eh);
+            lv_obj_set_y(s_hr_exit.box, y);
+            y += eh;
+        }
         /* 今日/本月：固件（zwrt_data）按日历日/月累计的计数器，不是本次开机的 rx/tx */
         {
             char c_day[32], c_month[32];
@@ -4172,32 +3807,27 @@ static void refresh_cb(lv_timer_t *t)
     if (tab_visible(TAB_HOME)) {
         static char c_nip[48], c_ngeo[320];
         const netinfo_t *n = netinfo_get();
-        int two = n->proxy.present && strcmp(n->proxy.ip, n->direct.ip);
-        int dead = s_cc_tone >= 2;      /* 没信号 / 没卡：出口和 CHILL 速率都是旧的 */
+        int dead = s_cc_tone >= 2;      /* 没信号 / 没卡：出口是旧的 */
         char g[320];
         set_label_fmt(s_nh_ip, c_nip, sizeof c_nip, "%s", n->direct.ip[0] ? n->direct.ip : "—");
         uk_text_color(s_nh_ip, dead ? T->t3 : T->t1);
-        uk_text_color(s_ct_rate, dead ? T->t3 : T->t1);
         if (n->err[0]) snprintf(g, sizeof g, "%s", n->err);
         else if (!n->direct.present) snprintf(g, sizeof g, "归属地查询中…");
         else if (!n->direct.ip[0]) snprintf(g, sizeof g, "查不到归属地");
-        else snprintf(g, sizeof g, "%s%s%s%s%s", n->direct.geo[0] ? n->direct.geo : n->direct.ip,
-                      n->direct.isp[0] ? " · " : "", n->direct.isp,
-                      two ? " · CHILL " : "", two ? (n->proxy.geo[0] ? n->proxy.geo : n->proxy.ip) : "");
+        else snprintf(g, sizeof g, "%s%s%s", n->direct.geo[0] ? n->direct.geo : n->direct.ip,
+                      n->direct.isp[0] ? " · " : "", n->direct.isp);
         set_label_fmt(s_nh_geo, c_ngeo, sizeof c_ngeo, "%s", g);
-        /* 首页「出口」行：CHILL 开着写它的出口在哪，没开写蜂窝直连。
-         * 归属地只写国家和城市（「美国 加利福尼亚州 洛杉矶」→「美国 洛杉矶」），
-         * 完整的在出口标签。 */
-        static char c_hx[96];
-        char sg[96];
-        if (n->proxy.present && chill_online())
-            snprintf(g, sizeof g, "CHILL · %s", n->proxy.geo[0] ? geo_short(n->proxy.geo, sg, sizeof sg) : n->proxy.ip[0] ? n->proxy.ip : "—");
-        else if (n->direct.ip[0])
+        /* 首页出口：直连 · 国家 城市；完整归属地在出口标签。 */
+        static char c_hx[96], c_hx2[128];
+        char sg[96], sub[128] = "";
+        if (n->direct.ip[0])
             snprintf(g, sizeof g, "直连 · %s", n->direct.geo[0] ? geo_short(n->direct.geo, sg, sizeof sg) : n->direct.ip);
         else
             snprintf(g, sizeof g, "%s", n->err[0] ? "—" : "查询中…");
         set_label_fmt(s_hr_exit.val, c_hx, sizeof c_hx, "%s", g);
         uk_text_color(s_hr_exit.val, dead ? T->t3 : T->t1);
+        set_label_fmt(s_hr_exit_sub, c_hx2, sizeof c_hx2, "%s", sub);
+        uk_show(s_hr_exit_sub, sub[0] != 0);
     }
 
     /* ---- 情景 (Home) ---- */
@@ -4233,27 +3863,11 @@ static void refresh_cb(lv_timer_t *t)
                 uint32_t note_col = T->t2;
                 if (sc.enabled && !sc.name[0])
                     set_label_fmt(s_sc_note, c_sn, sizeof c_sn, "开机后要连续两次扫描确认位置");
-                else if (sc.abroad && sc.chill_on == 1) {
-                    /* 在国外：直接写 CHILL 现在怎么走，点卡片改 */
-                    note_col = T->accT;
-                    set_label_fmt(s_sc_note, c_sn, sizeof c_sn, "%sCHILL %s", pinned, chill_mode());
-                } else if (sc.abroad && sc.chill_on == 0) {
-                    note_col = T->accT;
-                    set_label_fmt(s_sc_note, c_sn, sizeof c_sn, "%s%s", pinned,
-                                  sc.chill_back ? "CHILL 已关，回国自动开" : "CHILL 已关");
-                } else
+                else
                     set_label_fmt(s_sc_note, c_sn, sizeof c_sn, "%s%s%s%s", pinned,
                                   sc.wifi_off ? "Wi-Fi 已关 · " : (when[0] ? "切换于 " : ""),
                                   when, sc.wifi_off && !when[0] ? "手机走家里网络" : "");
                 uk_text_color(s_sc_note, note_col);
-            }
-            /* CHILL 页的总开关跟着 agent 报的状态走（旧 agent 不报 → 不显示） */
-            if (s_cp_sw) {
-                if (sc.chill_on < 0) lv_obj_add_flag(s_cp_sw, LV_OBJ_FLAG_HIDDEN);
-                else {
-                    lv_obj_remove_flag(s_cp_sw, LV_OBJ_FLAG_HIDDEN);
-                    sw_apply(s_cp_sw, sc.chill_on);
-                }
             }
         }
     }
@@ -4402,222 +4016,6 @@ static void refresh_cb(lv_timer_t *t)
         }
     }
 
-    /* ---- CHILL (Home card + subpage) ---- */
-    {
-        int on_home = tab_visible(TAB_HOME) || tab_visible(TAB_EXIT);
-        int on_page = sub_visible(SUB_CHILL) || sub_visible(SUB_CHILL_NODES) ||
-                      sub_visible(SUB_CHILL_PAIRS);
-        if (chill_poll(on_home || on_page)) {
-            static char c_cs[32] = "", c_cr[48] = "", c_csp[32] = "", c_ctt[40] = "", c_cl[160] = "";
-            int online = chill_online();
-            scenario_status_t csc;
-            scenario_get_status(&csc);
-            /* Hidden only when there is no CHILL at all; stopped still shows,
-             * with the way back (the card opens the page with the switch). */
-            uk_show(s_chill_card, online || csc.chill_on == 0);
-            uk_show(s_ct_tile, online || csc.chill_on == 0);
-            {
-                /* 磁贴：状态 · 速率 · 出口节点和延迟（明细在下面的 CHILL 卡） */
-                static char c_ts2[24], c_tr[48], c_tl[160];
-                char dl[24] = "";
-                if (online)
-                    for (int i = 0; i < chill_node_count(); i++) {
-                        chill_node_info_t ni;
-                        chill_get_node(i, &ni);
-                        if (ni.selected && !strcmp(ni.name, chill_node())) {
-                            if (ni.delay > 0) snprintf(dl, sizeof dl, " · %dms", ni.delay);
-                            else if (ni.delay == 0) snprintf(dl, sizeof dl, " · 超时");
-                            break;
-                        }
-                    }
-                set_label_fmt(s_ct_state, c_ts2, sizeof c_ts2, "%s", online ? "● 运行中" : "已关闭");
-                uk_text_color(s_ct_state, online ? T->okT : T->t3);
-                set_label_fmt(s_ct_rate, c_tr, sizeof c_tr, "%s", online ? chill_speed() : "—");
-                if (online)
-                    set_label_fmt(s_ct_line, c_tl, sizeof c_tl, "%s%s%s", chill_node()[0] ? chill_node() : chill_mode(), dl, "");
-                else
-                    set_label_fmt(s_ct_line, c_tl, sizeof c_tl, "%s", csc.chill_back ? "国外关掉了，回国自动打开" : "点这里打开");
-            }
-            if (!online) {
-                set_label_fmt(s_chill_state, c_cs, sizeof c_cs, "%s", "已关闭");
-                uk_text_color(s_chill_state, T->t3);
-                set_label_fmt(s_chill_rate, c_cr, sizeof c_cr, "%s", "—");
-                set_label_fmt(s_chill_split, c_csp, sizeof c_csp, "%s", "");
-                set_label_fmt(s_chill_line, c_cl, sizeof c_cl, "%s",
-                              csc.chill_back ? "在国外关掉了 · 回国自动打开" : "点这里打开");
-                set_label_fmt(s_chill_total, c_ctt, sizeof c_ctt, "%s", "");
-                s_chill_rows = 0;
-            } else {
-                set_label_fmt(s_chill_state, c_cs, sizeof c_cs, "%s", chill_core());
-                uk_text_color(s_chill_state, T->okT);
-                set_label_fmt(s_chill_rate, c_cr, sizeof c_cr, "%s", chill_speed());
-                set_label_fmt(s_chill_split, c_csp, sizeof c_csp, "%s", chill_conn_split());
-                set_label_fmt(s_chill_total, c_ctt, sizeof c_ctt, "%s", chill_traffic());
-                /* 出口 · 节点 · 延迟: the main selector's node, and its last
-                 * measured delay when the node list has it. */
-                char dl[24] = "";
-                for (int i = 0; i < chill_node_count(); i++) {
-                    chill_node_info_t ni;
-                    chill_get_node(i, &ni);
-                    if (ni.selected && !strcmp(ni.name, chill_node())) {
-                        if (ni.delay > 0) snprintf(dl, sizeof dl, " · %dms", ni.delay);
-                        else if (ni.delay == 0) snprintf(dl, sizeof dl, " · 超时");
-                        break;
-                    }
-                }
-                set_label_fmt(s_chill_line, c_cl, sizeof c_cl, "%s%s%s%s", chill_mode(),
-                              chill_node()[0] ? " · " : "", chill_node(), dl);
-                s_chill_rows = chill_top_pair_count();
-            }
-            static char c_tpn[CHILL_HOME_ROWS][96], c_tpv[CHILL_HOME_ROWS][40];
-            int rows = s_chill_rows > CHILL_HOME_ROWS ? CHILL_HOME_ROWS : s_chill_rows;
-            if (rows < 1) rows = 1;
-            for (int i = 0; i < CHILL_HOME_ROWS; i++) {
-                int vis = i < rows;
-                uk_show(s_chill_pair_name[i], vis);
-                uk_show(s_chill_pair_val[i], vis);
-                uk_show(s_chill_pair_sep[i], vis);
-                if (!vis) continue;
-                if (i >= s_chill_rows) {   /* up but idle: one placeholder row */
-                    set_label_fmt(s_chill_pair_name[i], c_tpn[i], sizeof c_tpn[i], "%s", online ? "暂无活跃连接" : "—");
-                    set_label_fmt(s_chill_pair_val[i], c_tpv[i], sizeof c_tpv[i], "%s", "");
-                    uk_text_color(s_chill_pair_name[i], T->t3);
-                } else {
-                    chill_traffic_item_t it;
-                    chill_get_top_pair(i, &it);
-                    set_label_fmt(s_chill_pair_name[i], c_tpn[i], sizeof c_tpn[i], "%s", it.name);
-                    set_label_fmt(s_chill_pair_val[i], c_tpv[i], sizeof c_tpv[i], "%s", it.traffic);
-                    uk_text_color(s_chill_pair_name[i], T->t1);
-                }
-            }
-            lv_obj_set_height(s_chill_card, CHILL_HOME_TOP + rows * CHILL_HOME_ROW_H + 2);
-            /* Subpage mirrors the same values plus the node list. */
-            static char c_pc[24] = "", c_pv[48] = "", c_pt[48] = "";
-            set_label_fmt(s_cp_core, c_pc, sizeof c_pc, "%s", chill_core());
-            {
-                static int c_on = -1;
-                if (online != c_on) { c_on = online; uk_hero_tone(&s_cp_hero, online ? 0 : 3); }
-                static char c_big[96], c_r1[24], c_r2[80];
-                char dl[24] = "-";
-                for (int i = 0; i < chill_node_count(); i++) {
-                    chill_node_info_t ni;
-                    chill_get_node(i, &ni);
-                    if (ni.selected && !strcmp(ni.name, chill_node())) {
-                        if (ni.delay > 0) snprintf(dl, sizeof dl, "%d ms", ni.delay);
-                        else if (ni.delay == 0) snprintf(dl, sizeof dl, "超时");
-                        break;
-                    }
-                }
-                set_label_fmt(s_cp_hero.big, c_big, sizeof c_big, "%s", online && chill_node()[0] ? chill_node() : "—");
-                set_label_fmt(s_cp_hero.r1, c_r1, sizeof c_r1, "%s", online ? dl : "");
-                set_label_fmt(s_cp_hero.r2, c_r2, sizeof c_r2, "%s", online ? chill_group() : "打开右上角开关启动");
-            }
-            set_label_fmt(s_cp_conns, c_pv, sizeof c_pv, "%s", chill_conn_split());
-            set_label_fmt(s_cp_traffic, c_pt, sizeof c_pt, "%s", chill_traffic());
-            const char *xraw = chill_exit_raw();
-            for (int i = 0; i < 4; i++) uk_opt_set(&s_cp_opt[i], !strcmp(xraw, k_exit_state[i]), 0);
-            {
-                static char c_xn[48] = "";
-                set_label_fmt(s_cp_exit_note, c_xn, sizeof c_xn, "%s",
-                              !strcmp(xraw, "direct_all") ? "AI、VoWiFi 也直连" : "");
-            }
-            {
-                const char *pr = chill_profile_raw();
-                for (int i = 0; i < 3; i++) uk_opt_set(&s_cp_prof[i], !strcmp(pr, k_profile[i]), 0);
-                static char c_pn[48] = "";
-                int hot = chill_thermal_eco() && strcmp(chill_profile_effective_raw(), pr);
-                set_label_fmt(s_cp_prof_note, c_pn, sizeof c_pn, "%s", hot ? "太热 · 暂按省电" : "进出省电断网约 10 秒");
-                uk_text_color(s_cp_prof_note, hot ? T->warnT : T->t3);
-            }
-            int ng = chill_group_count();
-            if (ng > CHILL_MAX_GROUPS) ng = CHILL_MAX_GROUPS;
-            static char c_gname[CHILL_MAX_GROUPS][48];
-            for (int i = 0; i < CHILL_MAX_GROUPS; i++) {
-                if (i >= ng) { uk_show(s_cp_grp_btn[i], 0); continue; }
-                chill_group_info_t gi;
-                chill_get_group(i, &gi);
-                lv_obj_remove_flag(s_cp_grp_btn[i], LV_OBJ_FLAG_HIDDEN);
-                set_label_fmt(s_cp_grp_lbl[i], c_gname[i], sizeof c_gname[i], "%s", gi.name);
-                uk_chip_set(s_cp_grp_btn[i], s_cp_grp_lbl[i], gi.selected);
-                if (gi.auto_pick && !gi.selected) uk_text_color(s_cp_grp_lbl[i], T->t3);
-            }
-
-            {
-                static int c_ng = -1;
-                static char c_gsig[CHILL_MAX_GROUPS * 48];
-                char sig[CHILL_MAX_GROUPS * 48] = "";
-                for (int i = 0; i < ng; i++) strncat(sig, c_gname[i], sizeof sig - strlen(sig) - 1);
-                if (ng != c_ng || strcmp(sig, c_gsig)) {
-                    c_ng = ng;
-                    snprintf(c_gsig, sizeof c_gsig, "%s", sig);
-                    chill_nodes_layout(ng);
-                }
-            }
-            int pending = chill_delay_pending();
-            lv_label_set_text(s_cp_delay_lbl, pending
-                ? "\xE6\xB5\x8B\xE8\xAF\x95\xE4\xB8\xAD\xE2\x80\xA6" /* 测试中… */
-                : "\xE6\xB5\x8B\xE5\xBB\xB6\xE8\xBF\x9F" /* 测延迟 */);
-            uk_text_color(s_cp_delay_lbl, pending ? T->t3 : T->accT);
-
-            int nn = chill_node_count();
-            if (nn > CHILL_MAX_NODES) nn = CHILL_MAX_NODES;
-            static char c_nname[CHILL_MAX_NODES][48], c_ndl[CHILL_MAX_NODES][16];
-            for (int i = 0; i < CHILL_MAX_NODES; i++) {
-                if (i >= nn) { uk_show(s_cp_node_row[i], 0); continue; }
-                chill_node_info_t ni;
-                chill_get_node(i, &ni);
-                lv_obj_remove_flag(s_cp_node_row[i], LV_OBJ_FLAG_HIDDEN);
-                set_label_fmt(s_cp_node_name[i], c_nname[i], sizeof c_nname[i], "%s", ni.name);
-                /* chill.c's convention: >0 = ms, 0 = timed out, -1 = not
-                 * measured yet. Same 150/400ms tiers the HTML list uses. */
-                if (ni.delay > 0)
-                    set_label_fmt(s_cp_node_dl[i], c_ndl[i], sizeof c_ndl[i], "%d ms", ni.delay);
-                else
-                    set_label_fmt(s_cp_node_dl[i], c_ndl[i], sizeof c_ndl[i], "%s",
-                                  ni.delay == 0 ? "\xE8\xB6\x85\xE6\x97\xB6" /* 超时 */ : "-");
-                uk_text_color(s_cp_node_dl[i], ni.delay == 0 ? T->badT : ni.delay < 0 ? T->t3
-                              : ni.delay < 150 ? T->okT : ni.delay < 400 ? T->warnT : T->badT);
-                uk_show(s_cp_node_ok[i], ni.selected);
-            }
-            lv_obj_set_height(s_cp_node_card, (nn ? nn : 1) * UK_ROW_H);
-            uk_scroll_extent(s_cp_scroll_nodes, (int)lv_obj_get_style_y(s_cp_node_card, 0) + (nn ? nn : 1) * UK_ROW_H + 16);
-
-            /* 流量分布——数据来自这次已经拉过的 /connections，chill_poll()
-             * 内部顺带算好了，这里不额外发请求。行数固定建好，按实际条目数
-             * 隐藏/显示；卡片高度按实际行数收缩。一行是一个 (规则, 节点)
-             * 组合，不是两张各自独立排名、容易被误读成一一对应的卡
-             * （2026-09-22 反馈）。现在自己单独一个二级页，不用再跟着节点卡
-             * 的高度重新定位。 */
-            int tpn = chill_top_pair_count();
-            static char c_tpname[CHILL_TRAF_ROWS][96], c_tpval[CHILL_TRAF_ROWS][40];
-            for (int i = 0; i < CHILL_TRAF_ROWS; i++) {
-                if (i >= tpn) {
-                    lv_obj_add_flag(s_cp_pair_name[i], LV_OBJ_FLAG_HIDDEN);
-                    lv_obj_add_flag(s_cp_pair_val[i], LV_OBJ_FLAG_HIDDEN);
-                    continue;
-                }
-                chill_traffic_item_t it;
-                chill_get_top_pair(i, &it);
-                lv_obj_remove_flag(s_cp_pair_name[i], LV_OBJ_FLAG_HIDDEN);
-                lv_obj_remove_flag(s_cp_pair_val[i], LV_OBJ_FLAG_HIDDEN);
-                set_label_fmt(s_cp_pair_name[i], c_tpname[i], sizeof c_tpname[i], "%s", it.name);
-                set_label_fmt(s_cp_pair_val[i], c_tpval[i], sizeof c_tpval[i], "%s", it.traffic);
-            }
-            for (int i = 1; i < CHILL_TRAF_ROWS; i++) uk_show(s_cp_pair_sep[i], i < tpn);
-            lv_obj_set_height(s_cp_pair_card, (tpn ? tpn : 1) * UK_ROW_H);
-
-            /* CHILL 页两行摘要——纯计数，不复用 chill_group()/chill_node()
-             * 那套"当前配置的节点选择"语义，避免又把"点进去能改什么"和
-             * "流量实际去哪了"这两件事混到一起（就是这轮反馈本身在说的
-             * 问题）。节点行顺带带上组数，因为这一行现在是策略组+节点
-             * 合并页的入口。 */
-            static char c_ngc[CHILL_NAV_ROWS][24];
-            set_label_fmt(s_cp_nav_val[CHILL_NAV_NODES], c_ngc[CHILL_NAV_NODES],
-                          sizeof c_ngc[CHILL_NAV_NODES], "%d \xE7\xBB\x84 \xC2\xB7 %d \xE4\xB8\xAA" /* 组 · 个 */, ng, nn);
-            set_label_fmt(s_cp_nav_val[CHILL_NAV_PAIRS], c_ngc[CHILL_NAV_PAIRS],
-                          sizeof c_ngc[CHILL_NAV_PAIRS], "%d \xE6\x9D\xA1" /* 条 */, tpn);
-        }
-    }
 
     home_reflow();
 
@@ -4656,7 +4054,7 @@ static void refresh_cb(lv_timer_t *t)
         /* Also polled while just the 功能 tile wall is up (not only the
          * subpage itself) — the tile's own subtitle (功能 tile subtitles,
          * below) needs live data to replace the old hardcoded "插件未安装"
-         * text, same as WiFi/SMS/CHILL/eSIM/锁频 already do. */
+         * text, same as WiFi/SMS/eSIM/锁频 already do. */
         if (speedtest_poll(sub_visible(SUB_SPEED) || tab_visible(TAB_EXIT))) {
             int online = speedtest_agent_reachable();
             if (!online) {
@@ -5031,13 +4429,11 @@ static void refresh_cb(lv_timer_t *t)
 
     /* ---- › 行右边的状态字（蜂窝 / 出口标签） ---- */
     {
-        static char c_t1[40] = "", c_t5[40] = "", c_t6[112] = "";
-        /* 「开着」(CHILL running) = green; unread SMS = accent (the old tiles'
-         * green dot and badge). */
+        static char c_t1[40] = "", c_t6[112] = "";
+        /* unread SMS = accent (the old tile's badge) */
         {
             static int c_on[2] = { -1, -1 };
-            int chill_on = chill_online(), unread = d.sms_unread > 0;
-            if (chill_on != c_on[0]) { c_on[0] = chill_on; uk_text_color(s_tile_sub[SUB_CHILL], chill_on ? T->okT : T->t2); }
+            int unread = d.sms_unread > 0;
             if (unread != c_on[1]) { c_on[1] = unread; uk_text_color(s_tile_sub[SUB_SMS], unread ? T->accT : T->t2); }
         }
         if (d.sms_unread)
@@ -5045,8 +4441,6 @@ static void refresh_cb(lv_timer_t *t)
                           "%d \xE6\x9D\xA1 \xC2\xB7 %d \xE6\x9C\xAA\xE8\xAF\xBB", d.sms_n, d.sms_unread);
         else
             set_label_fmt(s_tile_sub[SUB_SMS], c_t1, sizeof c_t1, "%d \xE6\x9D\xA1", d.sms_n);
-        set_label_fmt(s_tile_sub[SUB_CHILL], c_t5, sizeof c_t5, "%s \xC2\xB7 %s",
-                      chill_core(), chill_mode());
         /* 实体 SIM 写「SIM 卡 · 运营商」，eSIM 写「eSIM · 配置名」 */
         if (s_sim.kind == UI_SIM_ESIM)
             set_label_fmt(s_tile_sub[SUB_ESIM], c_t6, sizeof c_t6, "eSIM · %s", esim_current());
@@ -5115,7 +4509,7 @@ static void power_menu_set(int v)
 static int power_menu_visible(void) { return uk_sheet_visible(&s_pw_sheet); }
 static int any_sheet_open(void)
 {
-    return power_menu_visible() || (s_xm && !lv_obj_has_flag(s_xm, LV_OBJ_FLAG_HIDDEN));
+    return power_menu_visible();
 }
 
 static void act_poweroff(lv_event_t *e) { LV_UNUSED(e); system("poweroff"); }
@@ -5291,8 +4685,8 @@ static void build_tabbar(void)
  * charging) and the ▲; when it does not fit it drops to a shorter form
  * (ui_rate_pick). */
 #define TOP_BATT_XR 308
-#define TOP_LEFT_END 138   /* time + dots + RAT end here; the rate never crosses it.
-                            * The RAT slot fits "5G-A" (the widest label). */
+#define TOP_LEFT_END 150   /* time + dots + RAT end here; the rate never crosses it.
+                            * The RAT slot fits "5G UC" / "5G UW" / "无服务" (the widest). */
 
 static void build_statusbar(void)
 {
@@ -5528,9 +4922,6 @@ void ui_create(void)
     build_sub_lock(s_sub_page[SUB_LOCK]);
     build_sub_speed(s_sub_page[SUB_SPEED]);
     build_sub_ts(s_sub_page[SUB_TS]);
-    build_sub_chill(s_sub_page[SUB_CHILL]);
-    build_sub_chill_nodes(s_sub_page[SUB_CHILL_NODES]);
-    build_sub_chill_pairs(s_sub_page[SUB_CHILL_PAIRS]);
     build_sub_esim(s_sub_page[SUB_ESIM]);
     build_sub_perf(s_sub_page[SUB_PERF]);
     build_sub_sms_detail(s_sub_page[SUB_SMS_DETAIL]);
@@ -5592,7 +4983,6 @@ void ui_create(void)
     fflush(stderr);
 
     build_power_menu();
-    build_exit_menu();
     key_input_init(&s_key);
     s_key_timer = lv_timer_create(key_poll_cb, 50, NULL);
 }

@@ -8,8 +8,6 @@
  */
 #include "../src/netinfo.c"
 
-/* the real one is in chill.c; the parser only needs it to copy */
-void chill_sanitize_name(const char *in, char *out, size_t cap) { snprintf(out, cap, "%s", in); }
 
 static int pass, fail;
 
@@ -47,13 +45,13 @@ int main(void)
     memset(longerr, 'e', 150);
     longerr[150] = 0;
 
-    puts("full body, CHILL off, roaming, more rows than the screen holds");
+    puts("full body, no second exit, roaming, more rows than the screen holds");
     cells_and_ops(mid, sizeof mid, 16, 12);
     snprintf(body, sizeof body,
              "{\"apn\":{\"auto\":[{\"apn\":\"ctiot\",\"id\":\"auto109590\",\"in_use\":true,\"name\":\"China Telecom\",\"pdp\":3,\"selected\":true}],"
              "\"in_use\":{\"apn\":\"ctiot\",\"id\":\"auto109590\",\"in_use\":true,\"name\":\"China Telecom\",\"pdp\":3,\"selected\":false},"
              "\"manual\":[{\"apn\":\"ctnet\",\"id\":\"manu1\",\"in_use\":false,\"name\":\"CTNET\",\"pdp\":3,\"selected\":true}],\"mode\":\"auto\"},"
-             "\"chill_running\":false,\"clients\":{\"at\":1790250000,\"list\":["
+             "\"clients\":{\"at\":1790250000,\"list\":["
              "{\"connected_secs\":360,\"down_bytes\":5000000000,\"down_rate\":250000,\"iface\":\"wlan1\",\"ip\":\"10.0.66.109\",\"mac\":\"02:00:00:00:00:0a\",\"name\":\"MacBook\",\"signal\":-47,\"up_bytes\":1000,\"up_rate\":null,"
              "\"band\":\"5 GHz\",\"channel\":44,\"width_mhz\":160,\"wifi_gen\":6,\"link_down_mbps\":2402,\"link_up_mbps\":1201},"
              "{\"connected_secs\":5,\"down_bytes\":20,\"down_rate\":null,\"iface\":\"wlan1\",\"ip\":null,\"mac\":\"02:00:00:00:00:0b\",\"name\":null,\"signal\":null,\"up_bytes\":10,\"up_rate\":null,\"band\":null,\"wifi_gen\":null,\"link_down_mbps\":null}]},"
@@ -75,7 +73,6 @@ int main(void)
     CHECK("\\u escapes decoded", !strcmp(n->direct.geo, "日本 大阪府"));
     CHECK("error truncated, not overflowed", strlen(n->direct.err) == sizeof n->direct.err - 1);
     CHECK("proxy null → absent", !n->proxy.present && !n->proxy.ip[0]);
-    CHECK("chill off", n->chill_running == 0);
     CHECK("home operator", !strcmp(n->home.name, "中国联通") && !strcmp(n->home.mnc, "01"));
     CHECK("serving operator (not confused with home)", !strcmp(n->serving.name, "SoftBank") && !strcmp(n->serving.mcc, "440"));
     CHECK("roaming", n->roaming == 1);
@@ -109,14 +106,14 @@ int main(void)
         for (int i = 0; i < 12; i++)
             o += (size_t)snprintf(b2 + o, sizeof b2 - o, "%s{\"apn\":\"apn%d\",\"id\":\"manu%d\",\"in_use\":false,\"name\":\"Web %d\",\"pdp\":1,\"selected\":%s}",
                                   i ? "," : "", i, i, i, i == 7 ? "true" : "false");
-        snprintf(b2 + o, sizeof b2 - o, "],\"mode\":\"manual\"},\"chill_running\":false,\"direct\":null,\"proxy\":null}");
+        snprintf(b2 + o, sizeof b2 - o, "],\"mode\":\"manual\"},\"direct\":null,\"proxy\":null}");
         parse(b2);
         CHECK("ten manual APNs listed", n->napns == 10 && NI_MAX_APNS == 10);
         CHECK("8th one (added in the web) is there and marked", !strcmp(n->apns[7].name, "Web 7") && n->apns[7].selected);
     }
 
     puts("empty body: nothing known yet");
-    parse("{\"chill_running\":false,\"direct\":null,\"guard\":{\"phase\":\"idle\"},\"home_operator\":null,"
+    parse("{\"direct\":null,\"guard\":{\"phase\":\"idle\"},\"home_operator\":null,"
           "\"neighbors\":{\"cells\":[],\"state\":\"idle\"},\"proxy\":null,\"roaming\":null,"
           "\"scan\":{\"operators\":[],\"state\":\"idle\"},\"selection\":{\"mode\":null},\"serving_operator\":null}");
     CHECK("no exits", !n->direct.present && !n->proxy.present);
