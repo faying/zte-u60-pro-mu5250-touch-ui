@@ -2,14 +2,15 @@
 # Build a minimal static libfreetype.a for aarch64 musl WITHOUT make/configure,
 # by compiling FreeType's per-module amalgamation files directly. Just enough
 # for LVGL's binding (TTF/OTF + smooth AA + FT cache). Output: ~/freetype-musl/.
+# Paths can be overridden (Dockerfile.build does): TC FT OUT BUILD.
 set -e
 
-TC="$HOME/aarch64--musl--stable-2025.08-1/bin"
+TC="${TC:-$HOME/aarch64--musl--stable-2025.08-1/bin}"
 CC="$TC/aarch64-linux-gcc"
 AR="$TC/aarch64-linux-ar"
-FT="$HOME/freetype"
-OUT="$HOME/freetype-musl"
-BUILD="$HOME/ft-build"
+FT="${FT:-$HOME/freetype}"
+OUT="${OUT:-$HOME/freetype-musl}"
+BUILD="${BUILD:-$HOME/ft-build}"
 
 [ -x "$CC" ] || { echo "toolchain missing"; exit 1; }
 [ -f "$FT/src/base/ftbase.c" ] || { echo "freetype src missing at $FT"; exit 1; }

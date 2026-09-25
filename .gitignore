@@ -72,3 +72,4 @@ drm_text
 scripts/test/ui_exec/ui_exec_test
 scripts/test/render/render_test
 .cache/
+/out/

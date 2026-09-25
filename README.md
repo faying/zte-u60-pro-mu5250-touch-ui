@@ -44,17 +44,13 @@ zwrt-datad :9460 ──▶ 触屏界面 ──(eSIM 页)──▶ zte-agent :909
 用 Docker（镜像里有 Bootlin aarch64 musl 工具链和 FreeType 源码；Apple 芯片的 Mac 走 amd64 模拟，能用但慢）：
 
 ```sh
-docker build --platform linux/amd64 -t u60-devui-build -f Dockerfile.build .
-docker run --rm --platform linux/amd64 -v "$PWD":/src -w /src u60-devui-build bash -c '
-  set -e
-  [ -f third_party/lvgl/lvgl.h ] || git clone --depth 1 --branch v9.5.0 https://github.com/lvgl/lvgl.git third_party/lvgl
-  HOME=/opt bash scripts/_build_freetype.sh
-  make -j4 CROSS_COMPILE=aarch64-linux-
-  make CROSS_COMPILE=aarch64-linux- u60-uid
-  aarch64-linux-strip -o u60pro-devui.stripped u60pro-devui'
+scripts/build-docker.sh      # → out/u60pro-devui-lvgl.stripped（界面）、out/u60-uid（屏幕守护进程）
 ```
 
-产物 `u60pro-devui.stripped`（界面）和 `u60-uid`（屏幕守护进程）。`scripts/build.sh` 编的是旧的 litehtml 版，装机包不收。
+脚本建镜像（`Dockerfile.build`：Bootlin aarch64 musl 工具链 + 静态 FreeType 2.13.3），把源码拷进容器再编（LVGL 固定 v9.5.0），
+不在仓库里留 `.o`、不改 `third_party/`。manager 的 `onboard/build-kit.sh` 默认就读 `out/` 里这两个文件，没有时自己调这个脚本。
+触屏字体（Nunito、中文兜底）用 `scripts/fonts/build-nunito.sh`、`scripts/fonts/build-cjk-fallback.sh` 生成（公开下载按 sha256 固定），装机包会自动调。
+`scripts/build.sh` 编的是旧的 litehtml 版，装机包不收。
 
 测试：`scripts/test/docker.sh`（设备端脚本，busybox 容器里全部打桩）、`make uid-test` / `make ui-logic-test`、
 离屏渲染测试 `scripts/test/render/`（要设备字体，见脚本开头）。开发细节见 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)。

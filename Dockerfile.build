@@ -2,6 +2,8 @@
 # 工具链是 x86-64 Linux 二进制，本机若是 arm64 macOS/Docker Desktop 需要跑
 # linux/amd64 平台的模拟层，速度会慢一些但可用：
 #
+#   scripts/build-docker.sh          # 一条命令：建镜像 + 编 LVGL 版和 u60-uid → out/
+#
 #   docker build --platform linux/amd64 -t u60-devui-build -f Dockerfile.build .
 #   docker run --rm --platform linux/amd64 -v "$(pwd)":/src -w /src u60-devui-build bash
 #
@@ -27,5 +29,10 @@ ENV PATH="/opt/aarch64--musl--stable-2025.08-1/bin:${PATH}"
 
 # FreeType 源码（静态编译进最终二进制，见 scripts/_build_freetype.sh）
 RUN git clone --depth 1 --branch VER-2-13-3 https://gitlab.freedesktop.org/freetype/freetype.git /opt/freetype
+
+# 编成静态 libfreetype.a（带 ftsynth，粗体中文要用）→ /opt/freetype-musl，Makefile 的 FT_DIR 默认值
+COPY scripts/_build_freetype.sh /opt/_build_freetype.sh
+RUN TC=/opt/aarch64--musl--stable-2025.08-1/bin FT=/opt/freetype OUT=/opt/freetype-musl BUILD=/tmp/ft-build \
+      bash /opt/_build_freetype.sh | tail -1 && rm -rf /tmp/ft-build
 
 WORKDIR /src

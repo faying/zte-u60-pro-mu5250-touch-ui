@@ -27,7 +27,8 @@ VER=0.990
 PKG=RHR-CN-$VER.7z
 URL=https://github.com/CyanoHao/Resource-Han-Rounded/releases/download/v$VER/$PKG
 SHA=e7005f7b4a7a0b8352d32c4a1358ff47564eb73be7fdb2db00d9f792755e9dc7
-OFL_URL=https://raw.githubusercontent.com/CyanoHao/Resource-Han-Rounded/master/OFL-License.txt
+OFL_URL=https://raw.githubusercontent.com/CyanoHao/Resource-Han-Rounded/be90fee7a031c1297da5a260ccfb91756088d51c/OFL-License.txt
+OFL_SHA=586a072c53a12f6e4389f0eb6034f9780afcb9f0a49558e9ed299664ab1107d8
 
 mkdir -p "$OUT" "$CACHE"
 OUT=$(cd "$OUT" && pwd); CACHE=$(cd "$CACHE" && pwd)
@@ -38,8 +39,10 @@ if [ ! -f "$CACHE/$PKG" ] || [ "$(shasum -a 256 "$CACHE/$PKG" | cut -d' ' -f1)" 
     [ "$got" = "$SHA" ] || { rm -f "$CACHE/$PKG.tmp"; echo "sha256 不符：$got" >&2; exit 1; }
     mv "$CACHE/$PKG.tmp" "$CACHE/$PKG"
 fi
-[ -s "$CACHE/OFL-License.txt" ] || curl -fsSL -o "$CACHE/OFL-License.txt" "$OFL_URL"
-grep -q "SIL Open Font License" "$CACHE/OFL-License.txt" || { echo "OFL 许可证内容不对" >&2; exit 1; }
+if [ ! -s "$CACHE/OFL-License.txt" ] || [ "$(shasum -a 256 "$CACHE/OFL-License.txt" | cut -d' ' -f1)" != "$OFL_SHA" ]; then
+    curl -fsSL -o "$CACHE/OFL-License.txt" "$OFL_URL"
+fi
+[ "$(shasum -a 256 "$CACHE/OFL-License.txt" | cut -d' ' -f1)" = "$OFL_SHA" ] || { echo "OFL 许可证 sha256 不符" >&2; exit 1; }
 cp "$CACHE/OFL-License.txt" "$OUT/OFL-ResourceHanRounded.txt"
 
 docker run --rm -v "$CACHE":/cache -v "$OUT":/out -v "$ROOT":/src:ro -w /cache python:3.12-slim sh -c '
