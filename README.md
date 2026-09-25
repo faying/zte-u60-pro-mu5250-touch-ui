@@ -131,3 +131,7 @@ adb shell '/etc/init.d/zte_topsw_devui stop; sleep 1;
 
 [MIT](LICENSE)。litehtml（BSD）、LVGL（MIT）、FreeType（FTL/GPL 双授权）、stb（public domain）按各自
 许可证引入。仓库不打包任何 ZTE 字体（运行时从设备加载），也不包含 vendor blobs。
+
+## 致谢
+
+感谢 [33333s](https://github.com/33333s) 提供的参考仓库：[u60pro-devui](https://github.com/33333s/u60pro-devui)（本仓库的起点）和 [zwrt-datad](https://github.com/33333s/zwrt-datad)（界面读取的本机数据服务）。

@@ -8,8 +8,7 @@
 **设备上显示的名字统一用 CHILL**：功能页入口标题、
 页面文件 `ui/functions/chill.html`、配置文件 `chill.conf`、`style.css` 里的分节注释，
 源码模块也随之叫 `src/chill.c` / `include/chill.h`（符号前缀 `chill_`）。
-后端仍是 ShellCrash/mihomo，所以二进制里保留 `/etc/init.d/shellcrash restart`
-这一条真实服务命令——ShellCrash 自身装在 `/etc/ShellCrash`。
+后端是原生 mihomo，「重启内核」调 `/etc/init.d/chill restart`（由 CHILL 的监督脚本管）；设备上没有 CHILL 时才退回 `/etc/init.d/shellcrash restart`。
 令牌前缀 `SC_` 与动作前缀 `act:sc*` 是缩写，保持不变，
 这样只换二进制不换页面时的令牌兼容性也不受影响。
 

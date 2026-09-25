@@ -2,7 +2,7 @@
  * chill.c - "CHILL" 面板：ShellCrash / mihomo (clash API) status + control.
  *
  * 屏幕上、设备文件名里一律叫 CHILL，
- * 后端仍是 ShellCrash/mihomo，所以 restart 命令还是 /etc/init.d/shellcrash。
+ * 后端是原生 mihomo（/etc/init.d/chill 监督）；没装 CHILL 时退回 ShellCrash 的 init 脚本。
  *
  * SPDX-License-Identifier: MIT
  */
@@ -1141,7 +1141,8 @@ int chill_restart_core(void)
     int rc;
     if (!chill_restart_armed()) { s_restart_arm_ms = now_ms(); return 0; }
     s_restart_arm_ms = 0;
-    rc = system("/etc/init.d/shellcrash restart >/dev/null 2>&1");
+    rc = system("if [ -x /etc/init.d/chill ]; then /etc/init.d/chill restart; "
+                "else /etc/init.d/shellcrash restart; fi >/dev/null 2>&1");
     s_last_ms = 0;
     return rc == 0;
 }
