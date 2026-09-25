@@ -3833,7 +3833,7 @@ static void refresh_cb(lv_timer_t *t)
         if (!have_home) { hm = d.mcc; hn = d.mnc; }
         /* 只在设备自己也说漫游时才算「到了别家」：联通卡上电信共建基站这类国内共享不算 */
         int other = have_home && roam && d.mcc > 0 && (hm != d.mcc || hn != d.mnc);
-        home_logo_set(sim_usable_ui(d.sim_state) ? ui_operator_logo(hm, hn) : NULL);
+        home_logo_set(sim_usable_ui(d.sim_state) ? ui_sim_logo(hm, hn, d.sim_spn) : NULL);
         if (!sim_usable_ui(d.sim_state))
             set_label_fmt(s_cc_hero.st, c_st, sizeof c_st, "%s", "没有 SIM 卡");
         else
@@ -3845,13 +3845,23 @@ static void refresh_cb(lv_timer_t *t)
             if (nosvc || !rm[0]) where[0] = 0;
             else if (other) snprintf(where, sizeof where, "漫游到 %s", name);
             else snprintf(where, sizeof where, "%s", roam ? "漫游" : "本地");
-            if (s_cc_logo_w)   /* logo 就是卡的运营商，文字从制式写起 */
-                set_label_fmt(s_cc_hero.st, c_st, sizeof c_st, "%s%s%s",
-                              fine, fine[0] && where[0] ? " · " : "", where);
-            else               /* 没 logo：照旧 名字 · 制式 · 本地/漫游 */
-                set_label_fmt(s_cc_hero.st, c_st, sizeof c_st, "%s%s%s%s%s", name,
-                              fine[0] ? " · " : "", fine, where[0] ? " · " : "",
-                              other ? (roam ? "漫游" : "") : where);
+            /* 放不下时先丢制式的补充说明（「5G NSA · 4G 锚点」→「5G NSA」），
+             * 漫游到哪家比锚点重要；还放不下才由标签末尾「…」截断（9-26 真机反馈）。 */
+            char line[128];
+            for (int pass = 0; pass < 2; pass++) {
+                if (pass) { char *dot = strstr(fine, " · "); if (!dot) break; *dot = 0; }
+                if (s_cc_logo_w)   /* logo 就是卡的运营商，文字从制式写起 */
+                    snprintf(line, sizeof line, "%s%s%s", fine, fine[0] && where[0] ? " · " : "", where);
+                else               /* 没 logo：照旧 名字 · 制式 · 本地/漫游 */
+                    snprintf(line, sizeof line, "%s%s%s%s%s", name, fine[0] ? " · " : "", fine,
+                             where[0] ? " · " : "", other ? (roam ? "漫游" : "") : where);
+                int avail = s_cc_logo_w ? UK_CARD_W - 2 * UK_PAD - s_cc_logo_w - 6 : UK_CARD_W - 26 - UK_PAD;
+                lv_point_t sz;
+                lv_text_get_size(&sz, line, lv_obj_get_style_text_font(s_cc_hero.st, 0), 0, 0,
+                                 LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+                if (sz.x <= avail) break;
+            }
+            set_label_fmt(s_cc_hero.st, c_st, sizeof c_st, "%s", line);
         }
         set_label_fmt(s_cc_hero.big, c_big, sizeof c_big, "%s", shown.headline);
         if (nosvc) {

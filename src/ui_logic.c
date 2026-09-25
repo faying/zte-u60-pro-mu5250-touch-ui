@@ -84,6 +84,14 @@ const char *ui_operator_logo(int mcc, int mnc)
     return NULL;
 }
 
+const char *ui_sim_logo(int mcc, int mnc, const char *spn)
+{
+    char low[32] = "";
+    for (int i = 0; spn && spn[i] && i < 31; i++) low[i] = (char)tolower((unsigned char)spn[i]);
+    if (strstr(low, "cmlink")) return "cmlink";
+    return ui_operator_logo(mcc, mnc);
+}
+
 int ui_imsi_plmn(const char *imsi, int *mcc, int *mnc)
 {
     static const short mnc3[] = { 302, 310, 311, 312, 313, 314, 315, 316, 334, 338, 342, 344,

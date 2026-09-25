@@ -68,6 +68,9 @@ int main(void)
     CHECK("logo 460-00", ui_operator_logo(460, 0) && !strcmp(ui_operator_logo(460, 0), "china-mobile"));
     CHECK("logo 460-11", ui_operator_logo(460, 11) && !strcmp(ui_operator_logo(460, 11), "china-telecom"));
     CHECK("logo 311-480", ui_operator_logo(311, 480) && !strcmp(ui_operator_logo(311, 480), "verizon"));
+    CHECK("sim logo CMLink by SPN", !strcmp(ui_sim_logo(454, 12, "CMLink"), "cmlink"));
+    CHECK("sim logo CMHK without SPN", !strcmp(ui_sim_logo(454, 12, ""), "cmhk"));
+    CHECK("sim logo NULL spn", !strcmp(ui_sim_logo(460, 0, NULL), "china-mobile"));
     CHECK("logo CTM", ui_operator_logo(455, 1) && !strcmp(ui_operator_logo(455, 1), "ctm"));
     CHECK("logo 3 HK", ui_operator_logo(454, 3) && !strcmp(ui_operator_logo(454, 3), "three-hk"));
     {

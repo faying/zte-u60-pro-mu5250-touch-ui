@@ -95,6 +95,8 @@ typedef struct {
     /* sim.iccid / imsi / msisdn: the card the modem is using (a plain SIM or
      * the active profile of an eSIM card). iccid may end in an F pad. */
     char sim_iccid[24], sim_imsi[20], sim_msisdn[24];
+    /* sim.spn: the card's own brand name (EF_SPN), e.g. "CMLink"; "" = none or old datad */
+    char sim_spn[32];
 } devui_data_t;
 
 /* Start the backend transport and seed the first visible snapshot if available. */

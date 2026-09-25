@@ -388,6 +388,7 @@ static int parse_snapshot(devui_data_t *d, const char *buf)
         getstr(sec, "iccid", d->sim_iccid, sizeof d->sim_iccid);
         getstr(sec, "imsi", d->sim_imsi, sizeof d->sim_imsi);
         getstr(sec, "msisdn", d->sim_msisdn, sizeof d->sim_msisdn);
+        getstr(sec, "spn", d->sim_spn, sizeof d->sim_spn);
     }
 
     if (force_hsr_enabled()) d->hsr = 1;

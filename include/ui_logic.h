@@ -41,6 +41,9 @@ int ui_legacy_theme_value(int dark);
  * dark), NULL = no logo. Same table as manager web/src/lib/operatorLogo.ts,
  * minus slugs with no file. */
 const char *ui_operator_logo(int mcc, int mnc);
+/* The SIM's own logo: the card's brand name (SPN) first where one PLMN is shared
+ * by several brands (CMLink and CMHK are both 454-12), else by MCC/MNC. */
+const char *ui_sim_logo(int mcc, int mnc, const char *spn);
 
 /* The SIM's own network from its IMSI: MCC = 3 digits, MNC = 3 digits in
  * North America (MCC 302/310–316) and a few others, else 2. 0 = not an IMSI. */
