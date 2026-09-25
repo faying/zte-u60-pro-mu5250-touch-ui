@@ -1,137 +1,83 @@
-# ZTE U60 Pro (MU5250) Touch UI
+# ZTE U60 Pro（MU5250）触屏界面
 
-> **社区项目，与中兴（ZTE）无关联。** 基于 [33333s/u60pro-devui](https://github.com/33333s/u60pro-devui)（MIT），
-> 加上 Wei REN 后续的 CHILL 面板、eSIM 切换页、Tailscale 卡片和 LVGL 重写。本仓库从清理后的快照开始，
-> 不含原始提交历史；来源和删减内容见 [NOTICE](NOTICE)。管理网页与设备端 API 在配套仓库
-> [zte-u60-pro-mu5250-manager](https://github.com/faying/zte-u60-pro-mu5250-manager)。
+中兴 U60 Pro（MU5250）前面板 3.5 寸触屏的开源替代界面：LVGL + FreeType，直接画到 DRM/KMS，编成一个静态 aarch64 程序，另附屏幕守护进程和设备端的进程监督、Wi-Fi 兜底脚本。
 
-ZTE U60 Pro（MU5250）及同系 SDX 5G MiFi 设备前面板屏幕 UI 的 clean-room 开源替代实现，跑在标准
-Linux 的 **DRM/KMS** + **evdev** 之上，编译成单个静态 aarch64 二进制，独立于原厂 UI 运行。
+> 社区项目，和中兴（ZTE）没有关系，风险自负。
 
-```text
-后端 zwrt-datad ──▶ HTTP /state + SSE /events (127.0.0.1:9460) ──▶ u60pro-devui ──▶ 屏幕（DRM/KMS）
+| 首页 | 蜂窝 | 出口（深色） | 系统 |
+|---|---|---|---|
+| <img src="docs/images/touch-home.png" width="180" alt="首页"> | <img src="docs/images/touch-cellular.png" width="180" alt="蜂窝"> | <img src="docs/images/touch-exit-dark.png" width="180" alt="出口"> | <img src="docs/images/touch-system.png" width="180" alt="系统"> |
+
+（截图由离屏渲染测试用假数据生成。）
+
+## 三个仓库一起用
+
+| 仓库 | 设备上的角色 |
+|---|---|
+| [manager](https://github.com/faying/zte-u60-pro-mu5250-manager) | `zte-agent`（:9090）+ 管理网页 + 装机包 |
+| **[touch-ui](https://github.com/faying/zte-u60-pro-mu5250-touch-ui)**（本仓库） | 前面板触屏界面、屏幕守护进程、进程监督与 Wi-Fi 兜底脚本 |
+| [data-service](https://github.com/faying/zte-u60-pro-mu5250-data-service) | `zwrt-datad`：本机数据服务（`127.0.0.1:9460` 的 `/state` + SSE） |
+
+```
+zwrt-datad :9460 ──▶ 触屏界面 ──(eSIM 页)──▶ zte-agent :9090 ──▶ lpac ──▶ eUICC 卡
+浏览器 ──▶ zte-agent :9090（API + 管理网页）
 ```
 
-## 两套渲染器
-
-仓库里现在共存两套实现，`src/` 下同一批数据/业务模块（`chill.c`/`esim.c`/`tailscale.c`/`speedtest.c`
-等）分别接到两个前端：
-
-| | litehtml（原版） | LVGL（重写，默认构建） |
-|---|---|---|
-| 入口 | `src/htmlmain.c` + `src/devui_ext.c` | `src/main.c` + `src/ui.c` |
-| 界面来源 | `/data/plugins/u60pro-devui/ui/*.html`，**不用重编译，改 HTML 即生效** | 原生 C 布局，改界面需要重新编译 |
-| 排版 | [litehtml](https://github.com/litehtml/litehtml)（BSD）+ FreeType | [LVGL](https://github.com/lvgl/lvgl) v9.5（MIT）+ FreeType |
-| 构建 | `bash scripts/build.sh`（本机 Bootlin 工具链，见下） | `make`（默认目标，Docker 见下） |
-
-**如果你只想改界面文字/样式**，用 litehtml 版：跳到 [自定义界面](#自定义界面litehtml-版) 一节，改
-HTML 推到设备上就生效，不用编译。**如果你想改交互逻辑、加原生动画或对接新数据**，两边都要碰代码；
-LVGL 版是当前主线开发方向，细节和踩坑记录在 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)。
-
-## 构建
-
-### LVGL 版（默认，推荐用 Docker）
-
-```sh
-docker build --platform linux/amd64 -t u60-devui-build -f Dockerfile.build .
-docker run --rm --platform linux/amd64 -v "$(pwd)":/src -w /src u60-devui-build \
-  bash -c 'git clone --depth 1 --branch v9.5.0 https://github.com/lvgl/lvgl.git third_party/lvgl; make'
-```
-
-产物：`./u60pro-devui`（静态 aarch64 ELF）。本机没有交叉工具链也能跑，Dockerfile 里已经固化了
-Bootlin 工具链和 FreeType 版本。
-
-### litehtml 版（本机工具链）
-
-```sh
-bash scripts/_setup_toolchain.sh   # 一次性：Bootlin aarch64 musl 工具链
-bash scripts/_build_freetype.sh    # 一次性：静态 FreeType
-bash scripts/_build_litehtml.sh    # 一次性：静态 litehtml
-bash scripts/build.sh              # -> ./u60pro-devui(.stripped)
-```
-
-需要 POSIX shell（WSL / Linux / Git-Bash），不需要 root。也可以到
-[Releases](https://github.com/33333s/u60pro-devui/releases) 下载上游编译好的二进制。
-
-## 在设备上运行
-
-```sh
-adb shell 'mkdir -p /data/plugins/u60pro-devui/ui'
-adb push ui/*.html ui/*.css /data/plugins/u60pro-devui/ui/        # 仅 litehtml 版需要
-adb push u60pro-devui.stripped /data/plugins/u60pro-devui/u60pro-devui
-adb shell '/etc/init.d/zte_topsw_devui stop; sleep 1;
-           chmod 755 /data/plugins/u60pro-devui/u60pro-devui;
-           nohup /data/plugins/u60pro-devui/u60pro-devui >/tmp/devui.log 2>&1 &'
-```
-
-开机自启：把二进制放 `/data/plugins/u60pro-devui/`、后端 `zwrt-datad` 放
-`/data/plugins/zwrt-datad/`，再跑 `scripts/install-autostart.sh` —— 保留原厂 `zte_topsw_devui`
-做早期屏幕/触摸 bring-up，之后由屏幕守护进程 **u60-uid**（`/etc/init.d/u60-uid start`，见下文「可靠性」）
-接管；没装 u60-uid 时退回 `rc.local -> start.sh legacy`。细节见 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)。
-
-> **新构建先旁路文件名验证，稳定后再换正式位置**——见 manager 仓库 CLAUDE.md 的部署安全说明；
-> 一个启动即崩溃的构建直接覆盖正式位置，会把整机拖进重启循环。
-
-## 自定义界面（litehtml 版）
-
-程序本身不内置画面，运行时读 `/data/plugins/u60pro-devui/ui` 下的 HTML/CSS 渲染到屏幕。改 HTML、
-推到设备，约 1 秒内自动生效，不用重新编译。教程见 [docs/UI-GUIDE.md](docs/UI-GUIDE.md)。
-
-`ui/` 下每个顶层 `NN-名字.html` 一页，`style.css` 共享样式，`ui/subpages/` 是二级页面，
-`ui/functions/` 放自定义功能页。HTML 里 `{{令牌}}` 由程序替换成实时数据，`href="act:xxx"` 触发交互。
-自带四个顶层页：信号、更多功能、图表、系统设置。
+触屏界面从 `zwrt-datad` 读实时数据，eSIM、CHILL、APN 等操作交给 `zte-agent`。三样由 manager 仓库的装机包一起装到设备上。
 
 ## 功能
 
-- **新设计（LVGL 版）**：浅色 / 深色 / 跟随时间自动切换；数字用 Nunito（OFL，字体文件不在仓库里，
-  由装机包带到设备 `/data/plugins/u60pro-devui/fonts/`，没有时退回设备自带的 Roboto）；息屏时的触摸不会点到界面，
-  按电源键关的屏只认电源键，自动息屏的屏双击亮起。离屏渲染测试在 `tests/render`（`scripts/test/render/`）。
-- **CHILL**：mihomo 控制页——内核状态、实时速率、出口（代理 / 全局 / 直连·AI 不动 / 全部直连）、
-  档位（省电 / 标准 / 性能）、代理组切换、选节点、测延迟。见 [docs/CHILL.md](docs/CHILL.md)。
-- **eSIM**：通过 lpac 管理设备内 eUICC 卡的 profile。
-- **Tailscale**：状态卡片和开关。
-- **测速**：可选后端，支持循环测速。
-- **u60-uid**（取代 corner-wake）：屏幕的唯一主人——拉起或接管界面、崩了自动拉起并记告警、
-  连续 2 次没稳住就交还原厂界面（不会被固件升级成整机重启循环）、原厂界面在屏时长按右下角 3 秒回来。
+- 底部 5 个标签，按「我想做什么」分：**首页 · 蜂窝 · Wi-Fi · 出口 · 系统**。首页大字是一句结论（网络正常 / 信号偏弱 / 漫游中）。
+- 蜂窝：载波、信号、网络模式、APN、SIM 与 eSIM 切换（经 zte-agent 调 lpac）。
+- 出口：CHILL（mihomo）状态、出口模式、档位、节点；Tailscale。
+- 系统：亮度、息屏、浅色 / 深色 / 自动，电池与负载、告警详情。
+- 每次点击都有即时反馈；要确认的操作按两次。
+- **u60-uid**：屏幕唯一的主人。拉起或接管界面，崩了自动拉起并记告警；连续两次起不来就交还原厂界面（避免被固件升级成整机重启），长按屏幕右下角 3 秒回来。
+- `scripts/`：procd 监督（`supervise.sh` + `*.init`）、Wi-Fi 兜底看门狗兼告警短信（`u60-guard.sh`）、只读体检（`doctor.sh`）、配置备份（`config-backup.sh`）等，约定见 manager 仓库的 [docs/RELIABILITY.md](https://github.com/faying/zte-u60-pro-mu5250-manager/blob/main/docs/RELIABILITY.md)。
 
-## 可靠性（进程监督、Wi-Fi 兜底、告警）
+## 快速开始
 
-`scripts/` 里的这一组配合 [manager 仓库](https://github.com/faying/zte-u60-pro-mu5250-manager) 的 zte-agent 使用，
-文件约定见那边的 `docs/RELIABILITY.md`：
+装到设备上请看 manager 仓库的 **[快速上手](https://github.com/faying/zte-u60-pro-mu5250-manager/blob/main/docs/GETTING-STARTED.md)**：本仓库编出的程序由那边的装机包带上设备，已装好的设备用 `./install.sh devui` 更新。
 
-| 文件 | 作用 |
-|---|---|
-| `supervise.sh` + `zte-agent.init` / `zwrt-datad.init` | procd 监督：前台运行、转发信号、崩溃落盘到 `/data/crashlog/` 并告警 |
-| `u60-guard.sh` + `.init` | Wi-Fi 兜底看门狗：后台心跳停了且 AP 关着时强制开 Wi-Fi；告警短信的唯一发送方（限流） |
-| `u60-uid.init`（`src/uid.c`） | 屏幕守护进程，见上 |
-| `alert-lib.sh` | 写告警事件的唯一入口 |
-| `agent-auth.sh` | 后台密码迁移与三项鉴权检查 |
-| `doctor.sh` | 只读体检（开机同步、自动升级、各服务、心跳、Wi-Fi、告警……） |
-| `config-backup.sh` | 配置备份/校验/演练/恢复（只备份配置，不含运行状态） |
-| `power-sample.sh` | 耗电基线：电池与各程序 CPU 占比 |
-| `chaos.sh` | 真机混沌回归（逐个 `kill -9`、Wi-Fi 兜底） |
+## 构建
 
-`scripts/test/docker.sh` 在 busybox 容器里跑全部脚本测试（命令全部桩替换，不碰设备）。
+用 Docker（镜像里有 Bootlin aarch64 musl 工具链和 FreeType 源码；Apple 芯片的 Mac 走 amd64 模拟，能用但慢）：
 
-> 屏幕上几分钟没有任何界面，固件会整机重启。任何停掉一个界面的操作都要在同一步里起另一个。
+```sh
+docker build --platform linux/amd64 -t u60-devui-build -f Dockerfile.build .
+docker run --rm --platform linux/amd64 -v "$PWD":/src -w /src u60-devui-build bash -c '
+  set -e
+  [ -f third_party/lvgl/lvgl.h ] || git clone --depth 1 --branch v9.5.0 https://github.com/lvgl/lvgl.git third_party/lvgl
+  HOME=/opt bash scripts/_build_freetype.sh
+  make -j4 CROSS_COMPILE=aarch64-linux-
+  make CROSS_COMPILE=aarch64-linux- u60-uid
+  aarch64-linux-strip -o u60pro-devui.stripped u60pro-devui'
+```
+
+产物 `u60pro-devui.stripped`（界面）和 `u60-uid`（屏幕守护进程）。`scripts/build.sh` 编的是旧的 litehtml 版，装机包不收。
+
+测试：`scripts/test/docker.sh`（设备端脚本，busybox 容器里全部打桩）、`make uid-test` / `make ui-logic-test`、
+离屏渲染测试 `scripts/test/render/`（要设备字体，见脚本开头）。开发细节见 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)。
+
+> **新构建不要直接覆盖设备上的正式程序。** 一启动就崩的版本会被固件升级成整机重启循环；屏幕上几分钟没有界面，固件也会整机重启。
+> 先用别的文件名试跑，步骤见 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md#在真机上试新版本)。
 
 ## 文档
 
-- [docs/UI-GUIDE.md](docs/UI-GUIDE.md) — litehtml 版自定义界面教程
-- [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) — 架构、构建、数据模型、两套渲染器的踩坑记录
-- [docs/CHILL.md](docs/CHILL.md) — CHILL 面板设计与命名
-- [docs/SIGNAL-CARDS.md](docs/SIGNAL-CARDS.md) / [docs/modem.md](docs/modem.md) — 信号页与信令页字段口径
-- [docs/SPEEDTEST.md](docs/SPEEDTEST.md) / [docs/ESIM.md](docs/ESIM.md) / [docs/DEVUI-IPC.md](docs/DEVUI-IPC.md)
-- [docs/HARDWARE.md](docs/HARDWARE.md) — 设备硬件接口
-- [CHANGELOG.md](CHANGELOG.md) — 更新日志
-
-后端 `zwrt-datad`（轮询 `ubus`，提供 `GET /state` + SSE `/events`）: [33333s/zwrt-datad](https://github.com/33333s/zwrt-datad)。
-
-## 许可证
-
-[MIT](LICENSE)。litehtml（BSD）、LVGL（MIT）、FreeType（FTL/GPL 双授权）、stb（public domain）按各自
-许可证引入。仓库不打包任何 ZTE 字体（运行时从设备加载），也不包含 vendor blobs。
+- [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)：代码结构、构建、测试、真机试跑
+- [docs/HARDWARE.md](docs/HARDWARE.md)：屏幕、触摸、按键、背光等硬件接口
+- [docs/CHILL.md](docs/CHILL.md)：CHILL 页（mihomo 控制）
+- [docs/ESIM.md](docs/ESIM.md)：eSIM 切换页与 zte-agent 接口
+- [docs/SPEEDTEST.md](docs/SPEEDTEST.md)：可选测速后端
+- 设计规范：manager 仓库 [docs/DESIGN.md](https://github.com/faying/zte-u60-pro-mu5250-manager/blob/main/docs/DESIGN.md) §4
 
 ## 致谢
 
-感谢 [33333s](https://github.com/33333s) 提供的参考仓库：[u60pro-devui](https://github.com/33333s/u60pro-devui)（本仓库的起点）和 [zwrt-datad](https://github.com/33333s/zwrt-datad)（界面读取的本机数据服务）。
+- [33333s](https://github.com/33333s)：感谢 [u60pro-devui](https://github.com/33333s/u60pro-devui)（本仓库的起点）和 [zwrt-datad](https://github.com/33333s/zwrt-datad)（界面读取的本机数据服务）。
+- Wei REN：LVGL 重写、u60-uid、CHILL、eSIM、Tailscale、可靠性脚本。
+- [Jesther Silvestre](https://github.com/jesther-ai)：[open-u60-pro](https://github.com/jesther-ai/open-u60-pro)，zte-agent 的起点。
+
+## 许可证与免责声明
+
+[MIT](LICENSE)。LVGL（MIT）、FreeType（FTL / GPLv2）、stb（public domain）按各自许可证使用，详见 [NOTICE](NOTICE)。
+仓库不含任何中兴字体或厂商二进制。和中兴通讯没有关系，只在你自己的设备上使用。

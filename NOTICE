@@ -8,24 +8,28 @@ Licensed under the MIT License (see LICENSE).
 Sources
 -------
 - 33333s/u60pro-devui (MIT): https://github.com/33333s/u60pro-devui
-- Later changes by Wei REN (CHILL panel, on-screen eSIM switching page,
-  Tailscale status card), snapshot 4cb083e (2026-09-14).
+- Later changes by Wei REN: LVGL rewrite (default build), u60-uid screen
+  owner, CHILL panel, eSIM switching page, Tailscale card, supervision and
+  Wi-Fi safety-net scripts.
 
 This repository starts from a cleaned snapshot of that work, not from its git
-history. Removed before publishing:
-- third_party/lvgl/, Makefile, lv_conf.h, src/main.c, src/ui.c, include/ui.h
-  (legacy LVGL renderer, unused by scripts/build.sh since v0.2.0)
+history. Not published:
+- third_party/lvgl/ (clone LVGL v9.5.0 yourself; the Makefile tells you how)
 - ubus_list.txt (runtime dump of a real device)
 - scripts/remote-build.sh (tied to a private build machine)
+- CHANGELOG.md and development notes of the older litehtml renderer
+  (docs/UI-GUIDE.md, SIGNAL-CARDS.md, DEVUI-IPC.md, modem.md, REPO_BOUNDARY.md)
 Private host names in comments and docs were replaced with placeholders.
 
 Third-party components
 ----------------------
-- third_party/stb/stb_image.h: public domain / MIT (see the file header).
-- Build-time dependencies, not included: litehtml (BSD-3-Clause, docs/CHILL.md
-  uses tag v0.10) and FreeType (FreeType License or GPLv2). The statically
-  linked binary carries their licenses; ship their license texts with any
-  binary you distribute.
+- third_party/stb/: public domain / MIT (see the file headers).
+- Build-time dependencies, not included: LVGL v9.5.0 (MIT, with the small
+  patch in patches/), FreeType (FreeType License or GPLv2), and for the
+  legacy renderer litehtml (BSD-3-Clause). A statically linked binary carries
+  their code; ship their license texts with any binary you distribute.
+- No ZTE fonts or vendor binaries are included. docs/images/ are rendered by
+  the offscreen render test from made-up test data.
 
 Trademarks
 ----------
