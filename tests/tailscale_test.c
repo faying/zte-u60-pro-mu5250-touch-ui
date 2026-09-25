@@ -38,7 +38,7 @@ int main(void)
         "\"CurrentTailnet\":{\"Name\":\"me@example.com\",\"MagicDNSSuffix\":\"tail0.ts.net\"},"
         "\"Self\":{\"DNSName\":\"u60-pro.tail0.ts.net.\",\"HostName\":\"u60\",\"OS\":\"linux\","
         "\"TailscaleIPs\":[\"100.64.0.7\",\"fd7a:115c:a1e0::7\"],\"Relay\":\"hkg\",\"Online\":true,"
-        "\"PrimaryRoutes\":[\"10.0.66.0/24\"],\"KeyExpiry\":\"2027-03-01T08:00:00Z\"},"
+        "\"PrimaryRoutes\":[\"192.168.0.0/24\"],\"KeyExpiry\":\"2027-03-01T08:00:00Z\"},"
         "\"Peer\":{"
         "\"nodekey:a\":{\"DNSName\":\"macbook-pro.tail0.ts.net.\",\"OS\":\"macOS\",\"TailscaleIPs\":[\"100.64.0.2\"],"
         "\"Relay\":\"tok\",\"CurAddr\":\"203.0.113.5:41641\",\"RxBytes\":1234567890,\"TxBytes\":5555,"

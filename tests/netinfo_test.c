@@ -52,7 +52,7 @@ int main(void)
              "\"in_use\":{\"apn\":\"ctiot\",\"id\":\"auto109590\",\"in_use\":true,\"name\":\"China Telecom\",\"pdp\":3,\"selected\":false},"
              "\"manual\":[{\"apn\":\"ctnet\",\"id\":\"manu1\",\"in_use\":false,\"name\":\"CTNET\",\"pdp\":3,\"selected\":true}],\"mode\":\"auto\"},"
              "\"clients\":{\"at\":1790250000,\"list\":["
-             "{\"connected_secs\":360,\"down_bytes\":5000000000,\"down_rate\":250000,\"iface\":\"wlan1\",\"ip\":\"10.0.66.109\",\"mac\":\"02:00:00:00:00:0a\",\"name\":\"MacBook\",\"signal\":-47,\"up_bytes\":1000,\"up_rate\":null,"
+             "{\"connected_secs\":360,\"down_bytes\":5000000000,\"down_rate\":250000,\"iface\":\"wlan1\",\"ip\":\"192.168.0.109\",\"mac\":\"02:00:00:00:00:0a\",\"name\":\"MacBook\",\"signal\":-47,\"up_bytes\":1000,\"up_rate\":null,"
              "\"band\":\"5 GHz\",\"channel\":44,\"width_mhz\":160,\"wifi_gen\":6,\"link_down_mbps\":2402,\"link_up_mbps\":1201},"
              "{\"connected_secs\":5,\"down_bytes\":20,\"down_rate\":null,\"iface\":\"wlan1\",\"ip\":null,\"mac\":\"02:00:00:00:00:0b\",\"name\":null,\"signal\":null,\"up_bytes\":10,\"up_rate\":null,\"band\":null,\"wifi_gen\":null,\"link_down_mbps\":null}]},"
              "\"data_connected\":true,"

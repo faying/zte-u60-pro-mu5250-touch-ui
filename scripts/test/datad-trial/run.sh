@@ -194,7 +194,7 @@ aborted "uid gives up" "界面异常（u60-uid：.*giving up"
 rm -rf "$T"
 
 setup
-hook_at 1030 "echo 'daemon.err u60-uid[77]: u60-uid: u60pro-devui pid 3131 ended: killed by signal 11' >>$T/logread"
+hook_at 1030 "echo '2026-09-25T12:00:30 u60pro-devui pid 3131 ended: killed by signal 11' >>$T/logread"
 trial
 aborted "devui crash in uid log" "界面异常（u60-uid：.*ended: killed by signal 11"
 rm -rf "$T"

@@ -34,7 +34,8 @@
 #      (a failed or timed-out fetch counts as "not changed")
 #   2. test build crashed: `pidof zwrt-datad.test` is empty
 #   3. screen trouble: u60-uid logged a give-up / vendor-UI hand-over / an
-#      unrequested u60pro-devui exit (logread), or u60pro-devui is gone
+#      unrequested u60pro-devui exit (/tmp/u60-uid.log; the device has no
+#      logd, so logread is empty), or u60pro-devui is gone
 #   4. zte-agent netwatch errors went up. Signal, first that works:
 #      a. DT_NETWATCH_CMD, a command printing a counter (override);
 #      b. /tmp/netwatch.errors, zte-agent's own counter (one decimal line,
@@ -66,7 +67,8 @@ STATE_URL=${DT_STATE_URL:-http://127.0.0.1:9460/state}
 CURL=${DT_CURL:-/usr/bin/curl}
 PIDOF=${DT_PIDOF:-pidof}
 PS=${DT_PS:-ps w}
-LOGREAD=${DT_LOGREAD:-logread}
+UID_LOG=${DT_UID_LOG:-/tmp/u60-uid.log}
+LOGREAD=${DT_LOGREAD:-cat $UID_LOG}
 KILL=${DT_KILL:-kill}
 SLEEP=${DT_SLEEP:-sleep}
 DATE=${DT_DATE:-date}
@@ -95,8 +97,9 @@ INTERVAL=${DT_INTERVAL:-10}
 STALE=${DT_STALE:-30}
 WINDOW=${DT_WINDOW:-3600}
 
-# u60-uid's own wording (src/uid.c logf_, stderr → logread via procd).
-UID_BAD='u60-uid.*(giving up|starting the vendor UI|vendor UI on screen|u60pro-devui pid [0-9]+ ended:)'
+# u60-uid's own wording (src/uid.c logf_). Its file lines have no "u60-uid:"
+# prefix, so the pattern must not require one.
+UID_BAD='(giving up|starting the vendor UI|vendor UI on screen|u60pro-devui pid [0-9]+ ended:)'
 
 now() { cut -d. -f1 "$UPTIME_FILE"; }
 

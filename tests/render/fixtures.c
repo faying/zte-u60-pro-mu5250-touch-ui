@@ -84,7 +84,7 @@ static void fill_data(devui_data_t *d)
     for (int i = 0; i < nc; i++) {
         if (LONG_NAMES) cp(d->client[i].name, sizeof d->client[i].name, "a-very-long-hostname-for-a-laptop-0123456");
         else            cp(d->client[i].name, sizeof d->client[i].name, cn[i]);
-        snprintf(d->client[i].ip, sizeof d->client[i].ip, "10.0.66.%d", 20 + i);
+        snprintf(d->client[i].ip, sizeof d->client[i].ip, "192.168.0.%d", 20 + i);
         snprintf(d->client[i].mac, sizeof d->client[i].mac, "02:00:00:00:00:%02x", i);
     }
     d->client_n = nc; d->clients_total = nc; d->clients_wifi = nc; d->clients_lan = 0;
@@ -110,7 +110,7 @@ static void fill_data(devui_data_t *d)
     cp(d->wifi_enc, sizeof d->wifi_enc, "sae");
     d->wifi_enabled = 1;
     d->nfc_switch = 1;
-    cp(d->dhcp_ip, sizeof d->dhcp_ip, "10.0.66.1");
+    cp(d->dhcp_ip, sizeof d->dhcp_ip, "192.168.0.1");
     cp(d->dhcp_start, sizeof d->dhcp_start, "2");
     cp(d->dhcp_limit, sizeof d->dhcp_limit, "252");
     cp(d->dhcp_leasetime, sizeof d->dhcp_leasetime, "86400");
@@ -298,7 +298,7 @@ void tailscale_get_status(tailscale_status_t *o)
     cp(o->name, sizeof o->name, LONG_NAMES ? "u60-pro-living-room-router-with-a-long-name" : "u60-pro");
     cp(o->ip, sizeof o->ip, "100.64.0.7");
     cp(o->relay, sizeof o->relay, "hkg");
-    cp(o->routes, sizeof o->routes, "10.0.66.0/24");
+    cp(o->routes, sizeof o->routes, "192.168.0.0/24");
     o->peers = 5; o->peers_online = 3; o->active = 2; o->direct = 1;
     cp(o->ip6, sizeof o->ip6, "fd7a:115c:a1e0::7");
     cp(o->os, sizeof o->os, "linux");
@@ -526,7 +526,7 @@ const netinfo_t *netinfo_get(void)
         n->clients_known = 1;
         n->nclients = 2;
         cp(n->clients[0].name, 40, LONG_NAMES ? "a-very-long-hostname-for-a-laptop-0123456" : "MacBook");
-        cp(n->clients[0].ip, 20, "10.0.66.21");       /* = MacBook-Pro in the datad list, matched by IP */
+        cp(n->clients[0].ip, 20, "192.168.0.21");       /* = MacBook-Pro in the datad list, matched by IP */
         n->clients[0].down = 5368709120LL; n->clients[0].up = 314572800; n->clients[0].down_rate = 262144;
         n->clients[0].up_rate = 12288; n->clients[0].signal = -47;
         cp(n->clients[0].band, 12, "5 GHz"); n->clients[0].wifi_gen = 6; n->clients[0].link_down = 2402;

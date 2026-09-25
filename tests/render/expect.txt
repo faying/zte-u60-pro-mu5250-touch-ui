@@ -44,7 +44,7 @@ good	home	已连接
 good	home	100.64.0.7 · DERP hkg
 good	home	在线 3/5 · 直连 1 · 中继 1
 good	home	子网
-good	home	10.0.66.0/24
+good	home	192.168.0.0/24
 good	exit	Tailscale
 good	exit	已连接 · 在线 3/5
 abroad	home	国外
@@ -127,9 +127,9 @@ good	wifi	sae
 good	wifi	correct-horse-battery
 good	wifi	5/6 台
 good	wifi	iPhone
-good	wifi	10.0.66.20
+good	wifi	192.168.0.20
 good	wifi	Kindle
-good	wifi	10.0.66.1
+good	wifi	192.168.0.1
 good	wifi	2 · 共 252
 good	wifi	24 小时
 good	sms	2 条未读 · 共 3 条
@@ -245,7 +245,7 @@ good	tailscale	100.64.0.7
 good	tailscale	DERP
 good	tailscale	hkg
 good	tailscale	子网路由
-good	tailscale	10.0.66.0/24
+good	tailscale	192.168.0.0/24
 good	tailscale	节点（和本机之间）
 good	tailscale	fd7a:115c:a1e0::7
 good	tailscale	me@example.com
@@ -315,10 +315,7 @@ full-charging	scene	已固定
 full-charging	scene	点「自动」才恢复自动判断
 good	exit	203.0.113.24
 good	home	本地
-abroad	home	漫游中
 abroad	exit	中国台湾 台北市 · 中华电信
-abroad	home	漫游中
-abroad	home	按漫游计费，注意流量
 good	home	U60-Test · 6 台
 weak	home	RSRP -112：离基站远，靠窗通常好些
 datad-down	home	读不到数据
@@ -422,3 +419,10 @@ good	home	直连 · 中国 深圳
 abroad	home	直连 · 中国台湾 台北市
 good	exit	出口 IP
 good	exit	连接与测速
+# 电池预估（estimate.c 的文案，fixtures.c battery_est_text）
+good	system	约可用 14 小时 51 分
+lowbat	system	约可用 1 小时 32 分
+full-charging	system	已充满
+weak	system	已到上限，暂停充电
+long-names	system	约 3 小时 18 分充到 80%
+datad-down	system	预估
