@@ -48,6 +48,13 @@ const char *ui_operator_logo(int mcc, int mnc);
  * usable limit → just the start address. Bad ip/start → "". */
 void ui_dhcp_pool_text(const char *ip, const char *start, const char *limit, char *out, size_t n);
 
+/* datad /control reply → run the direct-ubus fallback? `head` is the first
+ * bytes of the reply (NUL-terminated), `n` what recv() returned. Yes for
+ * 503 (control queue full) and for a connection closed without a reply
+ * (n == 0: datad went away mid-request). No for anything else, including
+ * errors: datad ran it, running it again would not help. */
+int ui_control_should_fallback(const char *head, long n);
+
 /* ---- exec-restart guard (theme switch = exec /proc/self/exe) ---- */
 #define UI_EXEC_COOLDOWN_S   600   /* no automatic exec within 10 min of the last one        */
 #define UI_EXEC_WINDOW_S     3600  /* strikes are counted over an hour                          */

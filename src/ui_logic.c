@@ -629,3 +629,13 @@ void ui_dhcp_pool_text(const char *ip, const char *start, const char *limit, cha
     if (last > 254) last = 254;
     snprintf(out, n, "%.*s.%ld - %.*s.%ld", (int)(dot - ip), ip, st, (int)(dot - ip), ip, last);
 }
+
+int ui_control_should_fallback(const char *head, long n)
+{
+    const char *sp;
+
+    if (n == 0) return 1;
+    if (n < 0 || !head || strncmp(head, "HTTP/1.", 7)) return 0;
+    sp = strchr(head, ' ');
+    return sp && !strncmp(sp + 1, "503", 3);
+}

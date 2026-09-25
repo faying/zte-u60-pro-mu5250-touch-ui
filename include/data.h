@@ -124,7 +124,18 @@ int data_refresh_live(devui_data_t *d);
  * `index` is into the UI-visible snapshot (the one data_refresh() fills),
  * so callers pass the same index used to render the row.
  */
-int sms_mark_read(int index);        /* no-op if the row is already read */
+int sms_mark_read(int index);
+
+/*
+ * Device writes from the touch UI (T13): POST to datad's /control, same
+ * non-blocking path as the SMS actions. `fallback_cmd` is the old direct
+ * shell command (ending in " &"); it runs instead when datad cannot be
+ * reached, and later when datad answers 503 busy or hangs up without an
+ * answer. No answer within 5 s: nothing more happens (datad may still be
+ * doing it). Returns 1 if the request went to datad, 0 if the fallback ran.
+ */
+int data_control(const char *action, const char *params_json, const char *fallback_cmd);
+        /* no-op if the row is already read */
 int sms_delete_arm(int index);       /* long-press: arms the row, doesn't delete yet */
 int sms_delete_armed(int index);     /* is this row currently armed? (for the UI to paint) */
 int sms_delete_tap(int index);       /* tap while armed (past a short debounce): deletes */

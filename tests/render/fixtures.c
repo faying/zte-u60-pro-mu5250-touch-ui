@@ -271,6 +271,7 @@ int data_refresh(devui_data_t *d)
 }
 int  data_refresh_live(devui_data_t *d) { return data_refresh(d); }
 void data_set_pace(int panel_lit) { (void)panel_lit; }
+int  data_control(const char *a, const char *p, const char *fb) { (void)a; (void)p; (void)fb; return 1; }
 int  data_backend_fd(void) { return -1; }
 int  data_backend_init(void) { return 0; }
 int  data_backend_poll(uint32_t now_ms) { (void)now_ms; return 0; }

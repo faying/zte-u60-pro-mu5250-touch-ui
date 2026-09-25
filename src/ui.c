@@ -1229,10 +1229,14 @@ static void wifi_sw_cb(lv_event_t *e)
         s_aux_psm = on;
         break;
     }
-    case WSW_NFC:
+    case WSW_NFC: {
+        char params[48];
         snprintf(cmd, sizeof cmd,
             "ubus call zwrt_nfc zwrt_nfc_wifi_set '{\"switch\":%d,\"flag\":2}' >/dev/null 2>&1 &", on);
-        break;
+        snprintf(params, sizeof params, "{\"enabled\":%d,\"flag\":2}", on);
+        data_control("nfc.set", params, cmd);
+        return;
+    }
     default:
         return;
     }
@@ -1420,7 +1424,7 @@ static void dps_cb(lv_event_t *e)
     snprintf(cmd, sizeof cmd,
         "ubus call zwrt_bsp.charger set '{\"direct_power_supply_mode\":\"%s\"}' >/dev/null 2>&1 &",
         on ? "enable" : "disable");
-    system(cmd);
+    data_control("power.direct_supply.set", on ? "{\"enabled\":true}" : "{\"enabled\":false}", cmd);
     s_aux_dps = on;
     aux_hold(&s_hold_dps);
 }
@@ -1997,7 +2001,7 @@ static void band_group_apply(int gi)
 {
     band_group_t *g = &s_bg[gi];
     char csv[256] = "";
-    char cmd[400];
+    char cmd[400], params[300];
     int o = 0, n = 0;
 
     for (int i = 0; i < g->n; i++)
@@ -2013,8 +2017,10 @@ static void band_group_apply(int gi)
     else
         snprintf(cmd, sizeof cmd,
                  "ubus call zte_nwinfo_api nwinfo_set_nrbandlock '{\"nr5g_type\":\"%s\",\"nr5g_band\":\"%s\"}' >/dev/null 2>&1 &",
-                 gi == BG_SA ? "sa" : "nsa", csv);
-    system(cmd);
+                 gi == BG_SA ? "0" : "1", csv);   /* vendor web: SA "0", NSA "1" */
+    snprintf(params, sizeof params, "{\"bands\":\"%s\"}", csv);
+    data_control(gi == BG_LTE ? "band.set_lte" : gi == BG_SA ? "band.set_nr_sa" : "band.set_nr_nsa",
+                 params, cmd);
 }
 
 static void band_summary_set(int gi)
@@ -2090,7 +2096,11 @@ static void lk_mode_cb(lv_event_t *e)
         snprintf(cmd, sizeof cmd,
                  "ubus call zte_nwinfo_api nwinfo_set_netselect '{\"net_select\":\"%s\"}' >/dev/null 2>&1 &",
                  k_mode_v[idx]);
-        system(cmd);
+        {
+            char params[48];
+            snprintf(params, sizeof params, "{\"mode\":\"%s\"}", k_mode_v[idx]);
+            data_control("network.set_mode", params, cmd);
+        }
         s_lk_mode_arm = 0;
         s_lk_mode_pending = -1;
         s_lk_seg.sel = -2;   /* repaint from the modem's answer */
@@ -2113,7 +2123,8 @@ static void lk_reset_cb(lv_event_t *e)
     LV_UNUSED(e);
     if (s_lk_reset_arm && now - s_lk_reset_arm < 5000) {
         s_lk_reset_arm = 0;
-        system("ubus call zte_nwinfo_api nwinfo_reset_band_cell_setting '{}' >/dev/null 2>&1 &");
+        data_control("band.reset", "{}",
+                     "ubus call zte_nwinfo_api nwinfo_reset_band_cell_setting '{}' >/dev/null 2>&1 &");
         lv_label_set_text(s_lk_reset_lbl, "已恢复默认");
         uk_button_kind(s_lk_reset_btn, s_lk_reset_lbl, UK_BTN_DANGER);
         return;
@@ -3247,7 +3258,13 @@ static void md_sw_cb(lv_event_t *e)
         snprintf(cmd, sizeof cmd,
                  "ubus call zwrt_data set_wwaniface '{\"cid\":1,\"connect_mode\":1,\"enable\":%d,\"roam_enable\":%d}' >/dev/null 2>&1 &",
                  data, roam);
-        system(cmd);
+        {
+            /* datad reads the whole get_wwaniface object and only overrides
+             * these two, so the PDP settings the firmware keeps there stay. */
+            char params[48];
+            snprintf(params, sizeof params, "{\"enabled\":%d,\"roaming\":%d}", data, roam);
+            data_control("cellular.set", params, cmd);
+        }
         if (id == MD_DATA) { s_aux_data = on; aux_hold(&s_hold_data); }
         else               { s_aux_roam = on; aux_hold(&s_hold_roam); }
         s_md_arm = 0;

@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: MIT
  */
 #include "data.h"
+#include "ui_logic.h"
 #include "json.h"
 
 #include <arpa/inet.h>
@@ -889,21 +890,41 @@ int data_refresh_live(devui_data_t *d)
  */
 #define CONTROL_SLOTS     8
 #define CONTROL_LINGER_MS 5000
-static struct { int fd1; uint32_t t; } s_ctl[CONTROL_SLOTS];   /* fd1 = fd + 1, 0 = free */
+#define CONTROL_FB_MAX    400
+/* fd1 = fd + 1, 0 = free. fb = the direct-ubus command to run if datad turns
+ * the request away (see data_control), "" for none. */
+static struct { int fd1; uint32_t t; char action[40]; char fb[CONTROL_FB_MAX]; } s_ctl[CONTROL_SLOTS];
+
+static void control_fallback(const char *action, const char *fb, const char *why)
+{
+    fprintf(stderr, "ui: control %s: %s, running it directly\n", action, why);
+    if (fb && fb[0]) (void)system(fb);
+}
 
 static void control_reap(uint32_t now)
 {
     for (int i = 0; i < CONTROL_SLOTS; i++) {
         int fd = s_ctl[i].fd1 - 1;
         if (fd < 0) continue;
-        if (wait_fd_ready(fd, 0, 0) > 0 || now - s_ctl[i].t >= CONTROL_LINGER_MS) {
+        if (wait_fd_ready(fd, 0, 0) > 0) {
+            char head[40];
+            ssize_t n = recv(fd, head, sizeof head - 1, MSG_DONTWAIT);
+            head[n > 0 ? n : 0] = 0;
+            if (s_ctl[i].fb[0] && ui_control_should_fallback(head, (long)n))
+                control_fallback(s_ctl[i].action, s_ctl[i].fb, n > 0 ? "datad busy" : "no reply");
+            close(fd);
+            s_ctl[i].fd1 = 0;
+        } else if (now - s_ctl[i].t >= CONTROL_LINGER_MS) {
+            /* No answer yet: datad may still be doing it, so no fallback
+             * (running it twice could re-register the modem twice). */
+            if (s_ctl[i].fb[0]) fprintf(stderr, "ui: control %s: no reply in %d ms\n", s_ctl[i].action, CONTROL_LINGER_MS);
             close(fd);
             s_ctl[i].fd1 = 0;
         }
     }
 }
 
-static void control_park(int fd)
+static void control_park(int fd, const char *action, const char *fb)
 {
     int oldest = 0;
     for (int i = 0; i < CONTROL_SLOTS; i++) {
@@ -913,22 +934,38 @@ static void control_park(int fd)
     if (s_ctl[oldest].fd1) close(s_ctl[oldest].fd1 - 1);   /* all busy: the oldest has had its chance */
     s_ctl[oldest].fd1 = fd + 1;
     s_ctl[oldest].t = mono_ms();
+    snprintf(s_ctl[oldest].action, sizeof s_ctl[oldest].action, "%s", action);
+    snprintf(s_ctl[oldest].fb, sizeof s_ctl[oldest].fb, "%s", fb ? fb : "");
 }
 
-static void sms_control_send(const char *action, const char *params_json)
+/* Returns 1 if the request reached datad (parked), 0 if not. */
+static int control_send(const char *action, const char *params_json, const char *fb)
 {
     /* Room for "mark all read": up to DEVUI_SMS_MAX ids in one request. */
     char body[DEVUI_SMS_MAX * 12 + 96], req[DEVUI_SMS_MAX * 12 + 448];
     int fd = connect_tcp(DEVUI_BACKEND_HOST, DEVUI_BACKEND_PORT, 800);
-    if (fd < 0) return;
+    if (fd < 0) return 0;
     snprintf(body, sizeof body, "{\"action\":\"%s\",\"params\":%s}", action, params_json);
     snprintf(req, sizeof req,
              "POST /control HTTP/1.1\r\nHost: %s:%d\r\n"
              "Content-Type: application/json\r\nContent-Length: %d\r\n"
              "Connection: close\r\n\r\n%s",
              DEVUI_BACKEND_HOST, DEVUI_BACKEND_PORT, (int)strlen(body), body);
-    if (send_all(fd, req, strlen(req), 800)) control_park(fd);
-    else close(fd);
+    if (send_all(fd, req, strlen(req), 800)) { control_park(fd, action, fb); return 1; }
+    close(fd);
+    return 0;
+}
+
+static void sms_control_send(const char *action, const char *params_json)
+{
+    (void)control_send(action, params_json, NULL);
+}
+
+int data_control(const char *action, const char *params_json, const char *fallback_cmd)
+{
+    if (control_send(action, params_json, fallback_cmd)) return 1;
+    control_fallback(action, fallback_cmd, "datad unreachable");
+    return 0;
 }
 
 #define DEVUI_PACE_LIT_MS  1000   /* = start.sh's -i 1000 */

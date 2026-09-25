@@ -509,6 +509,16 @@ int main(void)
         CHECK("pool: garbage start → empty", b[0] == 0);
     }
 
+    /* datad /control reply → direct-ubus fallback (T13 writes) */
+    CHECK("control: 200 → no fallback", !ui_control_should_fallback("HTTP/1.1 200 OK\r\n", 17));
+    CHECK("control: 503 busy → fallback", ui_control_should_fallback("HTTP/1.1 503 Service Unavailable", 32));
+    CHECK("control: 400 invalid → no fallback", !ui_control_should_fallback("HTTP/1.1 400 Bad Request", 24));
+    CHECK("control: 500 failed → no fallback", !ui_control_should_fallback("HTTP/1.1 500 Internal", 21));
+    CHECK("control: closed without reply → fallback", ui_control_should_fallback("", 0));
+    CHECK("control: recv error → no fallback", !ui_control_should_fallback("", -1));
+    CHECK("control: garbage → no fallback", !ui_control_should_fallback("xx 503", 6));
+    CHECK("control: HTTP/1.0 503 → fallback", ui_control_should_fallback("HTTP/1.0 503 x", 14));
+
     printf("passed %d, failed %d\n", pass, fail);
     return fail ? 1 : 0;
 }
