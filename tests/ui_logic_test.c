@@ -68,7 +68,15 @@ int main(void)
     CHECK("logo 460-00", ui_operator_logo(460, 0) && !strcmp(ui_operator_logo(460, 0), "china-mobile"));
     CHECK("logo 460-11", ui_operator_logo(460, 11) && !strcmp(ui_operator_logo(460, 11), "china-telecom"));
     CHECK("logo 311-480", ui_operator_logo(311, 480) && !strcmp(ui_operator_logo(311, 480), "verizon"));
-    CHECK("logo 3 HK has none", ui_operator_logo(454, 3) == NULL);
+    CHECK("logo CTM", ui_operator_logo(455, 1) && !strcmp(ui_operator_logo(455, 1), "ctm"));
+    CHECK("logo 3 HK", ui_operator_logo(454, 3) && !strcmp(ui_operator_logo(454, 3), "three-hk"));
+    {
+        int c = 0, n = 0;
+        CHECK("imsi 460 2-digit", ui_imsi_plmn("460011234567890", &c, &n) && c == 460 && n == 1);
+        CHECK("imsi 310 3-digit", ui_imsi_plmn("310260123456789", &c, &n) && c == 310 && n == 260);
+        CHECK("imsi 466-92", ui_imsi_plmn("466920123456789", &c, &n) && c == 466 && n == 92);
+        CHECK("imsi empty", !ui_imsi_plmn("", &c, &n) && !ui_imsi_plmn(NULL, &c, &n));
+    }
     CHECK("logo unknown", ui_operator_logo(0, 0) == NULL && ui_operator_logo(234, 15) == NULL);
 
     puts("exec guard");

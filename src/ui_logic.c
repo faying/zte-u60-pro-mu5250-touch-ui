@@ -65,8 +65,13 @@ const char *ui_operator_logo(int mcc, int mnc)
         {460, 1, "china-unicom"}, {460, 6, "china-unicom"}, {460, 9, "china-unicom"},
         {460, 3, "china-telecom"}, {460, 5, "china-telecom"}, {460, 11, "china-telecom"},
         {454, 0, "csl"}, {454, 2, "csl"}, {454, 10, "csl"}, {454, 18, "csl"},
+        {454, 3, "three-hk"}, {454, 4, "three-hk"},
         {454, 6, "smartone"}, {454, 15, "smartone"},
         {454, 12, "cmhk"}, {454, 13, "cmhk"},
+        {454, 7, "china-unicom"}, {454, 16, "csl"}, {454, 19, "csl"}, {454, 20, "csl"},
+        {454, 31, "china-telecom"},
+        {455, 5, "three-hk"}, {455, 7, "china-telecom"},
+        {455, 1, "ctm"}, {455, 4, "ctm"},
         {466, 92, "chunghwa"}, {466, 1, "fetnet"}, {466, 97, "taiwan-mobile"},
         {440, 10, "docomo"}, {440, 20, "softbank"}, {440, 11, "rakuten"},
         {440, 50, "au"}, {440, 51, "au"}, {440, 52, "au"}, {440, 53, "au"}, {440, 54, "au"},
@@ -77,6 +82,21 @@ const char *ui_operator_logo(int mcc, int mnc)
     for (size_t i = 0; i < sizeof k / sizeof k[0]; i++)
         if (k[i].mcc == mcc && k[i].mnc == mnc) return k[i].slug;
     return NULL;
+}
+
+int ui_imsi_plmn(const char *imsi, int *mcc, int *mnc)
+{
+    static const short mnc3[] = { 302, 310, 311, 312, 313, 314, 315, 316, 334, 338, 342, 344,
+                                  346, 348, 354, 356, 358, 360, 365, 376, 405, 708, 722, 732 };
+    if (!imsi) return 0;
+    for (int i = 0; i < 6; i++) if (imsi[i] < '0' || imsi[i] > '9') return 0;
+    int c = (imsi[0] - '0') * 100 + (imsi[1] - '0') * 10 + (imsi[2] - '0');
+    int n = (imsi[3] - '0') * 10 + (imsi[4] - '0');
+    for (size_t i = 0; i < sizeof mnc3 / sizeof mnc3[0]; i++)
+        if (mnc3[i] == c) { n = n * 10 + (imsi[5] - '0'); break; }
+    if (c < 200) return 0;
+    *mcc = c; *mnc = n;
+    return 1;
 }
 
 /* ---- exec guard ---- */

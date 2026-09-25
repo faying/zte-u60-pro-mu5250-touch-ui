@@ -530,9 +530,18 @@ static int parse_ca(const char *s, ca_carrier_t *out, int max)
     char *save = NULL;
     for (char *rec = strtok_r(buf, ";", &save); rec && n < max; rec = strtok_r(NULL, ";", &save)) {
         double idx, pci, unk1, band, arfcn, bw, unk2, rsrp, rsrq, sinr, rssi;
-        if (sscanf(rec, "%lf,%lf,%lf,%lf,%lf,%lf,%lf,%lf,%lf,%lf,%lf",
-                   &idx, &pci, &unk1, &band, &arfcn, &bw, &unk2,
-                   &rsrp, &rsrq, &sinr, &rssi) != 11)
+        int nf = sscanf(rec, "%lf,%lf,%lf,%lf,%lf,%lf,%lf,%lf,%lf,%lf,%lf",
+                        &idx, &pci, &unk1, &band, &arfcn, &bw, &unk2,
+                        &rsrp, &rsrq, &sinr, &rssi);
+        if (nf == 5) {
+            /* 旧的 5 段 lteca「PCI,band,?,EARFCN,bw」（2026-09-26 真机 B27：
+             * "263,3,0,1750,20;"）：没有信号值，调用方用 lte_* 补主载波 */
+            out[n] = (ca_carrier_t){ .pci = (int)idx, .band = (int)pci, .arfcn = (long)band,
+                                     .bw = (int)arfcn, .active = 1 };
+            n++;
+            continue;
+        }
+        if (nf != 11)
             continue;
         (void)idx; (void)unk1; (void)unk2; (void)rssi;
         out[n].pci = (int)pci;
@@ -847,7 +856,7 @@ static void home_logo_set(const char *slug)
         char src[164];
         snprintf(src, sizeof src, "A:%s", path);
         lv_image_header_t hd;
-        if (lv_image_decoder_get_info(src, &hd) == LV_RESULT_OK && hd.w > 0 && hd.w <= 64 && hd.h <= 18) {
+        if (lv_image_decoder_get_info(src, &hd) == LV_RESULT_OK && hd.w > 0 && hd.w <= 96 && hd.h <= 18) {
             lv_image_set_src(s_cc_logo, src);
             lv_obj_set_style_image_opa(s_cc_logo, T->dark ? 217 : LV_OPA_COVER, 0);
             s_cc_logo_w = hd.w; s_cc_logo_h = hd.h;
@@ -855,40 +864,19 @@ static void home_logo_set(const char *slug)
     }
 }
 
-/* 2026-09-26 真机反馈：logo 占着顶行右边，「中国联通 · 5G NSA · 4G 锚点 · 本地」被截断，
- * 大字和右边「信号强 / 干扰小」之间却空着。所以先放大字后面、和大字竖直居中；放不下
- * （结论字多、右边字宽）才回顶行右边，顶行让出 logo 宽度。 */
+/* 2026-09-26 真机反馈两轮后：logo 放顶行最左，代替状态点和运营商名（颜色整块底色已经
+ * 在说），后面接「5G SA · 漫游」；没有 logo 时照旧是点 + 名字。 */
 static void home_logo_place(void)
 {
-    const int cw = UK_CARD_W, st_full = UK_CARD_W - 26 - UK_PAD;
+    /* 量过像素（9-26）：左边从 UK_PAD 起，和右边「信号强」离卡边一样远；logo 竖直中心
+     * 对齐顶行汉字的字面中心（卡内 y≈16，不是标签框中心 19，否则 logo 偏低 2～3 像素）。 */
     int w = s_cc_logo_w, h = s_cc_logo_h;
-    if (!w) {
-        uk_show(s_cc_logo, 0);
-        lv_obj_set_width(s_cc_hero.st, st_full);
-        return;
-    }
-    lv_obj_update_layout(s_cc_hero.big);
-    lv_obj_update_layout(s_cc_hero.r1);
-    int bx = lv_obj_get_x(s_cc_hero.big) + lv_obj_get_width(s_cc_hero.big);
-    int by = lv_obj_get_y(s_cc_hero.big), bh = lv_obj_get_height(s_cc_hero.big);
-    int x = bx + 12, y = by + (bh - h) / 2;
-    int limit = cw;
-    if (lv_label_get_text(s_cc_hero.r1)[0]) limit = lv_obj_get_x(s_cc_hero.r1);
-    const char *t2 = lv_label_get_text(s_cc_hero.r2);
-    if (t2[0] && y + h > lv_obj_get_y(s_cc_hero.r2)) {
-        lv_point_t sz;
-        lv_text_get_size(&sz, t2, lv_obj_get_style_text_font(s_cc_hero.r2, 0), 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
-        int r2x = cw - UK_PAD - sz.x;
-        if (r2x < limit) limit = r2x;
-    }
-    if (x + w + 10 <= limit) {
-        lv_obj_set_pos(s_cc_logo, x, y);
-        lv_obj_set_width(s_cc_hero.st, st_full);
-    } else {
-        lv_obj_set_pos(s_cc_logo, cw - UK_PAD - w, 10 + (18 - h) / 2);
-        lv_obj_set_width(s_cc_hero.st, st_full - w - 8);
-    }
-    uk_show(s_cc_logo, 1);
+    int x = w ? UK_PAD + w + 6 : 26;
+    if (w) lv_obj_set_pos(s_cc_logo, UK_PAD, 16 - h / 2);
+    uk_show(s_cc_logo, w > 0);
+    uk_show(s_cc_hero.dot, w == 0);
+    lv_obj_set_x(s_cc_hero.st, x);
+    lv_obj_set_width(s_cc_hero.st, UK_CARD_W - x - UK_PAD);
 }
 
 static void build_home(lv_obj_t *t)
@@ -902,11 +890,12 @@ static void build_home(lv_obj_t *t)
     lv_obj_t *c = s_cell_card;
     uk_hero(&s_cc_hero, c, UF.cj24b);
     uk_show(s_cc_hero.unit, 0);
+    lv_obj_set_x(s_cc_hero.big, UK_PAD);   /* 左右边距一致（右边是 UK_PAD） */
     s_cc_hint = uk_label_w(c, UF.cj13, T->t2, UK_PAD, UK_HERO_H + 10, UK_CARD_W - 2 * UK_PAD, 1, "");
     /* 顶行（运营商 · 制式 · 本地/漫游）名字可能很长：限宽，末尾「…」 */
     lv_obj_set_size(s_cc_hero.st, UK_CARD_W - 26 - UK_PAD, 18);
     lv_label_set_long_mode(s_cc_hero.st, LV_LABEL_LONG_MODE_DOTS);
-    /* 运营商 logo（2026-09-26）：顶行右边本来空着，透明底 PNG，高 14、宽 ≤64 */
+    /* 运营商 logo（2026-09-26）：顶行右边本来空着，透明底 PNG，高 16、宽 ≤96 */
     s_cc_logo = lv_image_create(c);
     lv_obj_remove_flag(s_cc_logo, LV_OBJ_FLAG_CLICKABLE);
     uk_show(s_cc_logo, 0);
@@ -3711,14 +3700,16 @@ static void refresh_cb(lv_timer_t *t)
     s_ever_valid = 1;
     s_last_valid_wall = time(NULL);
     {
-        static char c_rtop[48], c_big[16], c_r1[20], c_r2[96], c_st[48];
+        static char c_rtop[48], c_big[16], c_r1[20], c_r2[96], c_st[128];
         static char c_ca_band[CA_SLOTS][16], c_ca_bw[CA_SLOTS][12], c_ca_rsrp[CA_SLOTS][12],
                     c_ca_sinr[CA_SLOTS][12], c_ca_pci[CA_SLOTS][16], c_ca_arfcn[CA_SLOTS][24],
                     c_ca_ina[CA_SLOTS][24], c_ca_info[CA_SLOTS][40];
         ca_carrier_t ca[CA_SLOTS];
         char pfx[CA_SLOTS];
         int ca_n = 0;
-        if (d.nr_rsrp != 0) {
+        /* NSA 空闲时 nr5g_rsrp 仍有测量值，但 NR 腿没加上（没频段、没带宽、没频点）：
+         * 那不是在用的载波，不列（2026-09-26 真机显示成「↓ - + B3」） */
+        if (d.nr_rsrp != 0 && (d.nr_band[0] || atoi(d.nr_bw) > 0 || d.nr_channel > 0)) {
             ca[0].band = 0;   /* band name comes from d.nr_band below */
             ca[0].pci = d.nr_pci;
             ca[0].arfcn = d.nr_channel;
@@ -3736,7 +3727,16 @@ static void refresh_cb(lv_timer_t *t)
         ui_rat_t rat = ui_rat(d.net_type);
         if (ca_n < CA_SLOTS) {
             int lte_n = parse_ca(d.lteca, ca + ca_n, CA_SLOTS - ca_n);
-            for (int i = 0; i < lte_n; i++) pfx[ca_n + i] = 'B';
+            for (int i = 0; i < lte_n; i++) {
+                pfx[ca_n + i] = 'B';
+                /* 5 段格式没有信号值：主载波（PCI 对得上）用 lte_* 补 */
+                ca_carrier_t *c = &ca[ca_n + i];
+                if (c->rsrp == 0 && c->pci == d.lte_pci && d.lte_rsrp != 0) {
+                    c->rsrp = d.lte_rsrp;
+                    c->rsrq = d.lte_rsrq;
+                    c->sinr = atof(d.lte_snr[0] ? d.lte_snr : "0");
+                }
+            }
             ca_n += lte_n;
             /* 4G without carrier aggregation (and an NSA anchor the modem does
              * not list in lteca): the LTE serving cell is only in lte_*. */
@@ -3826,20 +3826,33 @@ static void refresh_cb(lv_timer_t *t)
         if (tone != s_cc_tone) { s_cc_tone = tone; uk_hero_tone(&s_cc_hero, tone); }
         const char *hint = shown.hint;
         /* 顶行：谁的网 · 什么网 · 本地/漫游 */
+        /* 左上角是卡本来的运营商（IMSI 算出来），不是现在所在的网；漫游到别家时
+         * 顶行写「漫游到 <那家>」，同一家（或读不到卡的 IMSI）就不写名字。 */
+        int hm = 0, hn = 0;
+        int have_home = ui_imsi_plmn(d.sim_imsi, &hm, &hn);
+        if (!have_home) { hm = d.mcc; hn = d.mnc; }
+        /* 只在设备自己也说漫游时才算「到了别家」：联通卡上电信共建基站这类国内共享不算 */
+        int other = have_home && roam && d.mcc > 0 && (hm != d.mcc || hn != d.mnc);
+        home_logo_set(sim_usable_ui(d.sim_state) ? ui_operator_logo(hm, hn) : NULL);
         if (!sim_usable_ui(d.sim_state))
             set_label_fmt(s_cc_hero.st, c_st, sizeof c_st, "%s", "没有 SIM 卡");
         else
         {
             /* 顶栏已经是简写（5G-A / 4G+ …），这里写更细的：怎么组网、哪种技术 */
-            char fine[32];
+            char fine[32], where[64];
             ui_rat_long(d.net_type, act_lte, fine, sizeof fine);
-            set_label_fmt(s_cc_hero.st, c_st, sizeof c_st, "%s%s%s%s",
-                          d.operator_name[0] ? d.operator_name : "未注册",
-                          fine[0] ? " · " : "", fine,
-                          !rm[0] || nosvc ? "" : roam ? " · 漫游" : " · 本地");
+            const char *name = d.operator_name[0] ? d.operator_name : "未注册";
+            if (nosvc || !rm[0]) where[0] = 0;
+            else if (other) snprintf(where, sizeof where, "漫游到 %s", name);
+            else snprintf(where, sizeof where, "%s", roam ? "漫游" : "本地");
+            if (s_cc_logo_w)   /* logo 就是卡的运营商，文字从制式写起 */
+                set_label_fmt(s_cc_hero.st, c_st, sizeof c_st, "%s%s%s",
+                              fine, fine[0] && where[0] ? " · " : "", where);
+            else               /* 没 logo：照旧 名字 · 制式 · 本地/漫游 */
+                set_label_fmt(s_cc_hero.st, c_st, sizeof c_st, "%s%s%s%s%s", name,
+                              fine[0] ? " · " : "", fine, where[0] ? " · " : "",
+                              other ? (roam ? "漫游" : "") : where);
         }
-        /* 无服务时顶行右边写「已 N 分钟」，logo 让开 */
-        home_logo_set(sim_usable_ui(d.sim_state) && !nosvc ? ui_operator_logo(d.mcc, d.mnc) : NULL);
         set_label_fmt(s_cc_hero.big, c_big, sizeof c_big, "%s", shown.headline);
         if (nosvc) {
             uint32_t mins = (lv_tick_get() - nosig_since) / 60000;

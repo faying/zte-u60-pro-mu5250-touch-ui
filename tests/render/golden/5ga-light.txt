@@ -2,7 +2,7 @@ charts-collecting.0 3ce4228f67c10b90
 charts-collecting.1 cd0a71b286a4027d
 charts-collecting.2 fee90ad0057abc6a
 charts-collecting.3 3f6c2d943ef1f732
-home.0 649ab63695564ef0
+home.0 ea72e51ae4aba9f8
 home.1 a40d163f064de949
 cellular.0 cd27acbdb27d7a5d
 cellular.1 c6fbef26728321e4
@@ -43,7 +43,7 @@ perf.0 1dfc6de5534c2844
 net.0 50a12f520be13200
 scene.0 17b69bbe671db096
 apn.0 c3438aa91327af77
-power-menu.0 ff7443a53133f02a
+power-menu.0 f2e8e71bdab7892a
 system-vendor-armed.0 3ce4228f67c10b90
 system-vendor-armed.1 c7dc267c2dae6338
 system-vendor-armed.2 686ce1c6c9d2c9bc

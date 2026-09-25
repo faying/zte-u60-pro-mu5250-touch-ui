@@ -39,8 +39,12 @@ int ui_legacy_theme_value(int dark);
 /* Operator logo for the home card (2026-09-26): MCC/MNC of the network you
  * are on → file slug under operator-logos/ (<slug>.png, <slug>-w.png for
  * dark), NULL = no logo. Same table as manager web/src/lib/operatorLogo.ts,
- * minus slugs with no usable file (three-hk is unreadable at 14 px). */
+ * minus slugs with no file. */
 const char *ui_operator_logo(int mcc, int mnc);
+
+/* The SIM's own network from its IMSI: MCC = 3 digits, MNC = 3 digits in
+ * North America (MCC 302/310–316) and a few others, else 2. 0 = not an IMSI. */
+int ui_imsi_plmn(const char *imsi, int *mcc, int *mnc);
 
 /* DHCP pool text for the Wi-Fi page from datad's /state dhcp block:
  * ip "192.168.0.1", start "100" (host number; a full address also works),
