@@ -114,6 +114,9 @@ static void fill_data(devui_data_t *d)
     cp(d->dhcp_start, sizeof d->dhcp_start, "2");
     cp(d->dhcp_limit, sizeof d->dhcp_limit, "252");
     cp(d->dhcp_leasetime, sizeof d->dhcp_leasetime, "86400");
+    d->dps_mode  = 0;                    /* direct power supply off */
+    d->cell_data = 1;                    /* mobile data on */
+    d->cell_roam = IS(RT_ABROAD) ? 1 : 0;
 
     d->rx_speed = 1532000; d->tx_speed = 188000;
     d->rx_bytes = 1377107391; d->tx_bytes = 399834190;
@@ -260,6 +263,7 @@ int data_refresh(devui_data_t *d)
     if (!up) {
         memset(d, 0, sizeof *d);
         d->cpu_usage = -1;
+        d->dps_mode = d->cell_data = d->cell_roam = -1;
         return 0;
     }
     fill_data(d);

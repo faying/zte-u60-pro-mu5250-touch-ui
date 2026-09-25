@@ -67,6 +67,11 @@ typedef struct {
     /* dhcp / lan */
     char dhcp_ip[24], dhcp_start[24], dhcp_limit[8], dhcp_leasetime[12];
 
+    /* power.direct_supply.mode and interfaces.cellular.{enable,roam_enable}:
+     * 1 / 0, -1 = not in this /state. The touch UI used to read these with
+     * its own ubus calls (T13: datad is the only periodic ubus reader). */
+    int dps_mode, cell_data, cell_roam;
+
     /* traffic (bytes, bytes/s). day_ and month_ fields are the firmware's
      * own zwrt_data ubus counters (already aggregated by calendar day/
      * month, persisted across reboots in UCI) — not derived from

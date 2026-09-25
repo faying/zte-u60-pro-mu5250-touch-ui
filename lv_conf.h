@@ -61,6 +61,16 @@
 #define LV_FREETYPE_USE_LVGL_PORT 0
 #define LV_FREETYPE_CACHE_FT_GLYPH_CNT 256
 
+/* Operator logo on the home card (2026-09-26): transparent PNGs read from
+ * /data/plugins/u60pro-devui/operator-logos/ through the POSIX fs driver
+ * ("A:/abs/path"). The cache keeps decoded logos (~3.5 KB each) so a
+ * redraw does not re-decode; nothing else in the UI uses images. */
+#define LV_USE_FS_POSIX 1
+#define LV_FS_POSIX_LETTER 'A'
+#define LV_FS_POSIX_PATH ""
+#define LV_USE_LODEPNG 1
+#define LV_CACHE_DEF_SIZE (64 * 1024)
+
 /* No bundled demos/examples in the binary. */
 #define LV_USE_DEMO_WIDGETS 0
 #define LV_BUILD_EXAMPLES   0

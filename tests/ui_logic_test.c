@@ -64,6 +64,13 @@ int main(void)
     CHECK("dark writes 0 (litehtml: 0 = dark)", ui_legacy_theme_value(1) == 0);
     CHECK("light writes 1", ui_legacy_theme_value(0) == 1);
 
+    /* operator logo slug (same table as manager web operatorLogo.ts) */
+    CHECK("logo 460-00", ui_operator_logo(460, 0) && !strcmp(ui_operator_logo(460, 0), "china-mobile"));
+    CHECK("logo 460-11", ui_operator_logo(460, 11) && !strcmp(ui_operator_logo(460, 11), "china-telecom"));
+    CHECK("logo 311-480", ui_operator_logo(311, 480) && !strcmp(ui_operator_logo(311, 480), "verizon"));
+    CHECK("logo 3 HK has none", ui_operator_logo(454, 3) == NULL);
+    CHECK("logo unknown", ui_operator_logo(0, 0) == NULL && ui_operator_logo(234, 15) == NULL);
+
     puts("exec guard");
     ui_exec_hist_t none = { 0, 0, 0 };
     CHECK("no history: allow", ui_exec_check(&none, 1000) == UI_EXEC_ALLOW);
@@ -480,6 +487,27 @@ int main(void)
     CHECK("sim: plain card (eSIM profile is another)", ui_sim_kind("sim ready", "8986000000000000012F", "8944000000000000003") == UI_SIM_PLAIN);
     CHECK("sim: eSIM profile in use", ui_sim_kind("sim ready", "8986000000000000012F", "8986000000000000012") == UI_SIM_ESIM);
     CHECK("sim: iccid known, state not yet ready", ui_sim_kind("", "8986000000000000012", "") == UI_SIM_PLAIN);
+
+    /* DHCP pool text (T13: computed from datad's /state dhcp block) */
+    {
+        char b[48];
+        ui_dhcp_pool_text("192.168.0.1", "100", "50", b, sizeof b);
+        CHECK("pool: start + limit", !strcmp(b, "192.168.0.100 - 192.168.0.149"));
+        ui_dhcp_pool_text("192.168.0.1", "2", "252", b, sizeof b);
+        CHECK("pool: capped at 254", !strcmp(b, "192.168.0.2 - 192.168.0.253"));
+        ui_dhcp_pool_text("192.168.0.1", "2", "400", b, sizeof b);
+        CHECK("pool: over 254 capped", !strcmp(b, "192.168.0.2 - 192.168.0.254"));
+        ui_dhcp_pool_text("192.168.0.1", "192.168.0.10", "5", b, sizeof b);
+        CHECK("pool: start given as full address", !strcmp(b, "192.168.0.10 - 192.168.0.14"));
+        ui_dhcp_pool_text("192.168.0.1", "100", "", b, sizeof b);
+        CHECK("pool: no limit → start only", !strcmp(b, "192.168.0.100"));
+        ui_dhcp_pool_text("192.168.0.1", "", "50", b, sizeof b);
+        CHECK("pool: no start → empty", b[0] == 0);
+        ui_dhcp_pool_text("nodot", "100", "50", b, sizeof b);
+        CHECK("pool: bad ip → empty", b[0] == 0);
+        ui_dhcp_pool_text("192.168.0.1", "x", "50", b, sizeof b);
+        CHECK("pool: garbage start → empty", b[0] == 0);
+    }
 
     printf("passed %d, failed %d\n", pass, fail);
     return fail ? 1 : 0;

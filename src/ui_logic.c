@@ -57,6 +57,28 @@ int ui_is_dark(ui_appear_t a, int now_min, int from_min, int to_min)
 
 int ui_legacy_theme_value(int dark) { return dark ? 0 : 1; }
 
+const char *ui_operator_logo(int mcc, int mnc)
+{
+    static const struct { short mcc, mnc; const char *slug; } k[] = {
+        {460, 0, "china-mobile"}, {460, 2, "china-mobile"}, {460, 4, "china-mobile"},
+        {460, 7, "china-mobile"}, {460, 8, "china-mobile"},
+        {460, 1, "china-unicom"}, {460, 6, "china-unicom"}, {460, 9, "china-unicom"},
+        {460, 3, "china-telecom"}, {460, 5, "china-telecom"}, {460, 11, "china-telecom"},
+        {454, 0, "csl"}, {454, 2, "csl"}, {454, 10, "csl"}, {454, 18, "csl"},
+        {454, 6, "smartone"}, {454, 15, "smartone"},
+        {454, 12, "cmhk"}, {454, 13, "cmhk"},
+        {466, 92, "chunghwa"}, {466, 1, "fetnet"}, {466, 97, "taiwan-mobile"},
+        {440, 10, "docomo"}, {440, 20, "softbank"}, {440, 11, "rakuten"},
+        {440, 50, "au"}, {440, 51, "au"}, {440, 52, "au"}, {440, 53, "au"}, {440, 54, "au"},
+        {450, 5, "skt"}, {450, 8, "kt"}, {450, 6, "lguplus"},
+        {525, 1, "singtel"}, {525, 3, "m1"}, {525, 5, "starhub"},
+        {310, 260, "t-mobile-us"}, {310, 410, "att"}, {311, 480, "verizon"},
+    };
+    for (size_t i = 0; i < sizeof k / sizeof k[0]; i++)
+        if (k[i].mcc == mcc && k[i].mnc == mnc) return k[i].slug;
+    return NULL;
+}
+
 /* ---- exec guard ---- */
 ui_exec_verdict_t ui_exec_check(const ui_exec_hist_t *h, long now_s)
 {
@@ -581,4 +603,29 @@ ui_sim_kind_t ui_sim_kind(const char *sim_state, const char *modem_iccid, const 
     int ready = sim_state && strstr(sim_state, "ready") != NULL;
     if (!ready && !(modem_iccid && iccid_len(modem_iccid))) return UI_SIM_NONE;
     return ui_iccid_same(modem_iccid, esim_enabled_iccid) ? UI_SIM_ESIM : UI_SIM_PLAIN;
+}
+
+void ui_dhcp_pool_text(const char *ip, const char *start, const char *limit, char *out, size_t n)
+{
+    const char *dot, *sd;
+    char *end;
+    long st, lim, last;
+
+    if (!out || n == 0) return;
+    out[0] = 0;
+    if (!ip || !start) return;
+    dot = strrchr(ip, '.');
+    if (!dot || dot == ip) return;
+    sd = strrchr(start, '.');
+    if (sd) start = sd + 1;
+    st = strtol(start, &end, 10);
+    if (end == start || *end || st < 1 || st > 254) return;
+    lim = (limit && *limit) ? strtol(limit, &end, 10) : 0;
+    if (!limit || !*limit || *end || lim < 1) {
+        snprintf(out, n, "%.*s.%ld", (int)(dot - ip), ip, st);
+        return;
+    }
+    last = st + lim - 1;
+    if (last > 254) last = 254;
+    snprintf(out, n, "%.*s.%ld - %.*s.%ld", (int)(dot - ip), ip, st, (int)(dot - ip), ip, last);
 }

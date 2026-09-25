@@ -130,7 +130,7 @@ good	wifi	iPhone
 good	wifi	192.168.0.20
 good	wifi	Kindle
 good	wifi	192.168.0.1
-good	wifi	2 · 共 252
+good	wifi	192.168.0.2 - 192.168.0.253
 good	wifi	24 小时
 good	sms	2 条未读 · 共 3 条
 good	sms	全部已读

@@ -81,6 +81,9 @@ typedef struct {
 static home_ca_t s_ca[CA_SLOTS];
 static lv_obj_t *s_home_scroll, *s_cell_card, *s_cc_hint;
 static uk_hero_t s_cc_hero;
+static lv_obj_t *s_cc_logo;            /* operator logo, top right of the hero */
+static const char *s_cc_logo_slug;     /* what s_cc_logo shows, NULL = hidden   */
+static int s_cc_logo_w, s_cc_logo_h;   /* its pixel size, 0 = hidden            */
 /* 首页层级（2026-09-24 评审：Wi-Fi 用户视角 + 设计视角，用户选「结论优先 +
  * 双磁贴」）：拿起设备先要知道「能不能上网、好不好、会不会多花钱」，所以
  * 状态卡的大字是一句结论，不是聚合带宽；下面三行是 Wi-Fi 和设备数、流量、
@@ -825,6 +828,69 @@ static const char *geo_short(const char *geo, char *out, size_t n)
 static int sim_usable_ui(const char *st) { return !st || !*st || strstr(st, "ready") != NULL; }
 
 
+/* Load the logo for slug (NULL = hide). Files are optional (trademarks, not in
+ * the public repo): a missing file hides the logo rather than draw LVGL's
+ * broken-image box. Where it goes is home_logo_place(). */
+static void home_logo_set(const char *slug)
+{
+    if (slug == s_cc_logo_slug) return;
+    char path[160];
+    if (slug) {
+        const char *dir = getenv("U60_DEVUI_LOGO_DIR");
+        snprintf(path, sizeof path, "%s/%s%s.png",
+                 dir && *dir ? dir : "/data/plugins/u60pro-devui/operator-logos", slug, T->dark ? "-w" : "");
+        if (access(path, R_OK) != 0) slug = NULL;
+    }
+    s_cc_logo_slug = slug;
+    s_cc_logo_w = s_cc_logo_h = 0;
+    if (slug) {
+        char src[164];
+        snprintf(src, sizeof src, "A:%s", path);
+        lv_image_header_t hd;
+        if (lv_image_decoder_get_info(src, &hd) == LV_RESULT_OK && hd.w > 0 && hd.w <= 64 && hd.h <= 18) {
+            lv_image_set_src(s_cc_logo, src);
+            lv_obj_set_style_image_opa(s_cc_logo, T->dark ? 217 : LV_OPA_COVER, 0);
+            s_cc_logo_w = hd.w; s_cc_logo_h = hd.h;
+        } else s_cc_logo_slug = NULL;
+    }
+}
+
+/* 2026-09-26 真机反馈：logo 占着顶行右边，「中国联通 · 5G NSA · 4G 锚点 · 本地」被截断，
+ * 大字和右边「信号强 / 干扰小」之间却空着。所以先放大字后面、和大字竖直居中；放不下
+ * （结论字多、右边字宽）才回顶行右边，顶行让出 logo 宽度。 */
+static void home_logo_place(void)
+{
+    const int cw = UK_CARD_W, st_full = UK_CARD_W - 26 - UK_PAD;
+    int w = s_cc_logo_w, h = s_cc_logo_h;
+    if (!w) {
+        uk_show(s_cc_logo, 0);
+        lv_obj_set_width(s_cc_hero.st, st_full);
+        return;
+    }
+    lv_obj_update_layout(s_cc_hero.big);
+    lv_obj_update_layout(s_cc_hero.r1);
+    int bx = lv_obj_get_x(s_cc_hero.big) + lv_obj_get_width(s_cc_hero.big);
+    int by = lv_obj_get_y(s_cc_hero.big), bh = lv_obj_get_height(s_cc_hero.big);
+    int x = bx + 12, y = by + (bh - h) / 2;
+    int limit = cw;
+    if (lv_label_get_text(s_cc_hero.r1)[0]) limit = lv_obj_get_x(s_cc_hero.r1);
+    const char *t2 = lv_label_get_text(s_cc_hero.r2);
+    if (t2[0] && y + h > lv_obj_get_y(s_cc_hero.r2)) {
+        lv_point_t sz;
+        lv_text_get_size(&sz, t2, lv_obj_get_style_text_font(s_cc_hero.r2, 0), 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+        int r2x = cw - UK_PAD - sz.x;
+        if (r2x < limit) limit = r2x;
+    }
+    if (x + w + 10 <= limit) {
+        lv_obj_set_pos(s_cc_logo, x, y);
+        lv_obj_set_width(s_cc_hero.st, st_full);
+    } else {
+        lv_obj_set_pos(s_cc_logo, cw - UK_PAD - w, 10 + (18 - h) / 2);
+        lv_obj_set_width(s_cc_hero.st, st_full - w - 8);
+    }
+    uk_show(s_cc_logo, 1);
+}
+
 static void build_home(lv_obj_t *t)
 {
     /* Worst case (5 active carriers, 5 Tailscale rows, …) is
@@ -840,6 +906,10 @@ static void build_home(lv_obj_t *t)
     /* 顶行（运营商 · 制式 · 本地/漫游）名字可能很长：限宽，末尾「…」 */
     lv_obj_set_size(s_cc_hero.st, UK_CARD_W - 26 - UK_PAD, 18);
     lv_label_set_long_mode(s_cc_hero.st, LV_LABEL_LONG_MODE_DOTS);
+    /* 运营商 logo（2026-09-26）：顶行右边本来空着，透明底 PNG，高 14、宽 ≤64 */
+    s_cc_logo = lv_image_create(c);
+    lv_obj_remove_flag(s_cc_logo, LV_OBJ_FLAG_CLICKABLE);
+    uk_show(s_cc_logo, 0);
     /* 摘要行（2026-09-25 按任务分标签）：蜂窝 / Wi-Fi / 出口 各一行，点了跳到
      * 那个标签；流量只读，没有 ›、没有按下态。 */
     home_row(&s_hr_ca, c, "载波", tab_go_cb, (void *)(intptr_t)TAB_CELL);
@@ -990,6 +1060,8 @@ static void home_signal_down(void)
     static char c_st[64];
     uk_hero_tone(&s_cc_hero, 3);
     s_cc_tone = 3;
+    home_logo_set(NULL);   /* 数据停了：不知道现在在谁的网上 */
+    home_logo_place();
     if (!s_ever_valid) {
         set_label_fmt(s_cc_hero.st, c_st, sizeof c_st, "%s", "正在读取…");
         lv_label_set_text(s_cc_hero.big, "--");
@@ -1022,57 +1094,78 @@ static void home_signal_down(void)
 }
 
 /* ---- auxiliary device state ----
- * Things zwrt-datad's /state doesn't carry: interface up/down, WiFi power
- * save, direct-power-supply, DHCP pool text. Same one-shot shell round-trip
- * htmlmain.c's wifi_aux_refresh() uses, on the same kind of throttle, and
- * only while a page that displays it is actually visible. */
+ * Things the main /state fields above don't cover. DHCP pool, direct power
+ * supply and the cellular data/roaming switches come from zwrt-datad's
+ * /state (T13: datad is the only program polling ubus/uci; this used to be a
+ * 5 s popen running uci and ubus on the UI thread). Radio up/down is read
+ * from /sys, Wi-Fi power save still needs `iw` (nl80211, not ubus) — both
+ * only while a page that shows them is visible, at most every 5 s.
+ *
+ * A switch the user just flipped keeps its new value for AUX_HOLD_MS or
+ * until datad reports the same value, so it does not snap back while datad's
+ * next read is still on its way. */
 static int  s_aux_w24 = -1, s_aux_w5 = -1, s_aux_psm = -1, s_aux_dps = -1;
 /* 蜂窝页的移动数据 / 数据漫游：zwrt_data get_wwaniface 的 enable / roam_enable */
 static int  s_aux_data = -1, s_aux_roam = -1;
 static char s_aux_pool[48];
 
-static void aux_refresh(int active)
+#define AUX_HOLD_MS 30000
+static uint32_t s_hold_dps, s_hold_data, s_hold_roam;   /* lv_tick of the local flip, 0 = none */
+
+static void aux_hold(uint32_t *hold) { *hold = lv_tick_get() | 1; }
+
+/* Take datad's value unless a local flip is still being held. */
+static void aux_take(int *cur, uint32_t *hold, int from_datad, uint32_t now)
+{
+    if (from_datad < 0) return;                     /* not in /state: keep what we have */
+    if (*hold && from_datad != *cur && now - *hold < AUX_HOLD_MS) return;
+    *hold = 0;
+    *cur = from_datad;
+}
+
+static int sys_oper_up(const char *ifname)
+{
+    char path[64], buf[16] = "";
+    FILE *f;
+
+    snprintf(path, sizeof path, "/sys/class/net/%s/operstate", ifname);
+    f = fopen(path, "r");
+    if (!f) return 0;
+    if (!fgets(buf, sizeof buf, f)) buf[0] = 0;
+    fclose(f);
+    return !strncmp(buf, "up", 2);
+}
+
+static void aux_refresh(int active, const devui_data_t *d)
 {
     static uint32_t last;
     uint32_t now = lv_tick_get();
-    char line[256];
+    char line[64];
     FILE *fp;
+
+    if (d->valid) {
+        aux_take(&s_aux_dps,  &s_hold_dps,  d->dps_mode,  now);
+        aux_take(&s_aux_data, &s_hold_data, d->cell_data, now);
+        aux_take(&s_aux_roam, &s_hold_roam, d->cell_roam, now);
+        s_aux_pool[0] = 0;
+        if (d->dhcp_ip[0] && d->dhcp_start[0])
+            ui_dhcp_pool_text(d->dhcp_ip, d->dhcp_start, d->dhcp_limit, s_aux_pool, sizeof s_aux_pool);
+    }
 
     if (!active) return;
     if (last && now - last < 5000) return;
     last = now;
 
+    s_aux_w24 = sys_oper_up("wlan0");
+    s_aux_w5  = sys_oper_up("wlan2");
     fp = popen(
-        "echo W0=$(cat /sys/class/net/wlan0/operstate 2>/dev/null);"
-        "echo W2=$(cat /sys/class/net/wlan2/operstate 2>/dev/null);"
         "ps=$(iw dev wlan0 get power_save 2>/dev/null | grep -o 'o[nf]*' | tail -1);"
         "[ -z \"$ps\" ] && ps=$(iw dev wlan2 get power_save 2>/dev/null | grep -o 'o[nf]*' | tail -1);"
-        "echo PSM=$([ \"$ps\" = on ] && echo 1 || echo 0);"
-        "ip=$(uci -q get network.lan.ipaddr); st=$(uci -q get dhcp.lan.start); lim=$(uci -q get dhcp.lan.limit);"
-        "if [ -n \"$ip\" ] && [ -n \"$st\" ]; then pre=${ip%.*}; end=$((st+lim-1)); [ $end -gt 254 ] && end=254;"
-        "echo \"POOL=$pre.$st - $pre.$end\"; fi;"
-        "echo DPS=$(ubus call zwrt_bsp.charger list 2>/dev/null | grep direct_power_supply_mode | grep -o 'enable\\|disable');"
-        "w=$(ubus call zwrt_data get_wwaniface '{\"cid\":1}' 2>/dev/null);"
-        "echo WD=$(echo \"$w\" | grep '\"enable\"' | grep -o '[01]');"
-        "echo WR=$(echo \"$w\" | grep '\"roam_enable\"' | grep -o '[01]')",
+        "echo PSM=$([ \"$ps\" = on ] && echo 1 || echo 0)",
         "r");
     if (!fp) return;
-    while (fgets(line, sizeof line, fp)) {
-        if      (!strncmp(line, "W0=", 3))   s_aux_w24 = strstr(line, "=up") != NULL;
-        else if (!strncmp(line, "W2=", 3))   s_aux_w5  = strstr(line, "=up") != NULL;
-        else if (!strncmp(line, "PSM=", 4))  s_aux_psm = atoi(line + 4);
-        else if (!strncmp(line, "POOL=", 5)) {
-            char *nl = strpbrk(line, "\r\n"); if (nl) *nl = 0;
-            snprintf(s_aux_pool, sizeof s_aux_pool, "%.*s", (int)sizeof s_aux_pool - 1, line + 5);
-        } else if (!strncmp(line, "WD=", 3)) {
-            s_aux_data = (line[3] == '0' || line[3] == '1') ? line[3] - '0' : -1;
-        } else if (!strncmp(line, "WR=", 3)) {
-            s_aux_roam = (line[3] == '0' || line[3] == '1') ? line[3] - '0' : -1;
-        } else if (!strncmp(line, "DPS=", 4)) {
-            if      (strstr(line, "disable")) s_aux_dps = 0;
-            else if (strstr(line, "enable"))  s_aux_dps = 1;
-        }
-    }
+    while (fgets(line, sizeof line, fp))
+        if (!strncmp(line, "PSM=", 4)) s_aux_psm = atoi(line + 4);
     pclose(fp);
 }
 
@@ -1329,6 +1422,7 @@ static void dps_cb(lv_event_t *e)
         on ? "enable" : "disable");
     system(cmd);
     s_aux_dps = on;
+    aux_hold(&s_hold_dps);
 }
 
 /* Same setting the status-bar tap (topbar_speed_unit_cb) flips — this is
@@ -3154,7 +3248,8 @@ static void md_sw_cb(lv_event_t *e)
                  "ubus call zwrt_data set_wwaniface '{\"cid\":1,\"connect_mode\":1,\"enable\":%d,\"roam_enable\":%d}' >/dev/null 2>&1 &",
                  data, roam);
         system(cmd);
-        if (id == MD_DATA) s_aux_data = on; else s_aux_roam = on;
+        if (id == MD_DATA) { s_aux_data = on; aux_hold(&s_hold_data); }
+        else               { s_aux_roam = on; aux_hold(&s_hold_roam); }
         s_md_arm = 0;
         s_md_pending = -1;
         s_md_hold = now ? now : 1;
@@ -3726,6 +3821,8 @@ static void refresh_cb(lv_timer_t *t)
                           fine[0] ? " · " : "", fine,
                           !rm[0] || nosvc ? "" : roam ? " · 漫游" : " · 本地");
         }
+        /* 无服务时顶行右边写「已 N 分钟」，logo 让开 */
+        home_logo_set(sim_usable_ui(d.sim_state) && !nosvc ? ui_operator_logo(d.mcc, d.mnc) : NULL);
         set_label_fmt(s_cc_hero.big, c_big, sizeof c_big, "%s", shown.headline);
         if (nosvc) {
             uint32_t mins = (lv_tick_get() - nosig_since) / 60000;
@@ -3753,6 +3850,7 @@ static void refresh_cb(lv_timer_t *t)
             uk_text_color(s_cc_hero.r1, nosvc ? T->t1 : at == UI_NET_OK ? T->okT : at == UI_NET_WARN ? T->warnT : T->badT);
         }
         uk_hero_layout(&s_cc_hero);
+        home_logo_place();
 
         int y = UK_HERO_H;
         uk_show(s_cc_hint, hint[0] != 0);
@@ -4569,7 +4667,7 @@ static void refresh_cb(lv_timer_t *t)
     }
 
     /* ---- WiFi subpage ---- */
-    aux_refresh(tab_visible(TAB_WIFI) || tab_visible(TAB_SYS) || tab_visible(TAB_CELL));
+    aux_refresh(tab_visible(TAB_WIFI) || tab_visible(TAB_SYS) || tab_visible(TAB_CELL), &d);
     md_refresh();
     refresh_wifi(&d);
     {

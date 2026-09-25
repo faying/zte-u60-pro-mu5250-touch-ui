@@ -182,6 +182,7 @@ static int parse_snapshot(devui_data_t *d, const char *buf)
 
     memset(d, 0, sizeof *d);
     d->cpu_usage = -1;
+    d->dps_mode = d->cell_data = d->cell_roam = -1;
     d->valid = 0;
     if (!buf || !buf[0]) return 0;
 
@@ -330,6 +331,23 @@ static int parse_snapshot(devui_data_t *d, const char *buf)
         getstr(sec, "start",     d->dhcp_start,     sizeof d->dhcp_start);
         getstr(sec, "limit",     d->dhcp_limit,     sizeof d->dhcp_limit);
         getstr(sec, "leasetime", d->dhcp_leasetime, sizeof d->dhcp_leasetime);
+    }
+
+    {
+        char sub[2048], mode[16];
+        if (json_get(buf, "power", sec, sizeof sec) &&
+            json_get(sec, "direct_supply", sub, sizeof sub) &&
+            json_get(sub, "mode", mode, sizeof mode)) {
+            if      (!strcmp(mode, "enable"))  d->dps_mode = 1;
+            else if (!strcmp(mode, "disable")) d->dps_mode = 0;
+        }
+        if (json_get(buf, "interfaces", sec, sizeof sec) &&
+            json_get(sec, "cellular", sub, sizeof sub)) {
+            long v = json_get_int(sub, "enable", -1);
+            d->cell_data = (v == 0 || v == 1) ? (int)v : -1;
+            v = json_get_int(sub, "roam_enable", -1);
+            d->cell_roam = (v == 0 || v == 1) ? (int)v : -1;
+        }
     }
 
     if (json_get(buf, "traffic", sec, sizeof sec)) {

@@ -13,6 +13,8 @@
 #ifndef U60PRO_UI_LOGIC_H
 #define U60PRO_UI_LOGIC_H
 
+#include <stddef.h>
+
 /* ---- appearance ---- */
 typedef enum { UI_APPEAR_LIGHT = 0, UI_APPEAR_DARK, UI_APPEAR_AUTO } ui_appear_t;
 
@@ -33,6 +35,18 @@ int ui_is_dark(ui_appear_t a, int now_min, int from_min, int to_min);
 
 /* Value written back to the legacy theme= key (litehtml: 0 = dark, 1 = light). */
 int ui_legacy_theme_value(int dark);
+
+/* Operator logo for the home card (2026-09-26): MCC/MNC of the network you
+ * are on → file slug under operator-logos/ (<slug>.png, <slug>-w.png for
+ * dark), NULL = no logo. Same table as manager web/src/lib/operatorLogo.ts,
+ * minus slugs with no usable file (three-hk is unreadable at 14 px). */
+const char *ui_operator_logo(int mcc, int mnc);
+
+/* DHCP pool text for the Wi-Fi page from datad's /state dhcp block:
+ * ip "192.168.0.1", start "100" (host number; a full address also works),
+ * limit "50" → "192.168.0.100 - 192.168.0.149" (end capped at 254). No
+ * usable limit → just the start address. Bad ip/start → "". */
+void ui_dhcp_pool_text(const char *ip, const char *start, const char *limit, char *out, size_t n);
 
 /* ---- exec-restart guard (theme switch = exec /proc/self/exe) ---- */
 #define UI_EXEC_COOLDOWN_S   600   /* no automatic exec within 10 min of the last one        */
