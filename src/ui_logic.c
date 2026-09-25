@@ -511,7 +511,7 @@ void ui_net_story(const ui_net_in_t *in, ui_net_story_t *o)
     }
     if (!in->data_up)
         SAY(0, UI_NET_BAD, "没连上网", "%s", in->roaming == 1
-            ? "数据没拨上：确认卡和设备都允许数据漫游"
+            ? "数据没拨上：去「蜂窝」打开数据漫游，卡也要开通"
             : "数据没拨上：查流量开关、APN 或欠费");
     if (capped)
         SAY(UI_CAUSE_LIMIT, UI_NET_WARN, "慢：限速", "运营商限到 %d Mbps，换位置没用", (int)(in->ambr_dl + 0.5));
@@ -536,8 +536,7 @@ void ui_net_story(const ui_net_in_t *in, ui_net_story_t *o)
             pin ? "制式被限定只用 3G，去「锁频」改回" : "能上网但较慢，附近可能没有 4G/5G");
     if (narrow)
         SAY(UI_CAUSE_NARROW, UI_NET_WARN, "慢：载波窄", "这里只给了 1 条 %d MHz", in->mhz);
-    if (in->roaming == 1)
-        SAY(0, UI_NET_WARN, "漫游中", "%s", "按漫游计费，注意流量");
+    /* 漫游不单独当结论：顶上运营商行已写「漫游」，这里照常说网络好不好 */
     if (pin && rat == UI_RAT_4G)
         SAY(0, UI_NET_OK, "顺畅", "%s", "制式限定只用 4G，去「锁频」改回");
     SAY(0, UI_NET_OK, "顺畅", "%s", "");

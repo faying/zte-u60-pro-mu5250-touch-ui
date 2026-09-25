@@ -429,6 +429,16 @@ int netinfo_poll(int mode)
 }
 
 const netinfo_t *netinfo_get(void) { return &s_ni; }
+
+int netinfo_agent_get(const char *path, char *out, size_t cap)
+{
+    char *b;
+    int code = ni_api("GET", path, NULL, &b);
+
+    out[0] = 0;
+    if (code != 200 || !b || !json_get(b, "data", out, cap)) return code == 200 ? 0 : code;
+    return code;
+}
 const char *netinfo_action_error(void) { return s_act_err; }
 
 /* 发一个动作；被拒（409 之类）就把 agent 的 error 记下来给页面显示 */

@@ -600,3 +600,26 @@ int ui_exec_self(const char *argv0, const ui_launch_t *l)
     return -1;   /* the harness stays in this process */
 }
 unsigned long g_frame_count;
+
+/* ---- battery_est: the line itself comes from estimate.c's est_text, so the
+ * goldens show the real wording. One per state: discharging (good), low
+ * (lowbat), full (full-charging), paused at the limit (weak), charging to a
+ * limit (long-names, the longest text), no data (datad-down / loading). */
+#include "battery_est.h"
+#include "estimate.h"
+int battery_est_feed(const devui_data_t *d) { (void)d; return 0; }
+void battery_est_override(const char *text) { (void)text; }
+const char *battery_est_text(void)
+{
+    static char t[96];
+    est_t e = { EST_UNKNOWN, 0 };
+    int target = 100;
+
+    if (IS(RT_GOOD)) e = (est_t){ EST_DISCHARGING, 891 };
+    else if (IS(RT_LOW_BAT)) e = (est_t){ EST_DISCHARGING, 92 };
+    else if (IS(RT_FULL_CHARGING)) e = (est_t){ EST_REACHED, 0 };
+    else if (IS(RT_WEAK)) { e = (est_t){ EST_PAUSED, 0 }; target = 80; }
+    else if (LONG_NAMES) { e = (est_t){ EST_CHARGING, 198 }; target = 80; }
+    est_text(e, target, t, sizeof t);
+    return t;
+}

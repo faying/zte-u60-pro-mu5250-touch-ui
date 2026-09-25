@@ -320,7 +320,7 @@ int main(void)
                                                      o.cause == UI_CAUSE_NOISE && strstr(o.hint, "SINR -2.5"));
         CHECK("bars tiers", ui_bars_tier(5) == 2 && ui_bars_tier(4) == 2 && ui_bars_tier(3) == 1 &&
                             ui_bars_tier(2) == 0 && ui_bars_tier(1) == 0 && ui_bars_tier(0) == -1);
-        T_("roaming", x.roaming = 1, "漫游中", UI_NET_WARN);
+        T_("roaming", x.roaming = 1, "顺畅", UI_NET_OK);
         T_("3G", (x.net_type = "WCDMA", x.n_active = 0, x.sinr_valid = 0, x.rsrp_valid = 0), "只有 3G", UI_NET_WARN);
         T_("2G", (x.net_type = "EDGE", x.n_active = 0, x.sinr_valid = 0, x.rsrp_valid = 0), "只有 2G", UI_NET_WARN);
         x = b; x.net_type = "WCDMA"; x.n_active = 0; x.sinr_valid = x.rsrp_valid = 0; x.net_select = "Only_WCDMA";

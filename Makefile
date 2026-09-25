@@ -24,7 +24,7 @@ LVGL_APPLY = cd / && git apply --directory=$(patsubst /%,%,$(CURDIR)) $(1) $(CUR
 # 渲染器专属的 htmlmain.c/devui_ext.c（含各自的 main() 或 litehtml 依赖），
 # 以及独立工具 fbdump.c/fbserver.c/drm_test.c/touchsim.c（各带自己的 main()）。
 # tailscale.c/esim.c 都已接入 LVGL 版，直接用各自的 getter，不走 HTML。
-APP_SRCS  := src/main.c src/ui.c src/ui_logic.c src/ui_theme.c src/ui_kit.c src/ui_exec.c src/drm_disp.c src/touch_input.c src/backlight.c src/data.c src/key_input.c src/json.c src/tailscale.c src/esim.c src/speedtest.c src/scenario.c src/alerts.c src/netinfo.c
+APP_SRCS  := src/main.c src/ui.c src/ui_logic.c src/ui_theme.c src/ui_kit.c src/ui_exec.c src/drm_disp.c src/touch_input.c src/backlight.c src/data.c src/key_input.c src/json.c src/tailscale.c src/esim.c src/speedtest.c src/scenario.c src/alerts.c src/netinfo.c src/estimate.c src/battery_est.c
 LVGL_SRCS := $(shell find $(LVGL_DIR)/src -name '*.c' 2>/dev/null)
 OBJS      := $(APP_SRCS:.c=.o) $(LVGL_SRCS:.c=.o)
 
@@ -127,7 +127,7 @@ ui-exec-test: tests/ui_exec_test.c src/ui_exec.c src/ui_logic.c include/ui_exec.
 # Offscreen render test (tests/render): ui.c + fixtures + LVGL, static arm64.
 # Run it with scripts/test/render/render.sh (docker; needs the device fonts).
 RENDER_BIN  := scripts/test/render/render_test
-RENDER_SRCS := tests/render/render_test.c tests/render/fixtures.c src/ui_logic.c src/ui_theme.c src/ui_kit.c
+RENDER_SRCS := tests/render/render_test.c tests/render/fixtures.c src/ui_logic.c src/ui_theme.c src/ui_kit.c src/estimate.c
 render-test-bin: check-lvgl $(LVGL_SRCS:.c=.o) $(RENDER_SRCS) src/ui.c tests/render/fixtures.h
 	$(CC) $(CFLAGS) -Itests/render -Wno-unused-function $(RENDER_SRCS) $(LVGL_SRCS:.c=.o) -o $(RENDER_BIN) $(LDFLAGS)
 

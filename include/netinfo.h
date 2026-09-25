@@ -11,6 +11,8 @@
 #ifndef U60_NETINFO_H
 #define U60_NETINFO_H
 
+#include <stddef.h>
+
 #define NI_MAX_OPS    8
 #define NI_MAX_CELLS  8
 #define NI_MAX_SCENES 6
@@ -131,6 +133,10 @@ typedef struct {
 enum { NI_OFF = 0, NI_PAGE = 1, NI_HOME = 2, NI_LITE = 3, NI_APN = 4, NI_CLIENTS = 5 };
 int netinfo_poll(int mode);
 const netinfo_t *netinfo_get(void);
+
+/* 用同一个登录读 agent 的任意 GET 接口，把 data 对象拷到 out。
+ * 返回 HTTP 状态码（0 = 连不上）；不是 200 时 out 为空串。阻塞，最长约 3 秒。 */
+int netinfo_agent_get(const char *path, char *out, size_t cap);
 
 /* 动作：都只是发起，结果从下一轮 netinfo_poll 里看。 */
 void netinfo_scan(void);            /* 搜索网络（会断网 1–3 分钟） */

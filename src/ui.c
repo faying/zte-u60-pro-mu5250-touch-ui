@@ -21,6 +21,7 @@
 #include "ui_logic.h"
 #include "ui_theme.h"
 #include "ui_exec.h"
+#include "battery_est.h"
 #include "ui_kit.h"
 #include "lvgl.h"
 
@@ -157,7 +158,7 @@ static lv_obj_t *s_set_bright, *s_set_bright_v, *s_vendor_btn, *s_vendor_lbl;
 static uk_seg_t  s_off_seg, s_ap_seg;
 static uint32_t  s_vendor_arm;
 static lv_obj_t *s_set_ver, *s_set_imei, *s_set_usb, *s_set_fw, *s_set_health;
-static lv_obj_t *s_sy_bat, *s_sy_chg, *s_sy_cpu, *s_sy_mem, *s_sy_up;
+static lv_obj_t *s_sy_bat, *s_sy_est, *s_sy_chg, *s_sy_cpu, *s_sy_mem, *s_sy_up;
 static lv_obj_t *s_sy_dps_sw, *s_sy_dps_st;
 static lv_obj_t *s_sy_speedunit_sw, *s_sy_speedunit_st;
 /* Tailscale subpage */
@@ -1026,6 +1027,8 @@ static void home_signal_down(void)
  * htmlmain.c's wifi_aux_refresh() uses, on the same kind of throttle, and
  * only while a page that displays it is actually visible. */
 static int  s_aux_w24 = -1, s_aux_w5 = -1, s_aux_psm = -1, s_aux_dps = -1;
+/* 蜂窝页的移动数据 / 数据漫游：zwrt_data get_wwaniface 的 enable / roam_enable */
+static int  s_aux_data = -1, s_aux_roam = -1;
 static char s_aux_pool[48];
 
 static void aux_refresh(int active)
@@ -1048,7 +1051,10 @@ static void aux_refresh(int active)
         "ip=$(uci -q get network.lan.ipaddr); st=$(uci -q get dhcp.lan.start); lim=$(uci -q get dhcp.lan.limit);"
         "if [ -n \"$ip\" ] && [ -n \"$st\" ]; then pre=${ip%.*}; end=$((st+lim-1)); [ $end -gt 254 ] && end=254;"
         "echo \"POOL=$pre.$st - $pre.$end\"; fi;"
-        "echo DPS=$(ubus call zwrt_bsp.charger list 2>/dev/null | grep direct_power_supply_mode | grep -o 'enable\\|disable')",
+        "echo DPS=$(ubus call zwrt_bsp.charger list 2>/dev/null | grep direct_power_supply_mode | grep -o 'enable\\|disable');"
+        "w=$(ubus call zwrt_data get_wwaniface '{\"cid\":1}' 2>/dev/null);"
+        "echo WD=$(echo \"$w\" | grep '\"enable\"' | grep -o '[01]');"
+        "echo WR=$(echo \"$w\" | grep '\"roam_enable\"' | grep -o '[01]')",
         "r");
     if (!fp) return;
     while (fgets(line, sizeof line, fp)) {
@@ -1058,6 +1064,10 @@ static void aux_refresh(int active)
         else if (!strncmp(line, "POOL=", 5)) {
             char *nl = strpbrk(line, "\r\n"); if (nl) *nl = 0;
             snprintf(s_aux_pool, sizeof s_aux_pool, "%.*s", (int)sizeof s_aux_pool - 1, line + 5);
+        } else if (!strncmp(line, "WD=", 3)) {
+            s_aux_data = (line[3] == '0' || line[3] == '1') ? line[3] - '0' : -1;
+        } else if (!strncmp(line, "WR=", 3)) {
+            s_aux_roam = (line[3] == '0' || line[3] == '1') ? line[3] - '0' : -1;
         } else if (!strncmp(line, "DPS=", 4)) {
             if      (strstr(line, "disable")) s_aux_dps = 0;
             else if (strstr(line, "enable"))  s_aux_dps = 1;
@@ -1425,11 +1435,13 @@ static void build_system(lv_obj_t *t)
     y += 120 + 10;
 
     uk_section(t, y, "电池与负载"); y += 20;
-    c = uk_card(t, UK_MARGIN, y, UK_CARD_W, 5 * UK_ROW_H);
-    static const char *const k_load_cap[5] = { "电池", "充电器", "CPU", "内存", "运行" };
-    lv_obj_t **load_val[5] = { &s_sy_bat, &s_sy_chg, &s_sy_cpu, &s_sy_mem, &s_sy_up };
-    for (int i = 0; i < 5; i++) *load_val[i] = uk_row(c, i * UK_ROW_H, k_load_cap[i], i == 0);
-    y += 5 * UK_ROW_H + 10;
+    /* 预估：公式见 estimate.c（和管理网页同一份规则） */
+    c = uk_card(t, UK_MARGIN, y, UK_CARD_W, 6 * UK_ROW_H);
+    static const char *const k_load_cap[6] = { "电池", "预估", "充电器", "CPU", "内存", "运行" };
+    lv_obj_t **load_val[6] = { &s_sy_bat, &s_sy_est, &s_sy_chg, &s_sy_cpu, &s_sy_mem, &s_sy_up };
+    for (int i = 0; i < 6; i++) *load_val[i] = uk_row(c, i * UK_ROW_H, k_load_cap[i], i == 0);
+    lv_obj_set_style_text_font(s_sy_est, UF.cj14, 0);
+    y += 6 * UK_ROW_H + 10;
 
     uk_section(t, y, "近 5 分钟"); y += 20;
     y += build_charts(t, y) + 10;
@@ -2576,7 +2588,9 @@ static void net_oper_text(char *out, size_t n, const ni_oper_t *o)
 /* 第二行：归属地 · 运营商或节点；查不到时写原因，旧结果刷新失败时标一下 */
 static void net_exit_sub(char *out, size_t n, const ni_exit_t *e, const char *extra)
 {
-    if (!e->ip[0] && e->err[0]) { snprintf(out, n, "查不到：%s", e->err); return; }
+    /* 原始错误（"ipapi.co: io: unexpected end of file"）只是最后一家的失败；
+     * 几家都失败多半是刚换网/节点不通，半分钟后会再查。 */
+    if (!e->ip[0] && e->err[0]) { snprintf(out, n, "暂时查不到，稍后自动重试"); return; }
     snprintf(out, n, "%s%s%s%s", e->geo, e->geo[0] && extra[0] ? " · " : "", extra,
              e->err[0] ? " · 刷新失败" : "");
 }
@@ -3109,6 +3123,75 @@ static int nav_card(lv_obj_t *t, int y, const char *section, const int *ids, con
 }
 
 /* 蜂窝：跟这张卡、这个运营商有关的都在这里。网络模式直接在标签上切（两下确认）。 */
+/* ---- 移动数据 / 数据漫游（蜂窝页） ----
+ * 两个开关都会断网或花钱：按一次只是「待确认」（整行说要做什么），5 秒内再按
+ * 同一个才下发，和网络模式一样。下发后 8 秒内不拿读数覆盖开关（固件要重拨）。 */
+enum { MD_DATA, MD_ROAM };
+static lv_obj_t *s_md_sw[2], *s_md_st[2], *s_md_note;
+static uint32_t s_md_arm, s_md_hold;
+static int s_md_pending = -1, s_md_want;
+
+static void md_note(const char *t, uint32_t col)
+{
+    static char c[96];
+    snprintf(c, sizeof c, "%s", t);
+    lv_label_set_text_static(s_md_note, c);
+    uk_text_color(s_md_note, col);
+}
+
+static void md_sw_cb(lv_event_t *e)
+{
+    int id = (int)(intptr_t)lv_event_get_user_data(e);
+    lv_obj_t *sw = (lv_obj_t *)lv_event_get_target(e);
+    int on = lv_obj_has_state(sw, LV_STATE_CHECKED);
+    uint32_t now = lv_tick_get();
+
+    if (s_md_pending == id && s_md_want == on && s_md_arm && now - s_md_arm < 5000) {
+        int data = id == MD_DATA ? on : s_aux_data != 0;
+        int roam = id == MD_ROAM ? on : s_aux_roam == 1;
+        char cmd[220];
+        snprintf(cmd, sizeof cmd,
+                 "ubus call zwrt_data set_wwaniface '{\"cid\":1,\"connect_mode\":1,\"enable\":%d,\"roam_enable\":%d}' >/dev/null 2>&1 &",
+                 data, roam);
+        system(cmd);
+        if (id == MD_DATA) s_aux_data = on; else s_aux_roam = on;
+        s_md_arm = 0;
+        s_md_pending = -1;
+        s_md_hold = now ? now : 1;
+        md_note(on ? "已下发，正在拨号…" : "已下发，正在断开…", T->t2);
+        return;
+    }
+    /* 第一下：开关先回原位，整行说清按第二下会怎样 */
+    sw_apply(sw, !on);
+    s_md_arm = now ? now : 1;
+    s_md_pending = id;
+    s_md_want = on;
+    md_note(id == MD_DATA ? (on ? "再按一次：打开移动数据" : "再按一次：关掉移动数据，所有设备断网")
+                          : (on ? "再按一次：打开数据漫游，按漫游计费" : "再按一次：关掉数据漫游，漫游时会断网"),
+            T->warnT);
+}
+
+static void md_refresh(void)
+{
+    static char c_st[2][16];
+    uint32_t now = lv_tick_get();
+    if (!s_md_note) return;
+    if (s_md_pending >= 0 && now - s_md_arm >= 5000) {   /* 没按第二下：作罢 */
+        s_md_pending = -1;
+        s_md_arm = 0;
+        md_note("会断网或按漫游计费，切换要按两次确认", T->t3);
+    }
+    if (s_md_hold && now - s_md_hold >= 8000) {
+        s_md_hold = 0;
+        md_note("会断网或按漫游计费，切换要按两次确认", T->t3);
+    }
+    int v[2] = { s_aux_data, s_aux_roam };
+    for (int i = 0; i < 2; i++) {
+        if (s_md_pending != i && !s_md_hold) sw_apply(s_md_sw[i], v[i] == 1);
+        set_label_fmt(s_md_st[i], c_st[i], sizeof c_st[i], "%s", v[i] < 0 ? "—" : v[i] ? "已开启" : "已关闭");
+    }
+}
+
 static void build_cellular(lv_obj_t *t)
 {
     static const int ids1[] = { SUB_ESIM, SUB_APN };
@@ -3125,6 +3208,14 @@ static void build_cellular(lv_obj_t *t)
     lv_obj_remove_flag(t, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_width(t, UK_W);
     int y = nav_card(t, 4, "SIM 卡", ids1, names1, 2);
+
+    uk_section(t, y, "移动数据");
+    lv_obj_t *mc = uk_card(t, UK_MARGIN, y + 20, UK_CARD_W, 2 * UK_ROW_H + 30);
+    s_md_sw[MD_DATA] = toggle_row(mc, 0, "移动数据", 1, &s_md_st[MD_DATA], md_sw_cb, (void *)(intptr_t)MD_DATA);
+    s_md_sw[MD_ROAM] = toggle_row(mc, UK_ROW_H, "数据漫游", 0, &s_md_st[MD_ROAM], md_sw_cb, (void *)(intptr_t)MD_ROAM);
+    s_md_note = uk_label_w(mc, UF.cj12, T->t3, UK_PAD, 2 * UK_ROW_H + 6, UK_CARD_W - 2 * UK_PAD, 0,
+                           "会断网或按漫游计费，切换要按两次确认");
+    y += 20 + 2 * UK_ROW_H + 30 + 10;
 
     uk_section(t, y, "网络模式");
     lv_obj_t *md = uk_card(t, UK_MARGIN, y + 20, UK_CARD_W, 84);
@@ -4152,7 +4243,14 @@ static void refresh_cb(lv_timer_t *t)
         }
     }
 
+    /* 采样不看在哪个标签：离开系统页也要攒着，回来时就有数 */
+    battery_est_feed(&d);
+
     /* ---- System page ---- */
+    {
+        static char c_sest[96] = "";
+        set_label_fmt(s_sy_est, c_sest, sizeof c_sest, "%s", battery_est_text());
+    }
     {
         static char c_sbat[40] = "", c_schg[48] = "", c_scpu[40] = "", c_smem[40] = "", c_sup[32] = "";
         set_label_fmt(s_sy_bat, c_sbat, sizeof c_sbat, "%d%% \xC2\xB7 %d\xC2\xB0""C %d.%02ldV %ldmA",
@@ -4471,7 +4569,8 @@ static void refresh_cb(lv_timer_t *t)
     }
 
     /* ---- WiFi subpage ---- */
-    aux_refresh(tab_visible(TAB_WIFI) || tab_visible(TAB_SYS));
+    aux_refresh(tab_visible(TAB_WIFI) || tab_visible(TAB_SYS) || tab_visible(TAB_CELL));
+    md_refresh();
     refresh_wifi(&d);
     {
         static char c_wsw[5][32];
