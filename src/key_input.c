@@ -91,9 +91,10 @@ int key_input_poll(key_input_t *k, uint32_t now_ms)
             k->press_ms = now_ms;
             k->long_emitted = 0;
         } else if (ev.value == 0) {          /* release */
-            if (k->pressed && !k->long_emitted &&
-                (now_ms - k->press_ms) < KEY_LONG_MS)
-                result = KEY_EV_SHORT;
+            if (k->pressed && !k->long_emitted)
+                /* Held past the threshold but never polled while held (the
+                 * UI sleeps with the screen off): still a long press. */
+                result = (now_ms - k->press_ms) < KEY_LONG_MS ? KEY_EV_SHORT : KEY_EV_LONG;
             k->pressed = 0;
         }
     }

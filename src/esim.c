@@ -8,26 +8,16 @@
  * SPDX-License-Identifier: MIT
  */
 #include "esim.h"
+#include "agent_client.h"
 #include "json.h"
 
-#include <arpa/inet.h>
-#include <errno.h>
-#include <fcntl.h>
-#include <netinet/in.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/select.h>
-#include <sys/socket.h>
 #include <sys/time.h>
 #include <time.h>
 #include <unistd.h>
 
-#define ES_CONF       "/data/plugins/u60pro-devui/esim.conf"
-#define ES_AGENT_SH   "/data/local/tmp/start_zte_agent.sh"
-/* procd 装法（zte-agent.init）把密码放在这里，旧启动脚本可能已不存在；先读它 */
-#define ES_AGENT_SH_ENV "/data/zte-agent.env"
-#define ES_IO_MS      1500
 #define ES_IDLE_MS    2000      /* 页面开着时查 job 的间隔 */
 #define ES_JOB_MS     1000      /* 本机发起的切换进行中 */
 #define ES_BACKOFF_MS 5000      /* agent 没响应时放慢，免得每轮都卡 1.5 秒 */
@@ -43,10 +33,6 @@ typedef struct {
     int  enabled;
 } es_prof_t;
 
-static int  s_port = 9090;
-static char s_pass[128];
-static char s_token[80];
-static int  s_conf_loaded;
 
 static es_prof_t s_prof[ES_MAX];
 static int  s_count;
@@ -83,160 +69,13 @@ static long now_ms(void)
     return (long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 
-/* agent 的密码：procd 装法在 /data/zte-agent.env（ZTE_AGENT_PASSWORD=...），
- * 旧装法在启动脚本里（export ZTE_AGENT_PASSWORD='...'）。两种写法这里都认。 */
-static void read_agent_password(void)
-{
-    static const char *paths[] = { ES_AGENT_SH_ENV, ES_AGENT_SH };
-    FILE *fp = NULL;
-    char line[256];
-
-    for (size_t i = 0; i < sizeof paths / sizeof *paths && !fp; i++)
-        fp = fopen(paths[i], "r");
-    if (!fp) return;
-    while (fgets(line, sizeof line, fp)) {
-        char *p = strstr(line, "ZTE_AGENT_PASSWORD="), *e, q = 0;
-        if (!p) continue;
-        if ((e = strpbrk(p, "\r\n")) != NULL) *e = 0;
-        p += 19;
-        if (*p == '\'' || *p == '"') q = *p++;
-        e = q ? strchr(p, q) : strpbrk(p, " \t;");
-        if (e) *e = 0;
-        snprintf(s_pass, sizeof s_pass, "%s", p);
-        break;
-    }
-    fclose(fp);
-}
-
-static void load_conf(void)
-{
-    FILE *fp;
-    char line[256];
-
-    if (s_conf_loaded) return;
-    s_conf_loaded = 1;
-    fp = fopen(ES_CONF, "r");
-    if (fp) {
-        while (fgets(line, sizeof line, fp)) {
-            char *nl = strpbrk(line, "\r\n");
-            if (nl) *nl = 0;
-            if (!strncmp(line, "port=", 5))          s_port = atoi(line + 5);
-            else if (!strncmp(line, "password=", 9)) snprintf(s_pass, sizeof s_pass, "%.*s", (int)sizeof s_pass - 1, line + 9);
-        }
-        fclose(fp);
-    }
-    if (!s_pass[0]) read_agent_password();
-}
-
-/* ---- minimal HTTP（和 speedtest.c 同一套写法，多返回一个状态码用来认 401）---- */
-
-static int wait_ready(int fd, int write_side, int ms)
-{
-    fd_set s;
-    struct timeval tv;
-    FD_ZERO(&s);
-    FD_SET(fd, &s);
-    tv.tv_sec = ms / 1000;
-    tv.tv_usec = (ms % 1000) * 1000;
-    return select(fd + 1, write_side ? NULL : &s, write_side ? &s : NULL, NULL, &tv);
-}
-
-static int es_connect(void)
-{
-    struct sockaddr_in sa;
-    int fd = socket(AF_INET, SOCK_STREAM, 0);
-    int f, rc;
-
-    if (fd < 0) return -1;
-    memset(&sa, 0, sizeof sa);
-    sa.sin_family = AF_INET;
-    sa.sin_port = htons((uint16_t)s_port);
-    sa.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    f = fcntl(fd, F_GETFL, 0);
-    if (f < 0 || fcntl(fd, F_SETFL, f | O_NONBLOCK) < 0) { close(fd); return -1; }
-    rc = connect(fd, (struct sockaddr *)&sa, sizeof sa);
-    if (rc < 0 && errno != EINPROGRESS) { close(fd); return -1; }
-    if (rc < 0 && wait_ready(fd, 1, ES_IO_MS) <= 0) { close(fd); return -1; }
-    fcntl(fd, F_SETFL, f);
-    return fd;
-}
-
-/*
- * 一次请求。返回 HTTP 状态码（0 = 连不上/没回包），*body 指向静态缓冲区里的正文。
- * 和 sc_http 一样：下一次调用会覆盖上一次的内容，要用的字段先取完再发下一个请求。
- *
- * 用 HTTP/1.0：这里不解分块编码，1.0 保证对端不会分块（tiny_http 本来就回
- * Content-Length，但换个服务端就不一定了）。
- */
-static int es_http(const char *method, const char *path, const char *json, char **body)
-{
-    static char resp[ES_RESP_MAX];
-    char req[1024], auth[128] = "";
-    size_t n = 0;
-    char *p;
-    int fd;
-
-    *body = NULL;
-    fd = es_connect();
-    if (fd < 0) return 0;
-    if (s_token[0]) snprintf(auth, sizeof auth, "Authorization: Bearer %s\r\n", s_token);
-    snprintf(req, sizeof req,
-             "%s %s HTTP/1.0\r\nHost: 127.0.0.1:%d\r\n%s"
-             "Content-Type: application/json\r\nContent-Length: %d\r\n"
-             "Connection: close\r\n\r\n%s",
-             method, path, s_port, auth, json ? (int)strlen(json) : 0, json ? json : "");
-    if (write(fd, req, strlen(req)) < 0) { close(fd); return 0; }
-    for (;;) {
-        ssize_t rd;
-        if (n + 1 >= sizeof resp) break;
-        if (wait_ready(fd, 0, ES_IO_MS) <= 0) break;
-        rd = read(fd, resp + n, sizeof resp - 1 - n);
-        if (rd <= 0) break;
-        n += (size_t)rd;
-    }
-    close(fd);
-    resp[n] = 0;
-    if (strncmp(resp, "HTTP/1.", 7) || !(p = strstr(resp, "\r\n\r\n"))) return 0;
-    *body = p + 4;
-    return atoi(resp + 9);
-}
-
-static int es_login(void)
-{
-    char js[300], data[160], *b;
-    size_t o = (size_t)snprintf(js, sizeof js, "{\"password\":\"");
-
-    for (const char *p = s_pass; *p && o + 4 < sizeof js; p++) {
-        if (*p == '"' || *p == '\\') js[o++] = '\\';
-        js[o++] = *p;
-    }
-    snprintf(js + o, sizeof js - o, "\"}");
-    s_token[0] = 0;
-    if (es_http("POST", "/api/auth/login", js, &b) != 200 || !b) return 0;
-    if (!json_get(b, "data", data, sizeof data)) return 0;
-    return json_get(data, "token", s_token, sizeof s_token) && s_token[0];
-}
-
-/* 带登录的请求。401 = token 过期（agent 给 1 小时）或 agent 重启过，重登一次再试 */
+/* 登录、401 重登、密码和端口（含可选的 esim.conf 覆盖）都在 agent_client.c。
+ * 正文在本模块自己的缓冲区里，下一次 es_api() 会覆盖。 */
 static int es_api(const char *method, const char *path, const char *json, char **body)
 {
-    int code;
-
-    if (!s_token[0] && s_pass[0]) es_login();
-    code = es_http(method, path, json, body);
-    if (code == 401 && s_pass[0] && es_login())
-        code = es_http(method, path, json, body);
-    return code;
+    static char resp[ES_RESP_MAX];
+    return agent_api(method, path, json, resp, sizeof resp, body);
 }
-
-int agent_request(const char *method, const char *path, const char *json)
-{
-    char *b;
-    load_conf();
-    return es_api(method, path, json, &b);
-}
-
-int agent_post(const char *path) { return agent_request("POST", path, NULL); }
 
 /* ---- 数据 ---- */
 
@@ -377,6 +216,9 @@ static int poll_job(int *reload)
                 snprintf(s_msg, sizeof s_msg,
                          "\xE5\xB7\xB2\xE5\x88\x87\xE6\x8D\xA2\xE5\x88\xB0 %s\xEF\xBC\x88%ld \xE7\xA7\x92\xEF\xBC\x89",
                          s_target_name, secs);   /* 已切换到 X（N 秒） */
+        } else if (!strcmp(status, "error") && strstr(msg, "card is busy")) {
+            /* agent 重试几次后卡仍回 catBusy（eSTK.me 卡偶发），它会拦 5 分钟 */
+            snprintf(s_msg, sizeof s_msg, "卡正忙，没切成，约 5 分钟后再试");
         } else if (!strcmp(status, "error")) {
             snprintf(s_msg, sizeof s_msg, "\xE5\x88\x87\xE6\x8D\xA2\xE5\xA4\xB1\xE8\xB4\xA5\xEF\xBC\x9A%s", msg);   /* 切换失败： */
         } else {
@@ -428,7 +270,6 @@ int esim_poll(int active)
 
     if (!active) s_was_active = 0;
     if (!active && !s_my_job) return 0;
-    load_conf();
     t = now_ms();
     entering = active && !s_was_active;
     if (active) s_was_active = 1;
@@ -626,12 +467,12 @@ int esim_select(int index)
     }
     s_arm_iccid[0] = 0;
 
-    load_conf();
     snprintf(js, sizeof js, "{\"iccid\":\"%s\"}", e->iccid);
     code = es_api("POST", "/api/esim/switch", js, &b);
     if (code == 409) { s_busy = 1; return ESIM_SEL_BUSY; }
     if (code == 429) {
-        /* agent 的冷却保护（catBusy 卡片，見 zte-agent esim.rs switch()）。
+        /* agent 的冷却保护：只在卡真的回过 catBusy 之后（9-26 起，
+         * 以前是每次切换后都拦，见 zte-agent esim.rs switch()）。
          * 错误文本形如 "...wait 480s and retry"，抠出秒数拼中文提示；
          * 抠不出来就给个不带数字的通用提示。这个格式跟 agent 耦合，
          * agent 那边措辞变了这里要跟着改。 */
@@ -643,13 +484,10 @@ int esim_select(int index)
         if (w) wait = atoi(w + 5);
         if (wait > 0)
             snprintf(s_msg, sizeof s_msg,
-                     "\xE5\x8D\xA1\xE5\x88\x9A\xE5\x88\x87\xE6\x8D\xA2\xE8\xBF\x87\xEF\xBC\x8C"
-                     "\xE8\xBF\x98\xE8\xA6\x81\xE7\xAD\x89 %d \xE7\xA7\x92\xE5\x86\x8D\xE8\xAF\x95",
-                     wait);   /* 卡刚切换过，还要等 N 秒再试 */
+                     "卡刚报过忙，还要等 %d 秒再试", wait);
         else
             snprintf(s_msg, sizeof s_msg,
-                     "\xE5\x8D\xA1\xE5\x88\x9A\xE5\x88\x87\xE6\x8D\xA2\xE8\xBF\x87\xEF\xBC\x8C"
-                     "\xE7\xA8\x8D\xE5\x90\x8E\xE5\x86\x8D\xE8\xAF\x95");   /* 卡刚切换过，稍后再试 */
+                     "卡刚报过忙，稍后再试");
         s_msg_ms = now_ms();
         return ESIM_SEL_COOLDOWN;
     }

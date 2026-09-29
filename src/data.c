@@ -39,6 +39,16 @@
 #define DEVUI_BACKEND_RETRY_MS 1000
 #endif
 
+/* datad's SSE sends a keep-alive comment every 15 s (axum default), so 45 s
+ * with no byte at all — no snapshot, no keep-alive, no HTTP reply — means it
+ * is gone even if a half-dead TCP stream still looks open. */
+#ifndef DEVUI_BACKEND_SILENT_MS
+#define DEVUI_BACKEND_SILENT_MS 45000
+#endif
+#ifndef DEVUI_BACKEND_SILENT_RETRY_MS
+#define DEVUI_BACKEND_SILENT_RETRY_MS 5000
+#endif
+
 /* Consecutive SSE snapshot parse failures tolerated before we drop the stream
  * and let the poll loop fall back to HTTP. A live-but-unparseable stream (e.g.
  * an upstream that breaks SSE framing) otherwise freezes the UI silently. */
@@ -86,6 +96,10 @@ struct backend_state {
     unsigned long long committed_live_version;
     devui_data_t current_data;
     int current_valid;
+    /* last time datad said anything (monotonic ms / wall s); 0 = never */
+    uint32_t alive_ms;
+    long alive_wall;
+    int silent;
 };
 
 static struct backend_state g_backend;
@@ -95,6 +109,26 @@ static uint32_t mono_ms(void)
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (uint32_t)(ts.tv_sec * 1000 + ts.tv_nsec / 1000000);
+}
+
+static void mark_alive(void)
+{
+    g_backend.alive_ms = mono_ms();
+    if (!g_backend.alive_ms) g_backend.alive_ms = 1;
+    g_backend.alive_wall = (long)time(NULL);
+    g_backend.silent = 0;
+}
+
+/* Own clock on purpose: a "now" taken by the caller before a read that just
+ * marked us alive would underflow. Latched until datad says something again,
+ * so a very long outage can't wrap the counter back into "live". */
+static int backend_silent(void)
+{
+    if (!g_backend.alive_ms) return 0;
+    if (!g_backend.silent &&
+        (uint32_t)(mono_ms() - g_backend.alive_ms) > DEVUI_BACKEND_SILENT_MS)
+        g_backend.silent = 1;
+    return g_backend.silent;
 }
 
 static void backend_init_once(void)
@@ -208,6 +242,9 @@ static int parse_snapshot(devui_data_t *d, const char *buf)
         getstr(sec, "sa_bands", d->sa_bands, sizeof d->sa_bands);
         getstr(sec, "nsa_bands", d->nsa_bands, sizeof d->nsa_bands);
         getstr(sec, "lte_bands", d->lte_bands, sizeof d->lte_bands);
+        getstr(sec, "nr_sa_supported_bands", d->sa_sup, sizeof d->sa_sup);
+        getstr(sec, "nr_nsa_supported_bands", d->nsa_sup, sizeof d->nsa_sup);
+        getstr(sec, "lte_supported_bands", d->lte_sup, sizeof d->lte_sup);
         {
             char hsr[16];
             d->hsr = json_get(sec, "HSR", hsr, sizeof hsr) ? truthy_value(hsr) : 0;
@@ -468,7 +505,8 @@ static int send_all(int fd, const char *buf, size_t len, int timeout_ms)
 {
     size_t off = 0;
     while (off < len) {
-        ssize_t wr = write(fd, buf + off, len - off);
+        /* MSG_NOSIGNAL: SIGPIPE isn't ignored, a datad restart mid-write would kill the screen */
+        ssize_t wr = send(fd, buf + off, len - off, MSG_NOSIGNAL);
         if (wr > 0) {
             off += (size_t)wr;
             continue;
@@ -577,6 +615,7 @@ static int fetch_state_http(void)
         if (body) body += 2;
     }
     if (!body) return -1;
+    mark_alive();
     return apply_snapshot_json(body, n - (size_t)(body - resp));
 }
 
@@ -732,6 +771,7 @@ static int open_sse_stream(void)
             memcpy(g_backend.sse_buf, body, g_backend.sse_len);
             g_backend.next_retry_ms = 0;
             s_pace_sent = -1;   /* maybe a restarted datad: tell it the pace again */
+            mark_alive();
             return 0;
         }
     }
@@ -766,6 +806,7 @@ static int drain_sse_stream(void)
         rd = read(g_backend.sse_fd, g_backend.sse_buf + g_backend.sse_len,
                   sizeof g_backend.sse_buf - 1 - g_backend.sse_len);
         if (rd > 0) {
+            mark_alive();       /* snapshots and keep-alive comments alike */
             g_backend.sse_len += (size_t)rd;
             g_backend.sse_buf[g_backend.sse_len] = 0;
             changed |= process_sse_buffer();
@@ -796,6 +837,12 @@ int data_backend_init(void)
 
 int data_backend_fd(void) { return g_backend.sse_fd; }
 
+long data_backend_alive_wall(void) { return g_backend.alive_wall; }
+
+int data_backend_silent(void) { return backend_silent(); }
+
+unsigned long long data_backend_version(void) { return g_backend.committed_live_version; }
+
 int data_backend_poll(uint32_t now_ms)
 {
     control_reap(now_ms);
@@ -806,6 +853,13 @@ int data_backend_poll(uint32_t now_ms)
         (void)data_backend_init();
     if (g_backend.sse_fd >= 0) {
         changed |= drain_sse_stream();
+        /* open but silent past the keep-alive: reconnect instead of waiting on it */
+        if (g_backend.sse_fd >= 0 && backend_silent()) {
+            fprintf(stderr, "devui: SSE silent for %u ms, reconnecting\n",
+                    (unsigned)(mono_ms() - g_backend.alive_ms));
+            close_sse_stream();
+            g_backend.next_retry_ms = now_ms;
+        }
         /* If drain_sse_stream() gave up on an unparseable stream, pull one
          * HTTP snapshot now instead of waiting a full retry interval. */
         if (g_backend.sse_fd < 0 && fetch_state_http() > 0)
@@ -817,7 +871,10 @@ int data_backend_poll(uint32_t now_ms)
         } else {
             int http_changed = fetch_state_http();
             if (http_changed > 0) changed = 1;
-            g_backend.next_retry_ms = now_ms + DEVUI_BACKEND_RETRY_MS;
+            /* a datad that accepts but never answers costs up to two I/O
+             * timeouts per try on this thread: try less often once it is gone */
+            g_backend.next_retry_ms = now_ms +
+                (backend_silent() ? DEVUI_BACKEND_SILENT_RETRY_MS : DEVUI_BACKEND_RETRY_MS);
         }
     }
     return changed;

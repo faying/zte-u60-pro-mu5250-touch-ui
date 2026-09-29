@@ -5,6 +5,11 @@
  * SPDX-License-Identifier: MIT
  */
 #include "ui_logic.h"
+#include "key_input.h"
+
+#include <fcntl.h>
+#include <stdint.h>
+#include <unistd.h>
 
 #include <stdio.h>
 #include <string.h>
@@ -18,6 +23,14 @@ static int pass, fail;
     } while (0)
 
 #define M(h, m) ((h) * 60 + (m))
+
+/* Power key: feed evdev records through a pipe (same layout key_input reads). */
+struct tkev { unsigned long sec, usec; uint16_t type, code; int32_t value; };
+static void key_feed(int fd, int value)
+{
+    struct tkev e = { 0, 0, 1 /* EV_KEY */, 116 /* KEY_POWER */, value };
+    if (write(fd, &e, sizeof e) != (ssize_t)sizeof e) perror("write");
+}
 
 int main(void)
 {
@@ -64,23 +77,7 @@ int main(void)
     CHECK("dark writes 0 (litehtml: 0 = dark)", ui_legacy_theme_value(1) == 0);
     CHECK("light writes 1", ui_legacy_theme_value(0) == 1);
 
-    /* operator logo slug (same table as manager web operatorLogo.ts) */
-    CHECK("logo 460-00", ui_operator_logo(460, 0) && !strcmp(ui_operator_logo(460, 0), "china-mobile"));
-    CHECK("logo 460-11", ui_operator_logo(460, 11) && !strcmp(ui_operator_logo(460, 11), "china-telecom"));
-    CHECK("logo 311-480", ui_operator_logo(311, 480) && !strcmp(ui_operator_logo(311, 480), "verizon"));
-    CHECK("sim logo CMLink by SPN", !strcmp(ui_sim_logo(454, 12, "CMLink"), "cmlink"));
-    CHECK("sim logo CMHK without SPN", !strcmp(ui_sim_logo(454, 12, ""), "cmhk"));
-    CHECK("sim logo NULL spn", !strcmp(ui_sim_logo(460, 0, NULL), "china-mobile"));
-    CHECK("logo CTM", ui_operator_logo(455, 1) && !strcmp(ui_operator_logo(455, 1), "ctm"));
-    CHECK("logo 3 HK", ui_operator_logo(454, 3) && !strcmp(ui_operator_logo(454, 3), "three-hk"));
-    {
-        int c = 0, n = 0;
-        CHECK("imsi 460 2-digit", ui_imsi_plmn("460011234567890", &c, &n) && c == 460 && n == 1);
-        CHECK("imsi 310 3-digit", ui_imsi_plmn("310260123456789", &c, &n) && c == 310 && n == 260);
-        CHECK("imsi 466-92", ui_imsi_plmn("466920123456789", &c, &n) && c == 466 && n == 92);
-        CHECK("imsi empty", !ui_imsi_plmn("", &c, &n) && !ui_imsi_plmn(NULL, &c, &n));
-    }
-    CHECK("logo unknown", ui_operator_logo(0, 0) == NULL && ui_operator_logo(234, 15) == NULL);
+    /* operator logos, IMSI → PLMN: zwrt-datad screen.rs (tests there) */
 
     puts("exec guard");
     ui_exec_hist_t none = { 0, 0, 0 };
@@ -203,17 +200,6 @@ int main(void)
     CHECK("red fill never under 3", ui_bat_red_w(1, 27) == 3 && ui_bat_red_w(0, 27) == 3);
     CHECK("red fill never over 20 % (digits start at x≥7)", ui_bat_red_w(20, 27) == 5 && ui_bat_red_w(90, 27) == 5);
 
-    puts("signal card");
-    CHECK("boot, nothing yet: loading (not stale)", ui_sig_state(0, 0, "", 0, 0, 0) == UI_SIG_LOADING);
-    CHECK("had data, now invalid: stale", ui_sig_state(1, 0, "sim ready", 4, 1, 12) == UI_SIG_STALE);
-    CHECK("sim absent", ui_sig_state(1, 1, "sim absent", 0, 0, 0) == UI_SIG_NOSIM);
-    CHECK("unknown sim state is not a SIM problem", ui_sig_state(1, 1, "", 4, 1, 12) == UI_SIG_GOOD);
-    CHECK("0 bars with SIM: no service", ui_sig_state(1, 1, "sim ready", 0, 0, 0) == UI_SIG_NONE);
-    CHECK("2 bars: weak", ui_sig_state(1, 1, "sim ready", 2, 1, 15) == UI_SIG_WEAK);
-    CHECK("4 bars, SINR -2: weak", ui_sig_state(1, 1, "sim ready", 4, 1, -2) == UI_SIG_WEAK);
-    CHECK("4 bars, no SINR: good", ui_sig_state(1, 1, "sim ready", 4, 0, 0) == UI_SIG_GOOD);
-    CHECK("5 bars, SINR 18: good", ui_sig_state(1, 1, "sim ready", 5, 1, 18) == UI_SIG_GOOD);
-
     puts("touch while dark");
     {
         ui_tgate_t g = { 0 };
@@ -266,30 +252,13 @@ int main(void)
     puts("radio technology names");
     {
         char b[32];
-        CHECK("SA → 5G", !strcmp(ui_rat_short("SA"), "5G"));
-        CHECK("NSA → 5G, not cut to 3 chars", !strcmp(ui_rat_short("NSA"), "5G"));
         CHECK("ENDC → 5G NSA", ui_rat("ENDC") == UI_RAT_5G_NSA);
-        CHECK("LTE → 4G", !strcmp(ui_rat_short("LTE"), "4G"));
         CHECK("LTE-A → 4G", ui_rat("LTE-A") == UI_RAT_4G);
-        CHECK("HSPA+ → 3G", !strcmp(ui_rat_short("HSPA+"), "3G"));
         CHECK("WCDMA → 3G", ui_rat("WCDMA") == UI_RAT_3G);
-        CHECK("EDGE → 2G", !strcmp(ui_rat_short("EDGE"), "2G"));
         CHECK("GSM → 2G", ui_rat("GSM") == UI_RAT_2G);
-        CHECK("empty → empty", !strcmp(ui_rat_short(""), ""));
-        CHECK("LIMITED_SERVICE → nothing", !strcmp(ui_rat_short("LIMITED_SERVICE"), ""));
         CHECK("UNREGISTERED is not NR", ui_rat("UNREGISTERED") == UI_RAT_NONE);
         CHECK("LIMITED_SERVICE_SA is not 5G", ui_rat("LIMITED_SERVICE_SA") == UI_RAT_NONE);
         CHECK("NR5G_SA → 5G SA", ui_rat("NR5G_SA") == UI_RAT_5G_SA);
-        ui_rat_long("NSA", 1, b, sizeof b);   CHECK("long NSA", !strcmp(b, "5G NSA · 4G 锚点"));
-        ui_rat_long("SA", 1, b, sizeof b);    CHECK("long SA", !strcmp(b, "5G SA"));
-        ui_rat_long("HSPA+", 1, b, sizeof b); CHECK("long HSPA+", !strcmp(b, "3G HSPA+"));
-        ui_rat_long("EDGE", 1, b, sizeof b);  CHECK("long EDGE", !strcmp(b, "2G EDGE"));
-        ui_rat_long("CDMA2000", 1, b, sizeof b); CHECK("long CDMA2000", !strcmp(b, "3G CDMA2000"));
-        ui_rat_long("LIMITED_SERVICE", 1, b, sizeof b); CHECK("long unknown → empty", b[0] == 0);
-        ui_rat_long("LTE", 1, b, sizeof b);   CHECK("long LTE", !strcmp(b, "4G LTE"));
-        ui_rat_long("LTE", 2, b, sizeof b);   CHECK("long LTE CA", !strcmp(b, "4G LTE-A"));
-        ui_rat_long("WCDMA", 1, b, sizeof b); CHECK("long WCDMA", !strcmp(b, "3G WCDMA"));
-        ui_rat_long("GSM", 1, b, sizeof b);   CHECK("long GSM", !strcmp(b, "2G GSM"));
         ui_band_short("LTE BAND 3", 0, b, sizeof b);   CHECK("LTE BAND 3 → B3", !strcmp(b, "B3"));
         ui_band_short("NR5G BAND 78", 1, b, sizeof b); CHECK("NR5G BAND 78 → n78", !strcmp(b, "n78"));
         ui_band_short("n78", 1, b, sizeof b);          CHECK("n78 stays", !strcmp(b, "n78"));
@@ -300,151 +269,9 @@ int main(void)
         ui_band_short("n261", 1, b, sizeof b);         CHECK("n261 is a band", !strcmp(b, "n261"));
     }
 
-    puts("network story: every situation, in priority order");
-    {
-        ui_net_story_t o;
-        /* a good 5G SA baseline; each row changes what it says */
-        ui_net_in_t b = { .ever_valid = 1, .valid = 1, .sim_state = "sim ready", .net_type = "SA", .bars = 5,
-                          .data_up = 1, .roaming = 0, .n_active = 3, .nr_active = 3, .mhz = 220,
-                          .sinr_valid = 1, .sinr = 17.7, .rsrp_valid = 1, .rsrp = -87, .rsrq_valid = 1, .rsrq = -11,
-                          .rx_bps = 0, .ambr_dl = 1668.64, .mcc = 460, .mnc = 11, .nr_band = 78, .nr_mhz = 220,
-                          .net_select = "WL_AND_5G" };
-        ui_net_in_t x;
-#define T_(desc, field_edits, head, tone_)                                         \
-        do { x = b; field_edits; ui_net_story(&x, &o);                            \
-             CHECK(desc, !strcmp(o.headline, head) && o.tone == (tone_)); } while (0)
-        T_("good SA", (void)0, "顺畅", UI_NET_OK);
-        ui_net_story(&b, &o);
-        CHECK("SA 3 NR in mainland China = 5G-A", !strcmp(o.rat, "5G-A") && !strcmp(o.link, "3 条载波聚合 · 带宽很宽"));
-        CHECK("layer words", !strcmp(o.sig, "强") && o.sig_tone == UI_NET_OK && !strcmp(o.noise, "小") && !o.load[0] &&
-                              !strcmp(o.limit, "无") && o.cause == UI_CAUSE_NONE);
-        CHECK("no hint when fine", o.hint[0] == 0);
-        T_("loading", x.ever_valid = 0, "正在读取…", UI_NET_NEUTRAL);
-        T_("data service gone", x.valid = 0, "读不到数据", UI_NET_NEUTRAL);
-        T_("no SIM beats everything below", (x.sim_state = "sim absent", x.bars = 0), "无 SIM", UI_NET_BAD);
-        T_("airplane", (x.airplane = 1, x.bars = 0), "移动网络已关", UI_NET_NEUTRAL);
-        T_("limited service", (x.net_type = "LIMITED_SERVICE", x.bars = 0), "只能紧急呼叫", UI_NET_BAD);
-        T_("no service", (x.net_type = "", x.bars = 0), "无服务", UI_NET_BAD);
-        T_("registered, data down", x.data_up = 0, "没连上网", UI_NET_BAD);
-        x = b; x.data_up = 0; x.roaming = 1; ui_net_story(&x, &o);
-        CHECK("data down abroad mentions data roaming", strstr(o.hint, "数据漫游") != NULL);
-        T_("weak by bars", x.bars = 2, "慢：信号弱", UI_NET_WARN);
-        T_("noisy by SINR", x.sinr = -2.5, "慢：干扰大", UI_NET_WARN);
-        T_("weak by RSRP", x.rsrp = -115, "慢：信号弱", UI_NET_WARN);
-        T_("weak beats roaming", (x.bars = 1, x.roaming = 1), "慢：信号弱", UI_NET_WARN);
-        T_("weak beats noisy", (x.bars = 2, x.sinr = -3), "慢：信号弱", UI_NET_WARN);
-        x = b; x.sinr = -2.5; ui_net_story(&x, &o);
-        CHECK("noisy keeps the signal word strong", !strcmp(o.sig, "强") && !strcmp(o.noise, "大") &&
-                                                     o.cause == UI_CAUSE_NOISE && strstr(o.hint, "SINR -2.5"));
-        CHECK("bars tiers", ui_bars_tier(5) == 2 && ui_bars_tier(4) == 2 && ui_bars_tier(3) == 1 &&
-                            ui_bars_tier(2) == 0 && ui_bars_tier(1) == 0 && ui_bars_tier(0) == -1);
-        T_("roaming", x.roaming = 1, "顺畅", UI_NET_OK);
-        T_("3G", (x.net_type = "WCDMA", x.n_active = 0, x.sinr_valid = 0, x.rsrp_valid = 0), "只有 3G", UI_NET_WARN);
-        T_("2G", (x.net_type = "EDGE", x.n_active = 0, x.sinr_valid = 0, x.rsrp_valid = 0), "只有 2G", UI_NET_WARN);
-        x = b; x.net_type = "WCDMA"; x.n_active = 0; x.sinr_valid = x.rsrp_valid = 0; x.net_select = "Only_WCDMA";
-        ui_net_story(&x, &o);
-        CHECK("3G pinned says so", strstr(o.hint, "限定") != NULL && !strcmp(o.link, "这个制式没有载波聚合"));
-        x = b; x.net_type = "NSA"; x.n_active = 2; x.nr_active = 1; x.lte_active = 1; x.mhz = 120; ui_net_story(&x, &o);
-        CHECK("NSA words", !strcmp(o.headline, "顺畅") && !strcmp(o.rat, "5G") &&
-                           !strcmp(o.link, "4G 锚点 + 5G，2 条载波 · 带宽充足"));
-        x = b; x.net_type = "LTE"; x.n_active = 3; x.nr_active = 0; x.lte_active = 3; x.mhz = 60; ui_net_story(&x, &o);
-        CHECK("LTE CA words (China: plain 4G)", !strcmp(o.rat, "4G") && !strcmp(o.link, "3 条载波聚合 · 带宽一般"));
-        x = b; x.net_type = "LTE"; x.n_active = 1; x.nr_active = 0; x.lte_active = 1; x.mhz = 20; x.net_select = "Only_LTE"; ui_net_story(&x, &o);
-        CHECK("single 20 MHz LTE is narrow", !strcmp(o.rat, "4G") && !strcmp(o.link, "单载波 · 带宽偏窄") &&
-                                            !strcmp(o.headline, "慢：载波窄") && o.cause == UI_CAUSE_NARROW);
-        x = b; x.net_type = "LTE"; x.n_active = 2; x.nr_active = 0; x.lte_active = 2; x.mhz = 40; x.net_select = "Only_LTE"; ui_net_story(&x, &o);
-        CHECK("pinned to 4G says so", !strcmp(o.headline, "顺畅") && strstr(o.hint, "只用 4G") != NULL && o.tone == UI_NET_OK);
-        x = b; x.net_type = "LTE"; x.n_active = 1; x.nr_active = 0; x.lte_active = 1; x.mhz = 0; ui_net_story(&x, &o);
-        CHECK("unknown width: no width word", !strcmp(o.link, "单载波"));
-        x = b; x.net_select = "TCHGWL_5G"; ui_net_story(&x, &o);
-        CHECK("TCHGWL_5G is not a pinned mode", o.hint[0] == 0 || strstr(o.hint, "只用") == NULL);
-        CHECK("net_select words", !strcmp(ui_net_select_word("TCHGWL_5G"), "自动") && !strcmp(ui_net_select_word("WL_AND_5G"), "自动") &&
-                                  !strcmp(ui_net_select_word("Only_5G"), "只用 5G SA") && !strcmp(ui_net_select_word("LTE_AND_5G"), "只用 5G NSA") &&
-                                  !strcmp(ui_net_select_word("Only_GSM_WCDMA"), "只用 3G 和 2G") && !strcmp(ui_net_select_word(""), "-") &&
-                                  !strcmp(ui_net_select_word("SOMETHING_NEW"), "SOMETHING_NEW"));
-        CHECK("auto values", ui_net_select_is_auto("TCHGWL_5G") && ui_net_select_is_auto("WL_AND_5G") && !ui_net_select_is_auto("Only_LTE") &&
-                             !ui_net_select_is_auto(NULL));
-        x = b; x.bars = 3; ui_net_story(&x, &o);    CHECK("3 bars = 中", !strcmp(o.sig, "中") && o.sig_tone == UI_NET_WARN);
-        x = b; x.sinr = 5; ui_net_story(&x, &o);    CHECK("SINR 5 = 干扰中, signal still 强", !strcmp(o.noise, "中") && !strcmp(o.sig, "强"));
-        x = b; x.sinr = -3; ui_net_story(&x, &o);   CHECK("SINR < 0 = 干扰大", !strcmp(o.noise, "大") && o.noise_tone == UI_NET_BAD);
-
-        /* why it is slow (docs/designs/home-net-card.md) */
-        T_("operator cap", x.ambr_dl = 5, "慢：限速", UI_NET_WARN);
-        x = b; x.ambr_dl = 5; ui_net_story(&x, &o);
-        CHECK("cap: cause, word, number", o.cause == UI_CAUSE_LIMIT && !strcmp(o.limit, "有") && strstr(o.hint, "5 Mbps"));
-        x = b; x.ambr_dl = 0; ui_net_story(&x, &o);
-        CHECK("AMBR unknown: no claim", !strcmp(o.limit, "—") && !strcmp(o.headline, "顺畅"));
-        T_("cap beats weak", (x.ambr_dl = 5, x.sinr = -3), "慢：限速", UI_NET_WARN);
-        T_("crowded: good RSRP, poor RSRQ, downloading", (x.rsrq = -18, x.rx_bps = 400000), "慢：疑似拥挤", UI_NET_WARN);
-        x = b; x.rsrq = -18; x.rx_bps = 400000; ui_net_story(&x, &o);
-        CHECK("crowded words", o.cause == UI_CAUSE_CROWD && !strcmp(o.load, "高") && !strcmp(o.sig, "强") &&
-                               strstr(o.hint, "RSRQ -18"));
-        T_("idle: poor RSRQ alone says nothing", (x.rsrq = -18, x.rx_bps = 20000), "顺畅", UI_NET_OK);
-        x = b; x.rsrq = -18; ui_net_story(&x, &o);   CHECK("idle: no load word", !o.load[0]);
-        x = b; x.rx_bps = 400000; ui_net_story(&x, &o); CHECK("busy and fine", !strcmp(o.load, "正常"));
-        T_("LTE RSRQ threshold is -12", (x.net_type = "LTE", x.n_active = 2, x.lte_active = 2, x.nr_active = 0,
-                                         x.mhz = 40, x.rsrq = -13, x.rx_bps = 400000), "慢：疑似拥挤", UI_NET_WARN);
-        T_("noisy is not called crowded", (x.rsrp = -104, x.sinr = -1, x.rsrq = -18, x.rx_bps = 400000),
-           "慢：干扰大", UI_NET_WARN);
-        T_("one narrow carrier", (x.n_active = 1, x.nr_active = 1, x.mhz = 20), "慢：载波窄", UI_NET_WARN);
-        x = b; x.n_active = 1; x.nr_active = 1; x.mhz = 100; ui_net_story(&x, &o);
-        CHECK("one wide carrier is fine", !strcmp(o.headline, "顺畅"));
-        T_("narrow beats roaming", (x.n_active = 1, x.nr_active = 1, x.mhz = 15, x.roaming = 1), "慢：载波窄", UI_NET_WARN);
-
-        /* 2026-09-25 on the device: SA, one n5 15 MHz carrier, SINR -1.9,
-         * RSRP -102, RSRQ -17. The old card said 信号偏弱 and 信号较差 at once. */
-        x = b; x.bars = 3; x.n_active = 1; x.nr_active = 1; x.mhz = 15;
-        x.sinr = -1.9; x.rsrp = -102; x.rsrq = -17; x.rx_bps = 0; ui_net_story(&x, &o);
-        CHECK("device sample 9-25", !strcmp(o.headline, "慢：干扰大") && !strcmp(o.sig, "中") &&
-                                    !strcmp(o.noise, "大") && !o.load[0] && !strcmp(o.limit, "无") &&
-                                    o.cause == UI_CAUSE_NOISE && strstr(o.hint, "SINR -1.9"));
-        CHECK("headlines stay short", strlen(o.headline) <= 18 && strlen(o.hint) <= 60);
-#undef T_
-    }
-
-    puts("status-bar label by the network you are on (home-net-card.md)");
-    {
-        char b[16];
-        ui_net_in_t z = { .net_type = "SA", .mcc = 460, .mnc = 11, .nr_active = 1, .nr_band = 78, .nr_mhz = 100, .mhz = 100 };
-        ui_net_in_t x;
-#define B_(desc, edits, want) do { x = z; edits; ui_net_badge(&x, b, sizeof b); CHECK(desc, !strcmp(b, want)); } while (0)
-        B_("CN 1 carrier", (void)0, "5G");
-        B_("CN 2 carriers", (x.nr_active = 2, x.nr_mhz = 200), "5G");
-        B_("CN 3 carriers", x.nr_active = 3, "5G-A");
-        B_("CN NSA 3 NR", (x.net_type = "NSA", x.nr_active = 3), "5G-A");
-        B_("Unicom 2 carriers 200 MHz", (x.mnc = 1, x.nr_active = 2, x.nr_mhz = 200), "5G-A");
-        B_("Unicom 2 carriers 160 MHz", (x.mnc = 1, x.nr_active = 2, x.nr_mhz = 160), "5G");
-        B_("T-Mobile n41", (x.mcc = 310, x.mnc = 260, x.nr_band = 41), "5G UC");
-        B_("T-Mobile n71", (x.mcc = 310, x.mnc = 260, x.nr_band = 71), "5G");
-        B_("Verizon n77", (x.mcc = 311, x.mnc = 480, x.nr_band = 77), "5G UW");
-        B_("Verizon n48", (x.mcc = 311, x.mnc = 480, x.nr_band = 48), "5G UW");
-        B_("Verizon n5", (x.mcc = 311, x.mnc = 480, x.nr_band = 5, x.mhz = 10), "5G");
-        B_("AT&T n77", (x.mcc = 310, x.mnc = 410, x.nr_band = 77), "5G+");
-        B_("AT&T n5 + LTE 50 MHz", (x.mcc = 310, x.mnc = 410, x.nr_band = 5, x.mhz = 50), "5G+");
-        B_("AT&T n5 alone", (x.mcc = 310, x.mnc = 410, x.nr_band = 5, x.mhz = 10), "5G");
-        B_("Japan 5G", (x.mcc = 440, x.mnc = 10, x.nr_active = 3), "5G");
-        B_("Taiwan 5G", (x.mcc = 466, x.mnc = 92, x.nr_active = 3), "5G");
-        B_("HK 5G", (x.mcc = 454, x.mnc = 12, x.nr_active = 3), "5G");
-        B_("UK 5G", (x.mcc = 234, x.mnc = 30, x.nr_active = 3), "5G");
-        B_("Japan LTE CA", (x.net_type = "LTE", x.mcc = 440, x.nr_active = 0, x.lte_active = 2), "4G+");
-        B_("Taiwan LTE CA", (x.net_type = "LTE", x.mcc = 466, x.nr_active = 0, x.lte_active = 3), "4G+");
-        B_("Taiwan LTE 1", (x.net_type = "LTE", x.mcc = 466, x.nr_active = 0, x.lte_active = 1), "4G");
-        B_("China LTE CA", (x.net_type = "LTE", x.nr_active = 0, x.lte_active = 3), "4G");
-        B_("UK LTE CA", (x.net_type = "LTE", x.mcc = 234, x.nr_active = 0, x.lte_active = 2), "4G");
-        B_("US LTE", (x.net_type = "LTE", x.mcc = 310, x.mnc = 260, x.nr_active = 0, x.lte_active = 1), "LTE");
-        B_("US LTE CA", (x.net_type = "LTE", x.mcc = 311, x.mnc = 480, x.nr_active = 0, x.lte_active = 2), "LTE");
-        B_("3G", (x.net_type = "HSPA+", x.nr_active = 0), "3G");
-        B_("2G", (x.net_type = "EDGE", x.nr_active = 0), "2G");
-        B_("emergency only", x.net_type = "LIMITED_SERVICE", "SOS");
-        /* roaming follows the visited network: a China SIM on T-Mobile n41 is 5G UC */
-        B_("roaming on T-Mobile n41", (x.roaming = 1, x.mcc = 310, x.mnc = 260, x.nr_band = 41), "5G UC");
-        B_("roaming in Japan, 3 carriers", (x.roaming = 1, x.mcc = 440, x.mnc = 20, x.nr_active = 3), "5G");
-#undef B_
-        ui_net_story_t o;
-        ui_net_in_t y = { .ever_valid = 1, .valid = 1, .sim_state = "sim ready", .net_type = "", .bars = 0, .data_up = 0 };
-        ui_net_story(&y, &o);
-        CHECK("no service: status bar says so", !strcmp(o.rat, "无服务") && !strcmp(o.headline, "无服务"));
-    }
+    /* the verdict, the status-bar label, the tiers: zwrt-datad screen.rs,
+     * tested there (the cases that used to be here moved with the rules) */
+    /* radio-mode preference words: zwrt-datad screen.rs */
 
     puts("headline hold: 15 s before a new verdict shows");
     {
@@ -458,34 +285,7 @@ int main(void)
                                      ui_net_hold(&h, 3, 36000) == 1);
     }
 
-    puts("phone-style labels");
-    {
-        static const struct { const char *raw; int nr, lte; const char *want, *fam; } k[] = {
-            { "GSM", 0, 0, "2G", "GSM" },       { "GPRS", 0, 0, "2G", "GPRS" },
-            { "EDGE", 0, 0, "2G", "EDGE" },     { "CDMA", 0, 0, "2G", "CDMA 1X" },
-            { "1xRTT", 0, 0, "2G", "CDMA 1X" }, { "WCDMA", 0, 0, "3G", "WCDMA" },
-            { "UMTS", 0, 0, "3G", "WCDMA" },    { "HSPA", 0, 0, "3G", "HSPA" },
-            { "HSPA+", 0, 0, "3G", "HSPA+" },   { "DC-HSPA+", 0, 0, "3G", "HSPA+" },
-            { "TD-SCDMA", 0, 0, "3G", "TD-SCDMA" }, { "CDMA2000", 0, 0, "3G", "CDMA2000" },
-            { "EVDO", 0, 0, "3G", "CDMA2000" }, { "eHRPD", 0, 0, "3G", "CDMA2000" },
-            { "LTE", 0, 1, "4G", "LTE" },       { "TD-LTE", 0, 1, "4G", "LTE" },
-            { "FDD-LTE", 0, 1, "4G", "LTE" },   { "4G", 0, 1, "4G", "LTE" },
-            { "LTE", 0, 2, "4G", "LTE" },       { "LTE-A", 0, 1, "4G", "LTE" },
-            { "LTE_CA", 0, 1, "4G", "LTE" },    { "4G+", 0, 1, "4G", "LTE" },
-            { "SA", 1, 0, "5G", "NR" },         { "NSA", 1, 1, "5G", "NR" },
-            { "ENDC", 1, 2, "5G", "NR" },       { "SA", 2, 0, "5G", "NR" },
-            { "NSA", 2, 1, "5G", "NR" },        { "SA", 3, 0, "5G", "NR" },
-            { "5G-A", 1, 0, "5G-A", "NR" },     { "LIMITED_SERVICE", 0, 0, "", "" },
-            { "LIMITED_SERVICE_SA", 0, 0, "", "" },
-            { "", 0, 0, "", "" },
-        };
-        char b[16], d2[64];
-        for (size_t i = 0; i < sizeof k / sizeof *k; i++) {
-            ui_net_label(k[i].raw, k[i].nr, k[i].lte, b, sizeof b);
-            snprintf(d2, sizeof d2, "%s nr%d lte%d → %s / %s", k[i].raw, k[i].nr, k[i].lte, k[i].want, k[i].fam);
-            CHECK(d2, !strcmp(b, k[i].want) && !strcmp(ui_rat_family(k[i].raw), k[i].fam));
-        }
-    }
+    /* phone-style labels and technology names: zwrt-datad screen.rs */
 
     /* which card is in use */
     CHECK("iccid: trailing F padding ignored", ui_iccid_same("8986000000000000012F", "8986000000000000012"));
@@ -529,6 +329,31 @@ int main(void)
     CHECK("control: recv error → no fallback", !ui_control_should_fallback("", -1));
     CHECK("control: garbage → no fallback", !ui_control_should_fallback("xx 503", 6));
     CHECK("control: HTTP/1.0 503 → fallback", ui_control_should_fallback("HTTP/1.0 503 x", 14));
+
+    /* Power key (9-26: a long press on a dark screen did nothing) */
+    {
+        int p[2];
+        key_input_t k = { 0 };
+        if (pipe(p) == 0) {
+            fcntl(p[0], F_SETFL, O_NONBLOCK);
+            k.fd = p[0];
+            key_feed(p[1], 1);
+            CHECK("key: press → nothing yet", key_input_poll(&k, 1000) == KEY_EV_NONE);
+            key_feed(p[1], 0);
+            CHECK("key: quick release → short", key_input_poll(&k, 1300) == KEY_EV_SHORT);
+            key_feed(p[1], 1);
+            CHECK("key: press again", key_input_poll(&k, 2000) == KEY_EV_NONE);
+            CHECK("key: held past 1.2 s while polled → long", key_input_poll(&k, 3300) == KEY_EV_LONG);
+            key_feed(p[1], 0);
+            CHECK("key: release after long → nothing", key_input_poll(&k, 3500) == KEY_EV_NONE);
+            /* not polled while held (UI asleep): press and release read together */
+            key_feed(p[1], 1);
+            CHECK("key: dark press seen", key_input_poll(&k, 5000) == KEY_EV_NONE);
+            key_feed(p[1], 0);
+            CHECK("key: released 2 s later, never polled while held → long", key_input_poll(&k, 7000) == KEY_EV_LONG);
+            close(p[0]); close(p[1]);
+        } else CHECK("key: pipe", 0);
+    }
 
     printf("passed %d, failed %d\n", pass, fail);
     return fail ? 1 : 0;

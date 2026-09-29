@@ -18,6 +18,10 @@ void ui_create(void);
  * fast timer (the 50 ms key poll) while the panel is dark. The 1 s refresh
  * timer keeps running. */
 int  ui_key_fd(void);
+/* Power key is down right now: keep polling it even with the screen dark. */
+int  ui_key_held(void);
+/* 关机/重启 confirmed: on exit, turn the backlight off before the panel goes. */
+int  ui_powering_down(void);
 void ui_idle(int dark);
 void ui_debug_tap(void);   /* U60_DEVUI_TAPLOG diagnostics */
 

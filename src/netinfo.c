@@ -8,32 +8,21 @@
  * SPDX-License-Identifier: MIT
  */
 #include "netinfo.h"
+#include "agent_client.h"
 #include "json.h"
 
-#include <arpa/inet.h>
-#include <errno.h>
-#include <fcntl.h>
-#include <netinet/in.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/select.h>
-#include <sys/socket.h>
 #include <sys/time.h>
 #include <time.h>
 #include <unistd.h>
 
-#define NI_PORT      9090
-#define NI_ENV       "/data/zte-agent.env"
-#define NI_AGENT_SH  "/data/local/tmp/start_zte_agent.sh"
-#define NI_IO_MS     1500
 #define NI_TTL_MS    5000
 #define NI_BUSY_MS   2000
 #define NI_HOME_MS   30000
 #define NI_RESP_MAX  32768   /* 完整读取带 apn（约 1 KB）后留足余量；截断会报「读网络信息失败」 */
 
-static char s_pass[128], s_token[80];
-static int  s_pass_loaded;
 static netinfo_t s_ni;
 static char s_act_err[96];
 static int  s_was_mode;
@@ -47,119 +36,12 @@ static long now_ms(void)
     return (long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 
-/* agent 密码：env 文件优先，旧启动脚本兜底（同 alerts.c） */
-static void load_password(void)
-{
-    static const char *paths[] = { NI_ENV, NI_AGENT_SH };
-    char line[256];
-    FILE *fp = NULL;
-
-    if (s_pass_loaded) return;
-    s_pass_loaded = 1;
-    for (size_t i = 0; i < sizeof paths / sizeof *paths && !fp; i++) fp = fopen(paths[i], "r");
-    if (!fp) return;
-    while (fgets(line, sizeof line, fp)) {
-        char *p = strstr(line, "ZTE_AGENT_PASSWORD="), *e, q = 0;
-        if (!p) continue;
-        if ((e = strpbrk(p, "\r\n")) != NULL) *e = 0;
-        p += 19;
-        if (*p == '\'' || *p == '"') q = *p++;
-        e = q ? strchr(p, q) : strpbrk(p, " \t;");
-        if (e) *e = 0;
-        snprintf(s_pass, sizeof s_pass, "%s", p);
-        break;
-    }
-    fclose(fp);
-}
-
-static int wait_ready(int fd, int write_side, int ms)
-{
-    fd_set s;
-    struct timeval tv;
-    FD_ZERO(&s);
-    FD_SET(fd, &s);
-    tv.tv_sec = ms / 1000;
-    tv.tv_usec = (ms % 1000) * 1000;
-    return select(fd + 1, write_side ? NULL : &s, write_side ? &s : NULL, NULL, &tv);
-}
-
-static int ni_connect(void)
-{
-    struct sockaddr_in sa;
-    int fd = socket(AF_INET, SOCK_STREAM, 0), f, rc;
-
-    if (fd < 0) return -1;
-    memset(&sa, 0, sizeof sa);
-    sa.sin_family = AF_INET;
-    sa.sin_port = htons(NI_PORT);
-    sa.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    f = fcntl(fd, F_GETFL, 0);
-    if (f < 0 || fcntl(fd, F_SETFL, f | O_NONBLOCK) < 0) { close(fd); return -1; }
-    rc = connect(fd, (struct sockaddr *)&sa, sizeof sa);
-    if (rc < 0 && errno != EINPROGRESS) { close(fd); return -1; }
-    if (rc < 0 && wait_ready(fd, 1, NI_IO_MS) <= 0) { close(fd); return -1; }
-    fcntl(fd, F_SETFL, f);
-    return fd;
-}
-
-/* 返回 HTTP 状态码（0 = 连不上），*body 指向静态缓冲区（下次调用覆盖） */
-static int ni_http(const char *method, const char *path, const char *json, char **body)
-{
-    static char resp[NI_RESP_MAX];
-    char req[768], auth[128] = "";
-    size_t n = 0;
-    char *p;
-    int fd;
-
-    *body = NULL;
-    if ((fd = ni_connect()) < 0) return 0;
-    if (s_token[0]) snprintf(auth, sizeof auth, "Authorization: Bearer %s\r\n", s_token);
-    snprintf(req, sizeof req,
-             "%s %s HTTP/1.0\r\nHost: 127.0.0.1:%d\r\n%s"
-             "Content-Type: application/json\r\nContent-Length: %d\r\n"
-             "Connection: close\r\n\r\n%s",
-             method, path, NI_PORT, auth, json ? (int)strlen(json) : 0, json ? json : "");
-    if (write(fd, req, strlen(req)) < 0) { close(fd); return 0; }
-    for (;;) {
-        ssize_t rd;
-        if (n + 1 >= sizeof resp) break;
-        if (wait_ready(fd, 0, NI_IO_MS) <= 0) break;
-        rd = read(fd, resp + n, sizeof resp - 1 - n);
-        if (rd <= 0) break;
-        n += (size_t)rd;
-    }
-    close(fd);
-    resp[n] = 0;
-    if (strncmp(resp, "HTTP/1.", 7) || !(p = strstr(resp, "\r\n\r\n"))) return 0;
-    *body = p + 4;
-    return atoi(resp + 9);
-}
-
-static int ni_login(void)
-{
-    char js[300], data[160], *b;
-    size_t o = (size_t)snprintf(js, sizeof js, "{\"password\":\"");
-
-    for (const char *p = s_pass; *p && o + 4 < sizeof js; p++) {
-        if (*p == '"' || *p == '\\') js[o++] = '\\';
-        js[o++] = *p;
-    }
-    snprintf(js + o, sizeof js - o, "\"}");
-    s_token[0] = 0;
-    if (ni_http("POST", "/api/auth/login", js, &b) != 200 || !b) return 0;
-    if (!json_get(b, "data", data, sizeof data)) return 0;
-    return json_get(data, "token", s_token, sizeof s_token) && s_token[0];
-}
-
+/* 登录、401 重登、密码都在 agent_client.c；正文在本模块自己的缓冲区里，
+ * 下一次 ni_api() 会覆盖。 */
 static int ni_api(const char *method, const char *path, const char *json, char **body)
 {
-    int code;
-
-    load_password();
-    if (!s_token[0] && s_pass[0]) ni_login();
-    code = ni_http(method, path, json, body);
-    if (code == 401 && s_pass[0] && ni_login()) code = ni_http(method, path, json, body);
-    return code;
+    static char resp[NI_RESP_MAX];
+    return agent_api(method, path, json, resp, sizeof resp, body);
 }
 
 /* null / 缺字段 → "" */
@@ -321,6 +203,7 @@ static void parse(const char *data)
                 jstr(obj, "down_rate", v, sizeof v);  c->down_rate = v[0] ? strtol(v, NULL, 10) : -1;
                 jstr(obj, "up_rate", v, sizeof v);    c->up_rate = v[0] ? strtol(v, NULL, 10) : -1;
                 jstr(obj, "signal", v, sizeof v);     c->signal = (int)strtol(v, NULL, 10);
+                jstr(obj, "signal_tier", c->signal_tier, sizeof c->signal_tier);
                 jstr(obj, "band", c->band, sizeof c->band);
                 jstr(obj, "wifi_gen", v, sizeof v);   c->wifi_gen = (int)strtol(v, NULL, 10);
                 jstr(obj, "link_down_mbps", v, sizeof v); c->link_down = (int)strtol(v, NULL, 10);
@@ -328,7 +211,8 @@ static void parse(const char *data)
         }
     }
 
-    s_ni.apn_known = s_ni.apn_manual = 0;
+    s_ni.apn_known = s_ni.apn_manual = s_ni.apn_switching = 0;
+    s_ni.apn_switch_err[0] = 0;
     s_ni.napns = 0;
     memset(&s_ni.apn_in_use, 0, sizeof s_ni.apn_in_use);
     if (json_get(data, "apn", sub, sizeof sub) && sub[0] == '{') {
@@ -336,6 +220,9 @@ static void parse(const char *data)
         jstr(sub, "mode", tmp, sizeof tmp);
         s_ni.apn_known = tmp[0] != 0;
         s_ni.apn_manual = !strcmp(tmp, "manual");
+        jstr(sub, "switching", tmp, sizeof tmp);
+        s_ni.apn_switching = !strcmp(tmp, "true");
+        jstr(sub, "switch_error", s_ni.apn_switch_err, sizeof s_ni.apn_switch_err);
         if (json_get(sub, "in_use", obj, sizeof obj) && obj[0] == '{') parse_apn(obj, &s_ni.apn_in_use);
         if (json_get(sub, "manual", arr, sizeof arr)) {
             cur = arr;
@@ -477,6 +364,8 @@ void netinfo_apn_use(const char *id)
     if (!id || !id[0] || strlen(id) >= 24 || strchr(id, '"') || strchr(id, '\\')) return;
     snprintf(js, sizeof js, "{\"id\":\"%s\"}", id);
     act("/api/netinfo/apn", js);
+    /* 202 = agent 在后台切；读回之前，旧的失败原因不算这一次的 */
+    if (!s_act_err[0]) { s_ni.apn_switch_err[0] = 0; s_ni.apn_switching = 1; }
 }
 
 void netinfo_register(int op)

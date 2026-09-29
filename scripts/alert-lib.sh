@@ -11,7 +11,7 @@
 #
 # Why events carry a sequence number and not a line number or a timestamp:
 # the file is trimmed, which moves line numbers, and before the network sets
-# the clock the device thinks it is 1971. The number is allocated under the
+# the clock the device thinks it is 2025-01-04. The number is allocated under the
 # directory's flock, so the web's "read" cursor and u60-guard's "SMS done"
 # cursor stay valid across trims.
 # SPDX-License-Identifier: MIT

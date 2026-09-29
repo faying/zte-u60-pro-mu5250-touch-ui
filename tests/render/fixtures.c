@@ -34,6 +34,7 @@ static const char *const k_names[RT_SCENES] = {
     "good", "weak", "nosignal", "datad-down", "loading", "nosim",
     "abroad", "lowbat", "full-charging", "long-names", "empty",
     "nsa", "lte", "3g", "nodata", "5ga", "edge", "crowd", "today", "us", "jp", "nosvc",
+    "bandlock", "datad-silent", "old-datad",
 };
 const char *rt_scene_name(int s) { return s >= 0 && s < RT_SCENES ? k_names[s] : "?"; }
 
@@ -75,6 +76,9 @@ static void fill_data(devui_data_t *d)
     cp(d->sa_bands, sizeof d->sa_bands, "1,2,3,5,7,8,18,20,26,28,29,38,40,41,48,66,71,75,77,78,79");
     cp(d->nsa_bands, sizeof d->nsa_bands, "1,2,3,5,7,8,18,20,26,28,29,38,40,41,48,66,71,75,77,78,79");
     cp(d->lte_bands, sizeof d->lte_bands, "1,2,3,4,5,7,8,18,19,20,26,28,29,32,34,38,39,40,41,42,43,48,66,71");
+    cp(d->sa_sup, sizeof d->sa_sup, d->sa_bands);
+    cp(d->nsa_sup, sizeof d->nsa_sup, d->nsa_bands);
+    cp(d->lte_sup, sizeof d->lte_sup, d->lte_bands);
 
     d->bat_percent = 78; d->bat_temp = 33; d->charging = 0; d->charger_connect = 0;
     d->bat_uv = 4055664; d->bat_ua = -349242; d->chg_uv = 30000; d->chg_ua = 0;
@@ -138,6 +142,10 @@ static void fill_data(devui_data_t *d)
     cp(d->sim_msisdn, sizeof d->sim_msisdn, "+8613800001234");
 
     switch (rt_scene) {
+    case RT_BANDLOCK:
+        cp(d->sa_bands, sizeof d->sa_bands, "78");
+        cp(d->lte_bands, sizeof d->lte_bands, "3");
+        break;
     case RT_WEAK:
         d->bars = 2; d->nr_rsrp = -112; d->nr_rsrq = -16; cp(d->nr_snr, sizeof d->nr_snr, "-2.5");
         cp(d->nrca, sizeof d->nrca, "0,603,1,78,633984,100,0,-140.0,-43.0,-23.0,-120.0;");
@@ -270,6 +278,33 @@ int data_refresh(devui_data_t *d)
     return 1;
 }
 int  data_refresh_live(devui_data_t *d) { return data_refresh(d); }
+long data_backend_alive_wall(void) { return IS(RT_DATAD_SILENT) ? rt_now - 125 : 0; }
+int  data_backend_silent(void) { return IS(RT_DATAD_SILENT) && rt_refreshes > 3; }
+unsigned long long data_backend_version(void) { return (unsigned long long)rt_refreshes; }
+
+/* ---- screen_feed: the home card's view as datad sends it (views.h, made
+ * from the screen's own rules before they moved to datad), through the same
+ * parser the device uses ---- */
+#include "screen_feed.h"
+#include "views.h"
+int screen_feed_poll(unsigned long long v) { (void)v; return 0; }
+int screen_feed_status(void) { return IS(RT_OLD_DATAD) ? SF_OLD_DATAD : SF_OK; }
+const net_view_t *screen_feed_net(void)
+{
+    static net_view_t v;
+    static int done = -1;
+    /* the two datad-trouble scenes have the good scene's data */
+    const char *name = IS(RT_DATAD_SILENT) ? "good" : rt_scene_name(rt_scene);
+    if (IS(RT_OLD_DATAD)) return NULL;
+    if (done != rt_scene) {
+        done = rt_scene;
+        memset(&v, 0, sizeof v);
+        for (size_t i = 0; i < sizeof k_views / sizeof *k_views; i++)
+            if (!strcmp(k_views[i].scene, name) && !net_view_parse(k_views[i].json, &v))
+                fprintf(stderr, "views.h: %s did not parse\n", k_views[i].scene);
+    }
+    return &v;
+}
 void data_set_pace(int panel_lit) { (void)panel_lit; }
 int  data_control(const char *a, const char *p, const char *fb) { (void)a; (void)p; (void)fb; return 1; }
 int  data_backend_fd(void) { return -1; }
@@ -533,11 +568,11 @@ const netinfo_t *netinfo_get(void)
         cp(n->clients[0].name, 40, LONG_NAMES ? "a-very-long-hostname-for-a-laptop-0123456" : "MacBook");
         cp(n->clients[0].ip, 20, "192.168.0.21");       /* = MacBook-Pro in the datad list, matched by IP */
         n->clients[0].down = 5368709120LL; n->clients[0].up = 314572800; n->clients[0].down_rate = 262144;
-        n->clients[0].up_rate = 12288; n->clients[0].signal = -47;
+        n->clients[0].up_rate = 12288; n->clients[0].signal = -47; cp(n->clients[0].signal_tier, 8, "great");
         cp(n->clients[0].band, 12, "5 GHz"); n->clients[0].wifi_gen = 6; n->clients[0].link_down = 2402;
         cp(n->clients[1].mac, 20, "02:00:00:00:00:04");   /* = Kindle, matched by MAC */
         n->clients[1].down = 1048576; n->clients[1].up = 10240; n->clients[1].down_rate = -1; n->clients[1].up_rate = -1;
-        cp(n->clients[1].band, 12, "2.4 GHz"); n->clients[1].signal = -72;
+        cp(n->clients[1].band, 12, "2.4 GHz"); n->clients[1].signal = -72; cp(n->clients[1].signal_tier, 8, "fair");
         cp(n->scan_state, sizeof n->scan_state, "done");
         n->nops = 3;
         cp(n->ops[0].plmn, 8, "46011"); cp(n->ops[0].name, 48, "中国电信"); cp(n->ops[0].country, 24, "中国"); cp(n->ops[0].rat, 8, "12"); cp(n->ops[0].status, 4, "2");
@@ -612,7 +647,7 @@ unsigned long g_frame_count;
  * limit (long-names, the longest text), no data (datad-down / loading). */
 #include "battery_est.h"
 #include "estimate.h"
-int battery_est_feed(const devui_data_t *d) { (void)d; return 0; }
+int battery_est_poll(int active) { (void)active; return 0; }
 void battery_est_override(const char *text) { (void)text; }
 const char *battery_est_text(void)
 {

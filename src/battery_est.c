@@ -5,73 +5,63 @@
  * SPDX-License-Identifier: MIT
  */
 #include "battery_est.h"
+#include "agent_client.h"
 #include "estimate.h"
-#include "netinfo.h"
+#include "json.h"
 
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
 
-#define BE_SAMPLE_S    5
-#define BE_CAP_S       600
-#define BE_CC_S        30
-#define BE_SYSFS       "/sys/class/power_supply"
+#define BE_POLL_MS   10000
+#define BE_STALE_MS  30000
+#define BE_IO_MS     800        /* 本机请求几十毫秒；agent 卡住时别拖住界面 */
 
-static est_sample_t s_buf[EST_MAX_SAMPLES];
-static int s_n;
-static double s_last_sample, s_last_cap, s_last_cc;
-static long long s_full = EST_NONE, s_counter = EST_NONE;
-static int s_target = 100, s_paused;
 static char s_text[96] = "—";
 static char s_override[96];
-static int s_overridden;
+static int  s_overridden, s_was_active;
+static long s_last_try, s_last_ok;
 
-static double mono_s(void)
+static long now_ms(void)
 {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (double)ts.tv_sec + ts.tv_nsec / 1e9;
+    return (long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 
-int battery_est_feed(const devui_data_t *d)
+static int set_text(const char *t)
 {
-    double now = mono_s();
-    est_input_t in;
-    char text[sizeof s_text];
-
-    if (s_overridden || !d || !d->valid) return 0;
-    if (s_n && now - s_last_sample < BE_SAMPLE_S) return 0;
-    s_last_sample = now;
-
-    if (!s_last_cap || now - s_last_cap >= BE_CAP_S) {
-        est_read_capacity(BE_SYSFS, &s_full, &s_counter);
-        s_last_cap = now;
-    }
-    /* 没插电时上限和暂停都不影响放电预估：不发请求 */
-    if (!d->charger_connect) {
-        s_target = 100;
-        s_paused = 0;
-        s_last_cc = 0;
-    } else if (!s_last_cc || now - s_last_cc >= BE_CC_S) {
-        static char cc[1024];
-        netinfo_agent_get("/api/device/charge-control", cc, sizeof cc);
-        est_parse_charge_control(cc[0] ? cc : NULL, 1, &s_target, &s_paused);
-        s_last_cc = now;
-    }
-
-    s_n = est_push(s_buf, s_n, (est_sample_t){ now, d->bat_ua, d->charger_connect != 0 });
-    in.s = s_buf;
-    in.n = s_n;
-    in.soc = d->bat_percent;
-    in.full_uah = s_full;
-    /* charge_counter 每 10 分钟才读一次，放电时按电量估更跟手 */
-    in.counter_uah = EST_NONE;
-    in.target_pct = s_target;
-    in.paused_at_limit = s_paused;
-    est_text(est_compute(&in), s_target, text, sizeof text);
-    if (!strcmp(text, s_text)) return 0;
-    snprintf(s_text, sizeof s_text, "%s", text);
+    if (!strcmp(t, s_text)) return 0;
+    snprintf(s_text, sizeof s_text, "%s", t);
     return 1;
+}
+
+int battery_est_poll(int active)
+{
+    static char resp[4096];
+    char data[1024], bat[512], text[sizeof s_text], *b;
+    long t = now_ms();
+    int came_back = active && !s_was_active;
+    est_t e;
+    int target;
+
+    s_was_active = active;
+    if (s_overridden) return 0;
+    if (!active) return 0;
+    if (!came_back && s_last_try && t - s_last_try < BE_POLL_MS) {
+        /* 过期了就别再显示旧的那一句 */
+        return (s_last_ok && t - s_last_ok > BE_STALE_MS) ? set_text("—") : 0;
+    }
+    s_last_try = t;
+    if (agent_api_ms("GET", "/api/screen", NULL, resp, sizeof resp, BE_IO_MS, &b) != 200 || !b ||
+        !json_get(b, "data", data, sizeof data) || !json_get(data, "battery", bat, sizeof bat)) {
+        if (s_last_ok && t - s_last_ok <= BE_STALE_MS) return 0;
+        return set_text("—");
+    }
+    s_last_ok = t;
+    est_from_report(bat, &e, &target);
+    est_text(e, target, text, sizeof text);
+    return set_text(text);
 }
 
 const char *battery_est_text(void)

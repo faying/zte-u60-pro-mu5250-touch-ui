@@ -6,35 +6,19 @@
  * SPDX-License-Identifier: MIT
  */
 #include "speedtest.h"
+#include "agent_client.h"
 #include "json.h"
 
-#include <arpa/inet.h>
-#include <errno.h>
-#include <fcntl.h>
-#include <netinet/in.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/select.h>
-#include <sys/socket.h>
 #include <sys/time.h>
 #include <time.h>
 #include <unistd.h>
 
-/* Same password source esim.c already reads (u60p/zte-agent's own startup
- * script embeds it) — one zte-agent instance, one password, no reason to
- * make the user configure it twice in two separate conf files. */
-#define ST_AGENT_SH  "/data/local/tmp/start_zte_agent.sh"
-/* procd 装法（zte-agent.init）把密码放在这里，旧启动脚本可能已不存在；先读它 */
-#define ST_AGENT_SH_ENV "/data/zte-agent.env"
-#define ST_PORT      9090
-#define ST_IO_MS     1500
 #define ST_TTL_MS    1000    /* 测速进行中要看得出数字在跳，刷新快一点 */
 #define ST_RESP_MAX  4096
 
-static char s_pass[128];
-static char s_token[80];
-static int  s_conf_loaded;
 
 static int    s_online;         /* agent 可达且鉴权通过 */
 static long   s_last_ms;
@@ -59,123 +43,12 @@ static long now_ms(void)
     return (long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 
-static void load_conf(void)
-{
-    FILE *fp;
-    char line[256];
-
-    if (s_conf_loaded) return;
-    s_conf_loaded = 1;
-    /* procd 装法的 env 文件优先，旧启动脚本兜底（两种写法同一个解析） */
-    fp = fopen(ST_AGENT_SH_ENV, "r");
-    if (!fp) fp = fopen(ST_AGENT_SH, "r");
-    if (!fp) return;
-    while (fgets(line, sizeof line, fp)) {
-        char *p = strstr(line, "ZTE_AGENT_PASSWORD="), *e, q = 0;
-        if (!p) continue;
-        if ((e = strpbrk(p, "\r\n")) != NULL) *e = 0;
-        p += 19;
-        if (*p == '\'' || *p == '"') q = *p++;
-        e = q ? strchr(p, q) : strpbrk(p, " \t;");
-        if (e) *e = 0;
-        snprintf(s_pass, sizeof s_pass, "%s", p);
-        break;
-    }
-    fclose(fp);
-}
-
-/* ---- minimal HTTP (same shape as esim.c) ---- */
-
-static int wait_ready(int fd, int write_side, int ms)
-{
-    fd_set s;
-    struct timeval tv;
-    FD_ZERO(&s);
-    FD_SET(fd, &s);
-    tv.tv_sec = ms / 1000;
-    tv.tv_usec = (ms % 1000) * 1000;
-    return select(fd + 1, write_side ? NULL : &s, write_side ? &s : NULL, NULL, &tv);
-}
-
-static int st_connect(void)
-{
-    struct sockaddr_in sa;
-    int fd = socket(AF_INET, SOCK_STREAM, 0);
-    int f, rc;
-
-    if (fd < 0) return -1;
-    memset(&sa, 0, sizeof sa);
-    sa.sin_family = AF_INET;
-    sa.sin_port = htons(ST_PORT);
-    sa.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    f = fcntl(fd, F_GETFL, 0);
-    if (f < 0 || fcntl(fd, F_SETFL, f | O_NONBLOCK) < 0) { close(fd); return -1; }
-    rc = connect(fd, (struct sockaddr *)&sa, sizeof sa);
-    if (rc < 0 && errno != EINPROGRESS) { close(fd); return -1; }
-    if (rc < 0 && wait_ready(fd, 1, ST_IO_MS) <= 0) { close(fd); return -1; }
-    fcntl(fd, F_SETFL, f);
-    return fd;
-}
-
-static int st_http(const char *method, const char *path, const char *json, char **body)
-{
-    static char resp[ST_RESP_MAX];
-    char req[512], auth[128] = "";
-    size_t n = 0;
-    char *p;
-    int fd;
-
-    *body = NULL;
-    fd = st_connect();
-    if (fd < 0) return 0;
-    if (s_token[0]) snprintf(auth, sizeof auth, "Authorization: Bearer %s\r\n", s_token);
-    snprintf(req, sizeof req,
-             "%s %s HTTP/1.0\r\nHost: 127.0.0.1:%d\r\n%s"
-             "Content-Type: application/json\r\nContent-Length: %d\r\n"
-             "Connection: close\r\n\r\n%s",
-             method, path, ST_PORT, auth, json ? (int)strlen(json) : 0, json ? json : "");
-    if (write(fd, req, strlen(req)) < 0) { close(fd); return 0; }
-    for (;;) {
-        ssize_t rd;
-        if (n + 1 >= sizeof resp) break;
-        if (wait_ready(fd, 0, ST_IO_MS) <= 0) break;
-        rd = read(fd, resp + n, sizeof resp - 1 - n);
-        if (rd <= 0) break;
-        n += (size_t)rd;
-    }
-    close(fd);
-    resp[n] = 0;
-    if (strncmp(resp, "HTTP/1.", 7) || !(p = strstr(resp, "\r\n\r\n"))) return 0;
-    *body = p + 4;
-    return atoi(resp + 9);
-}
-
-static int st_login(void)
-{
-    char js[300], data[160], *b;
-    size_t o = (size_t)snprintf(js, sizeof js, "{\"password\":\"");
-
-    for (const char *p = s_pass; *p && o + 4 < sizeof js; p++) {
-        if (*p == '"' || *p == '\\') js[o++] = '\\';
-        js[o++] = *p;
-    }
-    snprintf(js + o, sizeof js - o, "\"}");
-    s_token[0] = 0;
-    if (st_http("POST", "/api/auth/login", js, &b) != 200 || !b) return 0;
-    if (!json_get(b, "data", data, sizeof data)) return 0;
-    return json_get(data, "token", s_token, sizeof s_token) && s_token[0];
-}
-
-/* 401 = token 过期或 agent 重启过，重登一次再试 — 同 esim.c 的 es_api()。 */
+/* 登录、401 重登、密码都在 agent_client.c；正文在本模块自己的缓冲区里，
+ * 下一次 st_api() 会覆盖。 */
 static int st_api(const char *method, const char *path, const char *json, char **body)
 {
-    int code;
-
-    if (!s_token[0] && s_pass[0]) st_login();
-    code = st_http(method, path, json, body);
-    if (code == 401 && s_pass[0] && st_login())
-        code = st_http(method, path, json, body);
-    return code;
+    static char resp[ST_RESP_MAX];
+    return agent_api(method, path, json, resp, sizeof resp, body);
 }
 
 /* JSON 里的浮点值取成字符串再自己转——json_get() 只做标量提取，不认
@@ -196,12 +69,11 @@ int speedtest_poll(int active)
     int code;
     long t = now_ms();
 
-    load_conf();
     if (!active) return 0;
     if (t - s_last_ms < ST_TTL_MS) return 0;
     s_last_ms = t;
 
-    if (!s_pass[0]) { s_online = 0; return 1; }
+    if (!agent_has_password()) { s_online = 0; return 1; }
 
     code = st_api("GET", "/api/speedtest/progress", NULL, &body);
     if (code != 200 || !body || !json_get(body, "data", data, sizeof data)) {
@@ -340,7 +212,7 @@ int speedtest_servers_poll(int active)
     if (t - s_srv_last_ms < ST_TTL_MS) return 0;
     s_srv_last_ms = t;
 
-    if (!s_pass[0]) return 0;
+    if (!agent_has_password()) return 0;
     if (st_api("GET", "/api/speedtest/servers", NULL, &body) != 200 || !body) return 0;
     parse_servers(body);
     return 1;

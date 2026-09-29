@@ -37,6 +37,9 @@ typedef enum {
     RT_US,             /* mainland SIM roaming on T-Mobile n41 → 5G UC                 */
     RT_JP,             /* mainland SIM roaming on SoftBank, LTE 2 carriers → 4G+       */
     RT_NOSVC,          /* SIM fine, not even emergency service → 无服务 in the status bar */
+    RT_BANDLOCK,       /* SA locked to n78, LTE to B3: chips still list every band      */
+    RT_DATAD_SILENT,   /* datad answered, then went quiet: banner, dimmed home card      */
+    RT_OLD_DATAD,      /* datad too old for /v2/screen: the home card says so            */
     RT_SCENES
 } rt_scene_t;
 

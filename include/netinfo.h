@@ -53,6 +53,7 @@ typedef struct {
     long long down, up;     /* 连上以来的累计字节（设备下载 / 上传） */
     long down_rate, up_rate;/* 字节/秒；-1 = 还没有两次读数 */
     int  signal;            /* dBm，0 = 不知道 */
+    char signal_tier[8];    /* zte-agent 定的档：great / good / fair / weak，"" = 不知道 */
     char band[12];          /* "2.4 GHz" / "5 GHz" / "6 GHz"，不知道就空（写 GHz，免得和蜂窝 5G 混） */
     int  wifi_gen;          /* 7/6/5/4，0 = 不知道 */
     int  link_down;         /* 协商速率 Mbit/s，0 = 不知道 */
@@ -119,6 +120,8 @@ typedef struct {
     /* APN：正在拨的那条、自动/手动、已存的手动 APN（只在完整读取里有） */
     int  apn_known;
     int  apn_manual;        /* 1 = 手动模式 */
+    int  apn_switching;     /* agent 还在后台切 APN */
+    char apn_switch_err[64];/* 上一次切换失败的原因（新的一次开始时清空） */
     ni_apn_t apn_in_use;    /* id 空 = 读不到 */
     int  napns;
     ni_apn_t apns[NI_MAX_APNS];   /* 手动列表 */

@@ -9,30 +9,19 @@
  * SPDX-License-Identifier: MIT
  */
 #include "alerts.h"
+#include "agent_client.h"
 #include "json.h"
 
-#include <arpa/inet.h>
-#include <errno.h>
-#include <fcntl.h>
-#include <netinet/in.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/select.h>
-#include <sys/socket.h>
 #include <sys/time.h>
 #include <time.h>
 #include <unistd.h>
 
-#define AL_PORT      9090
-#define AL_ENV       "/data/zte-agent.env"
-#define AL_AGENT_SH  "/data/local/tmp/start_zte_agent.sh"
-#define AL_IO_MS     1500
 #define AL_TTL_MS    10000
 #define AL_RESP_MAX  32768
 
-static char s_pass[128], s_token[80];
-static int  s_pass_loaded;
 static alert_item_t s_items[ALERTS_MAX];
 static health_item_t s_hc[HEALTH_MAX];
 static int  s_hc_n = -1, s_hc_ok;
@@ -49,141 +38,14 @@ static long now_ms(void)
     return (long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 
-/* agent 密码：env 文件优先，旧启动脚本兜底（同 esim.c） */
-static void load_password(void)
-{
-    static const char *paths[] = { AL_ENV, AL_AGENT_SH };
-    char line[256];
-    FILE *fp = NULL;
-
-    if (s_pass_loaded) return;
-    s_pass_loaded = 1;
-    for (size_t i = 0; i < sizeof paths / sizeof *paths && !fp; i++) fp = fopen(paths[i], "r");
-    if (!fp) return;
-    while (fgets(line, sizeof line, fp)) {
-        char *p = strstr(line, "ZTE_AGENT_PASSWORD="), *e, q = 0;
-        if (!p) continue;
-        if ((e = strpbrk(p, "\r\n")) != NULL) *e = 0;
-        p += 19;
-        if (*p == '\'' || *p == '"') q = *p++;
-        e = q ? strchr(p, q) : strpbrk(p, " \t;");
-        if (e) *e = 0;
-        snprintf(s_pass, sizeof s_pass, "%s", p);
-        break;
-    }
-    fclose(fp);
-}
-
-static int wait_ready(int fd, int write_side, int ms)
-{
-    fd_set s;
-    struct timeval tv;
-    FD_ZERO(&s);
-    FD_SET(fd, &s);
-    tv.tv_sec = ms / 1000;
-    tv.tv_usec = (ms % 1000) * 1000;
-    return select(fd + 1, write_side ? NULL : &s, write_side ? &s : NULL, NULL, &tv);
-}
-
-static int al_connect(void)
-{
-    struct sockaddr_in sa;
-    int fd = socket(AF_INET, SOCK_STREAM, 0), f, rc;
-
-    if (fd < 0) return -1;
-    memset(&sa, 0, sizeof sa);
-    sa.sin_family = AF_INET;
-    sa.sin_port = htons(AL_PORT);
-    sa.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    f = fcntl(fd, F_GETFL, 0);
-    if (f < 0 || fcntl(fd, F_SETFL, f | O_NONBLOCK) < 0) { close(fd); return -1; }
-    rc = connect(fd, (struct sockaddr *)&sa, sizeof sa);
-    if (rc < 0 && errno != EINPROGRESS) { close(fd); return -1; }
-    if (rc < 0 && wait_ready(fd, 1, AL_IO_MS) <= 0) { close(fd); return -1; }
-    fcntl(fd, F_SETFL, f);
-    return fd;
-}
-
-/* 返回 HTTP 状态码（0 = 连不上），*body 指向静态缓冲区（下次调用覆盖） */
-static int al_http(const char *method, const char *path, const char *json, char **body)
-{
-    static char resp[AL_RESP_MAX];
-    char req[768], auth[128] = "";
-    size_t n = 0;
-    char *p;
-    int fd;
-
-    *body = NULL;
-    if ((fd = al_connect()) < 0) return 0;
-    if (s_token[0]) snprintf(auth, sizeof auth, "Authorization: Bearer %s\r\n", s_token);
-    snprintf(req, sizeof req,
-             "%s %s HTTP/1.0\r\nHost: 127.0.0.1:%d\r\n%s"
-             "Content-Type: application/json\r\nContent-Length: %d\r\n"
-             "Connection: close\r\n\r\n%s",
-             method, path, AL_PORT, auth, json ? (int)strlen(json) : 0, json ? json : "");
-    if (write(fd, req, strlen(req)) < 0) { close(fd); return 0; }
-    for (;;) {
-        ssize_t rd;
-        if (n + 1 >= sizeof resp) break;
-        if (wait_ready(fd, 0, AL_IO_MS) <= 0) break;
-        rd = read(fd, resp + n, sizeof resp - 1 - n);
-        if (rd <= 0) break;
-        n += (size_t)rd;
-    }
-    close(fd);
-    resp[n] = 0;
-    if (strncmp(resp, "HTTP/1.", 7) || !(p = strstr(resp, "\r\n\r\n"))) return 0;
-    *body = p + 4;
-    return atoi(resp + 9);
-}
-
-static int al_login(void)
-{
-    char js[300], data[160], *b;
-    size_t o = (size_t)snprintf(js, sizeof js, "{\"password\":\"");
-
-    for (const char *p = s_pass; *p && o + 4 < sizeof js; p++) {
-        if (*p == '"' || *p == '\\') js[o++] = '\\';
-        js[o++] = *p;
-    }
-    snprintf(js + o, sizeof js - o, "\"}");
-    s_token[0] = 0;
-    if (al_http("POST", "/api/auth/login", js, &b) != 200 || !b) return 0;
-    if (!json_get(b, "data", data, sizeof data)) return 0;
-    return json_get(data, "token", s_token, sizeof s_token) && s_token[0];
-}
-
+/* 登录、401 重登、密码都在 agent_client.c；正文在本模块自己的缓冲区里，
+ * 下一次 al_api() 会覆盖。 */
 static int al_api(const char *method, const char *path, const char *json, char **body)
 {
-    int code;
-
-    load_password();
-    if (!s_token[0] && s_pass[0]) al_login();
-    code = al_http(method, path, json, body);
-    if (code == 401 && s_pass[0] && al_login()) code = al_http(method, path, json, body);
-    return code;
+    static char resp[AL_RESP_MAX];
+    return agent_api(method, path, json, resp, sizeof resp, body);
 }
 
-/* 和管理网页 web/src/lib/alerts.ts 的 kindLabel 一致 */
-static const char *kind_label(const char *kind)
-{
-    static const struct { const char *k, *zh; } t[] = {
-        { "agent-crash",         "管理后台意外退出，已自动重启" },
-        { "agent-silent",        "管理后台失去响应" },
-        { "agent-hung",          "管理后台卡死，已被强制重启" },
-        { "datad-crash",         "数据服务意外退出，已自动重启" },
-        { "devui-crash",         "触屏界面闪退，已自动重新打开" },
-        { "devui-gave-up",       "触屏界面反复打不开，已换回原厂界面" },
-        { "devui-theme-paused",  "自动切换深浅色已暂停，重启后恢复" },
-        { "wifi-takeover",       "Wi-Fi 看门狗重新打开了 Wi-Fi" },
-        { "wifi-restore-failed", "Wi-Fi 看门狗没能打开 Wi-Fi" },
-        { "sms-failed",          "告警短信发送失败" },
-        { "sms-test",            "测试短信" },
-    };
-    for (size_t i = 0; i < sizeof t / sizeof *t; i++)
-        if (!strcmp(kind, t[i].k)) return t[i].zh;
-    return NULL;
-}
 
 static void json_str(const char *obj, const char *key, char *out, size_t cap)
 {
@@ -202,7 +64,6 @@ static void parse_events(char *arr)
         alert_item_t *e = &s_items[n];
         char kind[40], unread[8], save, *q;
         int depth = 0, instr = 0, esc = 0;
-        const char *zh;
 
         for (q = p; *q; q++) {
             if (instr) {
@@ -220,14 +81,13 @@ static void parse_events(char *arr)
         e->time = json_get_int(p, "time", 0);   /* null → 0 */
         e->uptime = json_get_int(p, "uptime", 0);
         json_str(p, "kind", kind, sizeof kind);
+        json_str(p, "label", e->label, sizeof e->label);   /* zte-agent words it (alerts.rs kind_label) */
         json_str(p, "text", e->text, sizeof e->text);
         json_str(p, "unread", unread, sizeof unread);
         e->unread = !strcmp(unread, "true");
         q[1] = save;
         p = q + 1;
-        zh = kind_label(kind);
-        if (zh) snprintf(e->label, sizeof e->label, "%s", zh);
-        else    snprintf(e->label, sizeof e->label, "其他告警（%s）", kind);
+        if (!e->label[0]) snprintf(e->label, sizeof e->label, "其他告警（%s）", kind);   /* agent before 9-26 */
         n++;
     }
     s_count = n;

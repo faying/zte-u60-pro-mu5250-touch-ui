@@ -50,6 +50,19 @@ int main(void)
     parse_checks(d);
     CHECK("capped at HEALTH_MAX", health_count() == HEALTH_MAX);
 
+    {   /* events: the label comes from zte-agent; an older agent sends none */
+        char ev[512];
+        alert_item_t a;
+        snprintf(ev, sizeof ev, "[{\"seq\":3,\"time\":null,\"uptime\":42,\"kind\":\"agent-crash\","
+                 "\"label\":\"管理后台意外退出，已自动重启\",\"text\":\"t\",\"unread\":true},"
+                 "{\"seq\":2,\"time\":1782396733,\"uptime\":1,\"kind\":\"x-new\",\"text\":\"u\",\"unread\":false}]");
+        parse_events(ev);
+        alerts_get(0, &a);
+        CHECK("event label from the agent", !strcmp(a.label, "管理后台意外退出，已自动重启") && a.unread && a.seq == 3);
+        alerts_get(1, &a);
+        CHECK("no label (older agent): says what kind", !strcmp(a.label, "其他告警（x-new）") && !a.unread);
+    }
+
     printf("\npassed %d, failed %d\n", pass, fail);
     return fail != 0;
 }

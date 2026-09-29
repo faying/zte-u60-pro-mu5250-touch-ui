@@ -1,98 +1,102 @@
-# 开发说明
+# Development notes
 
-当前的触屏界面是 **LVGL 版**（`make` 编出来的那个）。仓库里还留着旧的 litehtml 版（`src/htmlmain.c`、`ui/*.html`、`scripts/build.sh`），
-它不再维护，装机包也不收，下面不再讲它。
+**English** · [中文](DEVELOPMENT.zh-CN.md)
 
-## 代码结构
+The current touch UI is the **LVGL version** (the one `make` builds). The old litehtml version (`src/htmlmain.c`, `scripts/build.sh`) has been deleted
+and is kept at git tag `legacy-litehtml`; `ui/*.html` are its leftover templates, which the LVGL version does not read.
 
-| 文件 | 作用 |
+## Code layout
+
+| File | Purpose |
 |---|---|
-| `src/main.c` | 入口：初始化 DRM、触摸、按键、背光，主循环 |
-| `src/ui.c`、`src/ui_kit.c`、`src/ui_theme.c` | 5 个标签和各子页面的布局、通用控件、浅色/深色主题和字体加载 |
-| `src/ui_logic.c`、`src/ui_exec.c` | 不依赖 LVGL 的判断逻辑和「点了以后做什么」，可单独测试 |
-| `src/data.c`、`src/json.c` | 从 `zwrt-datad`（`127.0.0.1:9460` 的 `/state` + `/events`）读数据 |
-| `src/esim.c`、`src/tailscale.c`、`src/speedtest.c`、`src/netinfo.c`、`src/scenario.c`、`src/alerts.c` | 各功能的后端：eSIM / APN 等写操作走 zte-agent（`127.0.0.1:9090`） |
-| `src/drm_disp.c`、`src/touch_input.c`、`src/key_input.c`、`src/backlight.c` | 硬件接口，见 [HARDWARE.md](HARDWARE.md) |
-| `src/uid.c`、`src/uid_core.c` | 屏幕守护进程 `u60-uid`（判断逻辑在 `uid_core.c`，可单独测试） |
-| `include/devui_config.h` | 端口、路径等编译期常量 |
-| `patches/` | 给 LVGL v9.5.0 的小补丁（FreeType 位图模式的合成粗体），`make` 时自动打 |
-| `scripts/` | 设备端脚本：`supervise.sh` 和 `*.init`（procd 监督）、`u60-guard.sh`（Wi-Fi 兜底 + 告警短信）、`alert-lib.sh`、`doctor.sh`、`config-backup.sh`、`agent-auth.sh`、`chaos.sh` 等 |
+| `src/main.c` | Entry point: initializes DRM, touch, keys and backlight; main loop |
+| `src/ui.c` + `src/ui_parts/*.c`, `src/ui_kit.c`, `src/ui_theme.c` | Layout of the 5 tabs and their subpages, shared widgets, light/dark themes and font loading. `ui.c` holds the shared parts (navigation, shared widgets, theme, subpage layer, status bar); each page is one file in `src/ui_parts/`, `#include`d by `ui.c` and compiled as a single unit (they share its static state and are not compiled separately) |
+| `src/ui_logic.c`, `src/ui_exec.c` | Decision logic and "what happens after a tap", with no LVGL dependency; testable on their own |
+| `src/data.c`, `src/json.c` | Read data from `zwrt-datad` (`/state` + `/events` on `127.0.0.1:9460`) |
+| `src/screen_feed.c`, `src/net_view.c` | The conclusions on the home signal card and status bar (smooth / slow: weak signal …, 5G-A / 4G+, carriers, roaming, logo) are computed by `zwrt-datad`'s `GET /v2/screen`; this code reads and parses it once per new snapshot. The rules themselves live in data-service `rust/src/screen.rs`; the C code no longer makes these decisions |
+| `src/http.c`, `src/agent_client.c` | Shared HTTP client (timeouts, chunked decoding, no SIGPIPE) and authenticated zte-agent requests (password, token, one re-login on 401); every feature module goes through it, except `data.c`, which has its own because of the frozen semantics of `/events` and `/control` |
+| `src/esim.c`, `src/tailscale.c`, `src/speedtest.c`, `src/netinfo.c`, `src/scenario.c`, `src/alerts.c` | Feature backends: eSIM / APN and other write operations go through zte-agent (`127.0.0.1:9090`) |
+| `src/drm_disp.c`, `src/touch_input.c`, `src/key_input.c`, `src/backlight.c` | Hardware interfaces, see [HARDWARE.md](HARDWARE.md) |
+| `src/uid.c`, `src/uid_core.c` | Screen daemon `u60-uid` (decision logic in `uid_core.c`, testable on its own) |
+| `include/devui_config.h` | Compile-time constants such as ports and paths |
+| `patches/` | Small patch for LVGL v9.5.0 (synthetic bold in FreeType bitmap mode), applied automatically by `make` |
+| `scripts/` | Device-side scripts: `supervise.sh` and `*.init` (procd supervision), `u60-guard.sh` (Wi-Fi fallback + alert SMS), `alert-lib.sh`, `doctor.sh`, `config-backup.sh`, `agent-auth.sh`, `chaos.sh`, etc. |
 
-界面的设计规则（层级、颜色、点击反馈、确认方式）在 manager 仓库 `docs/DESIGN.md` §4。
+The UI design rules (hierarchy, color, tap feedback, confirmation style) are in the manager repo's `docs/DESIGN.md` §4.
 
-## 构建
+## Build
 
-见 [README](../README.md#构建)。要点：
+See [README](../README.md#build). Key points:
 
-- 用 `Dockerfile.build` 的镜像；`HOME=/opt bash scripts/_build_freetype.sh` 在镜像里把 FreeType 编到 `/opt/freetype-musl`（Makefile 的默认 `FT_DIR`）。
-- `make CROSS_COMPILE=aarch64-linux-` 编界面，`make CROSS_COMPILE=aarch64-linux- u60-uid` 编守护进程。
-- LVGL 不在仓库里，`make` 找不到时会告诉你 clone 哪个版本。
+- Use the image from `Dockerfile.build`; inside it, `HOME=/opt bash scripts/_build_freetype.sh` builds FreeType into `/opt/freetype-musl` (the Makefile's default `FT_DIR`).
+- `make CROSS_COMPILE=aarch64-linux-` builds the UI; `make CROSS_COMPILE=aarch64-linux- u60-uid` builds the daemon.
+- LVGL is not in the repo; if `make` can't find it, it tells you which version to clone.
 
-## 字体
+## Fonts
 
-加载顺序在 `src/ui_theme.c` 的 `ui_fonts_load()`：
+The load order is in `ui_fonts_load()` in `src/ui_theme.c`:
 
-| 用途 | 首选 | 找不到时 |
+| Use | First choice | Fallback |
 |---|---|---|
-| 中文和正文 | 设备自带 `/usr/ui/fonts/ZTEZhengYuan.ttf`（运行时加载，仓库不带） | `/data/plugins/u60pro-devui/fonts/u60-cjk-fallback.ttf` → LVGL 自带 Montserrat（没有中文） |
-| 数字 | `fonts/Nunito-600/700/800.ttf`（OFL） | 设备自带 Roboto → 中文字体 |
+| Chinese and body text | The device's own `/usr/ui/fonts/ZTEZhengYuan.ttf` (loaded at runtime, not in the repo) | `/data/plugins/u60pro-devui/fonts/u60-cjk-fallback.ttf` → LVGL's built-in Montserrat (no Chinese) |
+| Numerals | `fonts/Nunito-600/700/800.ttf` (OFL) | The device's own Roboto → the Chinese font |
 
-粗体都是合成的。启动日志里 `ui: fonts cjk=… numerals=…` 说明实际用了哪套。
-中文兜底字体由 `scripts/fonts/build-cjk-fallback.sh <输出目录>` 从 Resource Han Rounded（OFL）裁出来。
-字体文件都不进仓库，由装机包（`DEVUI_FONTS_DIR`）带到设备。
+All bold weights are synthetic. The startup log line `ui: fonts cjk=… numerals=…` shows which set was actually used.
+The Chinese fallback font is cut from Resource Han Rounded (OFL) by `scripts/fonts/build-cjk-fallback.sh <output dir>`.
+No font files go into the repo; the install kit (`DEVUI_FONTS_DIR`) carries them to the device.
 
-## 测试
+## Tests
 
 ```sh
-scripts/test/docker.sh                 # 设备端 shell 脚本，busybox 容器里跑，命令全部打桩
-make CROSS_COMPILE=aarch64-linux- uid-test ui-logic-test ui-exec-test   # 纯逻辑单元测试（静态程序，产物在 scripts/test/*/，由 docker.sh 运行）
-scripts/test/render/build.sh           # 离屏渲染测试：每个场景 × 浅色/深色
-U60_DEVICE_FONTS=<有 ZTEZhengYuan.ttf、Roboto.ttf 的目录> U60_NUNITO_DIR=<Nunito 目录> \
-  scripts/test/render/render.sh [--png 输出目录] [场景…]
+scripts/test/docker.sh                 # device-side shell scripts, run in a busybox container with every command stubbed
+make CROSS_COMPILE=aarch64-linux- uid-test ui-logic-test ui-exec-test   # pure-logic unit tests (static binaries, output in scripts/test/*/, run by docker.sh)
+scripts/test/render/build.sh           # off-screen render tests: every scene × light/dark
+U60_DEVICE_FONTS=<dir with ZTEZhengYuan.ttf and Roboto.ttf> U60_NUNITO_DIR=<Nunito dir> \
+  scripts/test/render/render.sh [--png output-dir] [scene…]
 ```
 
-渲染测试会检查每个字符有没有字形、每一页的像素是否和 `tests/render/golden/` 一致；有意改界面后用 `--write-golden` 更新。
-设备字体要从设备 `/usr/ui/fonts/` 自己拷，不进仓库。
+The render tests check that every character has a glyph and that every page matches `tests/render/golden/` pixel for pixel; after an intentional UI change, update them with `--write-golden`.
+Copy the device fonts from `/usr/ui/fonts/` on the device yourself; they don't go into the repo.
 
-## 设备上的布局
+## Layout on the device
 
-| 路径 | 内容 |
+| Path | Contents |
 |---|---|
-| `/data/plugins/u60pro-devui/u60pro-devui` | 界面程序（正式位置） |
-| `/data/plugins/u60pro-devui/u60-uid`、`/etc/init.d/u60-uid` | 屏幕守护进程 |
-| `/data/plugins/u60pro-devui/fonts/` | Nunito 和中文兜底字体 |
-| `/data/plugins/zwrt-datad/` | 数据服务 |
-| `/data/u60-guard/`、`/etc/init.d/{zte-agent,zwrt-datad,u60-guard}` | 监督和看门狗脚本 |
+| `/data/plugins/u60pro-devui/u60pro-devui` | UI binary (live slot) |
+| `/data/plugins/u60pro-devui/u60-uid`, `/etc/init.d/u60-uid` | Screen daemon |
+| `/data/plugins/u60pro-devui/fonts/` | Nunito and the Chinese fallback font |
+| `/data/plugins/zwrt-datad/` | Data service |
+| `/data/u60-guard/`, `/etc/init.d/{zte-agent,zwrt-datad,u60-guard}` | Supervision and watchdog scripts |
 
-开机自启只走 `/etc/rc.local` 里的 `/etc/init.d/<名字> start`，不用 `enable`。
+Autostart goes only through `/etc/init.d/<name> start` lines in `/etc/rc.local`; `enable` is not used.
 
-`u60-uid` 的控制：`echo vendor > /tmp/u60-uid.ctl` 把屏幕交给原厂界面，`echo devui > /tmp/u60-uid.ctl` 换回来。
-它连续两次拉不起界面会放弃并交还原厂界面，计数在 `/data/u60-uid/attempts`、`/data/u60-uid/gave-up`。
+Controlling `u60-uid`: `echo vendor > /tmp/u60-uid.ctl` hands the screen to the stock UI, `echo devui > /tmp/u60-uid.ctl` takes it back.
+If it fails to start the UI twice in a row, it gives up and hands the screen back to the stock UI; the counters are in `/data/u60-uid/attempts` and `/data/u60-uid/gave-up`.
 
-## 在真机上试新版本
+## Trying a new build on a real device
 
-两条硬约束：**一启动就崩的界面会被固件升级成整机重启循环**；**屏幕上几分钟没有任何界面，固件也会整机重启**。
-所以新版本先用别的文件名试跑，确认稳定后再换正式位置；两个界面也不能同时抢 `/dev/dri/card0`。
+Two hard constraints: **a UI that crashes on startup gets escalated by the firmware into a whole-device reboot loop**; **if the screen has no UI at all for a few minutes, the firmware also reboots the whole device**.
+So try a new build under a different file name first and only move it to the live slot once it is stable; two UIs also must not fight over `/dev/dri/card0`.
 
-普通用户直接用装机包 `./install.sh devui`，它会做这些检查。手动试跑的流程（全程在一次 SSH 会话里连续做完）：
+Regular users should just use the install kit's `./install.sh devui`, which does these checks. The manual trial procedure (do it all in one SSH session, without breaks):
 
 ```sh
 cd /data/plugins/u60pro-devui
-cat > u60pro-devui.test && chmod 755 u60pro-devui.test     # 从电脑用 ssh 管道传进来
-cp -p u60pro-devui u60pro-devui.known-good                 # 备份现在的正式版本
-/etc/init.d/u60-uid stop                                   # 停守护进程，界面本身还在
-kill $(pidof u60pro-devui)                                 # 停正式界面……
-nohup ./u60pro-devui.test > /tmp/devui-test.log 2>&1 &     # ……紧接着起测试版本
-sleep 20; pidof u60pro-devui.test && tail -n 20 /tmp/devui-test.log   # 20 秒后还活着才算过
+cat > u60pro-devui.test && chmod 755 u60pro-devui.test     # piped in from the computer over ssh
+cp -p u60pro-devui u60pro-devui.known-good                 # back up the current live version
+/etc/init.d/u60-uid stop                                   # stop the daemon; the UI itself keeps running
+kill $(pidof u60pro-devui)                                 # stop the live UI...
+nohup ./u60pro-devui.test > /tmp/devui-test.log 2>&1 &     # ...and immediately start the test build
+sleep 20; pidof u60pro-devui.test && tail -n 20 /tmp/devui-test.log   # it passes only if still alive after 20 seconds
 ```
 
-- **通过**：`cp u60pro-devui.test u60pro-devui.tmp && mv u60pro-devui.tmp u60pro-devui`（原子替换），
-  然后立刻 `kill $(pidof u60pro-devui.test)`、`rm -f /data/u60-uid/attempts /data/u60-uid/gave-up`、`/etc/init.d/u60-uid start`。
-- **没通过**：正式位置还是旧版本，直接 `/etc/init.d/u60-uid start` 让它拉起旧版本。
+- **Pass**: `cp u60pro-devui.test u60pro-devui.tmp && mv u60pro-devui.tmp u60pro-devui` (atomic replace),
+  then immediately `kill $(pidof u60pro-devui.test)`, `rm -f /data/u60-uid/attempts /data/u60-uid/gave-up`, `/etc/init.d/u60-uid start`.
+- **Fail**: the live slot still holds the old version; just run `/etc/init.d/u60-uid start` to have it start the old version.
 
-注意：
+Notes:
 
-- 用 `pidof`（按进程名）找测试进程，别用 `pgrep -f`：后者会匹配到这条 SSH 命令自己的 shell，把它杀掉，后面的步骤就不跑了，屏幕会一直空着。
-- `u60-uid` 不在跑的时候别往 `/tmp/u60-uid.ctl` 写东西，会卡住。
-- 10 分钟内 `u60-uid start` 三次，它会以为是崩溃循环而放弃；所以上面要先清掉计数。
-- 设备上没有 scp/sftp，传文件用 `ssh … 'cat > 路径' < 本地文件`。
+- Find the test process with `pidof` (by process name), not `pgrep -f`: the latter matches the shell of this SSH command itself and kills it, so the remaining steps never run and the screen stays blank.
+- Don't write to `/tmp/u60-uid.ctl` while `u60-uid` is not running; it will hang.
+- If `u60-uid start` runs three times within 10 minutes, it assumes a crash loop and gives up; that's why the counters are cleared above.
+- The device has no scp/sftp; transfer files with `ssh … 'cat > path' < local-file`.

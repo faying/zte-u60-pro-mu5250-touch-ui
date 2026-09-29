@@ -8,23 +8,16 @@
  * SPDX-License-Identifier: MIT
  */
 #include "scenario.h"
-#include "esim.h"
+#include "agent_client.h"
 #include "json.h"
 
-#include <arpa/inet.h>
-#include <errno.h>
-#include <fcntl.h>
-#include <netinet/in.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/select.h>
-#include <sys/socket.h>
 #include <sys/time.h>
 #include <time.h>
 #include <unistd.h>
 
-#define SC_PORT       9090
 #define SC_IO_MS      800       /* 本机请求正常几十毫秒；agent 卡住时别拖住首页 */
 #define SC_TTL_MS     30000     /* 情景最快两次扫描才切一次，30 秒一读足够 */
 #define SC_RESP_MAX   16384     /* public/status 约 1KB */
@@ -52,57 +45,12 @@ static long now_ms(void)
     return (long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 
-static int wait_ready(int fd, int write_side, int ms)
-{
-    fd_set s;
-    struct timeval tv;
-    FD_ZERO(&s);
-    FD_SET(fd, &s);
-    tv.tv_sec = ms / 1000;
-    tv.tv_usec = (ms % 1000) * 1000;
-    return select(fd + 1, write_side ? NULL : &s, write_side ? &s : NULL, NULL, &tv);
-}
-
-/* 返回正文（静态缓冲区，下次调用覆盖），失败返回 NULL */
+/* 返回正文（静态缓冲区，下次调用覆盖），非 200 或失败返回 NULL。免登录接口。 */
 static char *sc_get(const char *path)
 {
     static char resp[SC_RESP_MAX];
-    struct sockaddr_in sa;
-    char req[256];
-    size_t n = 0;
-    char *p;
-    int fd, f, rc;
-
-    fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (fd < 0) return NULL;
-    memset(&sa, 0, sizeof sa);
-    sa.sin_family = AF_INET;
-    sa.sin_port = htons(SC_PORT);
-    sa.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    f = fcntl(fd, F_GETFL, 0);
-    if (f < 0 || fcntl(fd, F_SETFL, f | O_NONBLOCK) < 0) { close(fd); return NULL; }
-    rc = connect(fd, (struct sockaddr *)&sa, sizeof sa);
-    if (rc < 0 && errno != EINPROGRESS) { close(fd); return NULL; }
-    if (rc < 0 && wait_ready(fd, 1, SC_IO_MS) <= 0) { close(fd); return NULL; }
-    fcntl(fd, F_SETFL, f);
-
-    snprintf(req, sizeof req,
-             "GET %s HTTP/1.0\r\nHost: 127.0.0.1:%d\r\nConnection: close\r\n\r\n",
-             path, SC_PORT);
-    if (write(fd, req, strlen(req)) < 0) { close(fd); return NULL; }
-    for (;;) {
-        ssize_t rd;
-        if (n + 1 >= sizeof resp) break;
-        if (wait_ready(fd, 0, SC_IO_MS) <= 0) break;
-        rd = read(fd, resp + n, sizeof resp - 1 - n);
-        if (rd <= 0) break;
-        n += (size_t)rd;
-    }
-    close(fd);
-    resp[n] = 0;
-    if (strncmp(resp, "HTTP/1.", 7) || atoi(resp + 9) != 200) return NULL;
-    if (!(p = strstr(resp, "\r\n\r\n"))) return NULL;
-    return p + 4;
+    char *b;
+    return agent_http("GET", path, NULL, resp, sizeof resp, SC_IO_MS, &b) == 200 ? b : NULL;
 }
 
 static unsigned fnv(unsigned h, const char *s)

@@ -7,17 +7,13 @@
  * SPDX-License-Identifier: MIT
  */
 #include "tailscale.h"
+#include "http.h"
 #include "json.h"
 
-#include <errno.h>
-#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/select.h>
-#include <sys/socket.h>
 #include <sys/time.h>
-#include <sys/un.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -57,57 +53,21 @@ static long now_ms(void)
     return (long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 
-static int wait_ready(int fd, int write_side, int ms)
-{
-    fd_set s;
-    struct timeval tv;
-    FD_ZERO(&s);
-    FD_SET(fd, &s);
-    tv.tv_sec = ms / 1000;
-    tv.tv_usec = (ms % 1000) * 1000;
-    return select(fd + 1, write_side ? NULL : &s, write_side ? &s : NULL, NULL, &tv);
-}
-
 /*
  * GET 一次，返回正文（静态缓冲区，下一次调用会覆盖），非 200 或超时返回 NULL。
- * 用 HTTP/1.0：对端不会分块，读到关闭就是完整响应。Host 必须是 local-tailscaled.sock，
- * LocalAPI 会校验。
+ * Host 必须是 local-tailscaled.sock，LocalAPI 会校验。
  */
 static char *ts_get(const char *sock, const char *path)
 {
     static char resp[TS_RESP_MAX];
-    struct sockaddr_un sa;
-    char req[256], *p;
-    size_t n = 0;
-    int fd = socket(AF_UNIX, SOCK_STREAM, 0), f;
+    char req[256];
+    http_resp_t r;
+    int fd;
 
-    if (fd < 0) return NULL;
-    memset(&sa, 0, sizeof sa);
-    sa.sun_family = AF_UNIX;
-    snprintf(sa.sun_path, sizeof sa.sun_path, "%s", sock);
-    /* 非阻塞 connect：对端 backlog 满时直接失败，而不是卡住 */
-    f = fcntl(fd, F_GETFL, 0);
-    if (f < 0 || fcntl(fd, F_SETFL, f | O_NONBLOCK) < 0 ||
-        connect(fd, (struct sockaddr *)&sa, sizeof sa) < 0) {
-        close(fd);
-        return NULL;
-    }
-    fcntl(fd, F_SETFL, f);
-    snprintf(req, sizeof req, "GET %s HTTP/1.0\r\nHost: local-tailscaled.sock\r\n\r\n", path);
-    if (wait_ready(fd, 1, TS_IO_MS) <= 0 || write(fd, req, strlen(req)) < 0) { close(fd); return NULL; }
-    for (;;) {
-        ssize_t rd;
-        if (n + 1 >= sizeof resp) break;
-        if (wait_ready(fd, 0, TS_IO_MS) <= 0) break;
-        rd = read(fd, resp + n, sizeof resp - 1 - n);
-        if (rd <= 0) break;
-        n += (size_t)rd;
-    }
-    close(fd);
-    resp[n] = 0;
-    if (strncmp(resp, "HTTP/1.", 7) || strncmp(resp + 9, "200", 3) || !(p = strstr(resp, "\r\n\r\n")))
-        return NULL;
-    return p + 4;
+    if (!http_build(req, sizeof req, "GET", path, "local-tailscaled.sock", "", NULL)) return NULL;
+    if ((fd = http_connect_unix(sock)) < 0) return NULL;
+    if (http_wait(fd, 1, TS_IO_MS) <= 0) { close(fd); return NULL; }
+    return http_exchange(fd, req, resp, sizeof resp, TS_IO_MS, &r) == 200 ? r.body : NULL;
 }
 
 /* ---- 解析 ---- */

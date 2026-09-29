@@ -42,7 +42,7 @@ if [ "$mode" = none ]; then
     [ -f "$U60_NUNITO_DIR/u60-cjk-fallback.ttf" ] || { echo "  FAIL no u60-cjk-fallback.ttf in U60_NUNITO_DIR (scripts/fonts/build-cjk-fallback.sh)"; exit 1; }
     cjk=/nonexistent/ZTEZhengYuan.ttf
 fi
-[ -n "$scenes" ] || scenes="good weak nosignal datad-down loading nosim abroad lowbat full-charging long-names empty nsa lte 3g nodata 5ga edge crowd today us jp nosvc"
+[ -n "$scenes" ] || scenes="good weak nosignal datad-down loading nosim abroad lowbat full-charging long-names empty nsa lte 3g nodata 5ga edge crowd today us jp nosvc bandlock datad-silent old-datad"
 pngmount=
 [ -n "$png" ] && { mkdir -p "$png"; pngmount="-v $(cd "$png" && pwd):/png"; }
 

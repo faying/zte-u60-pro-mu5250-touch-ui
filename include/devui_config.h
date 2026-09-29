@@ -2,7 +2,7 @@
  * devui_config.h - Build-time configuration for u60pro-devui.
  *
  * All hardware specifics are auto-detected at runtime. The values here are
- * only fallbacks / tunables. Override them with -D flags in scripts/build.sh if
+ * only fallbacks / tunables. Override them with -D flags from the Makefile if
  * you port this to a different device.
  *
  * SPDX-License-Identifier: MIT

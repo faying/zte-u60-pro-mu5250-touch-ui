@@ -5,6 +5,8 @@
 #   sh /data/u60-guard/doctor.sh          human-readable (install.sh doctor)
 #   sh /data/u60-guard/doctor.sh --tsv    one check per line for zte-agent:
 #                                          <ok|warn|bad>\t<id>\t<label>\t<detail>
+#   sh /data/u60-guard/doctor.sh --report 24h|7d   the scorecard from the ledger
+#   sh /data/u60-guard/doctor.sh --ledger-selftest can the ledger work here (PASS/FAIL)
 #   sh /data/u60-guard/doctor.sh --calibrate-standby
 #                                          set the standby sentinel's baseline from
 #                                          u60-guard's screen-off records (≥30 lines;
@@ -35,58 +37,693 @@ WGET=${DOC_WGET:-wget}
 PROC=${DOC_PROC:-/proc}
 STANDBY_STAT=${DOC_STANDBY_STAT:-/tmp/standby.stat}
 STANDBY_BASE=${DOC_STANDBY_BASE:-/data/u60-guard/standby.baseline}
-CLOCK_SANE_AFTER=1704067200
+DATE=${DOC_DATE:-date}
+DF=${DOC_DF:-df}
+UID_WANT=${DOC_UID_WANT:-/tmp/u60-uid.want}
+CLOCK_OK=${DOC_CLOCK_OK:-/tmp/u60-guard/clock-ok}
+WALL_LAST=${DOC_WALL_LAST:-/data/ledger/state/wall.last}
+LEDGER_DIR=${DOC_LEDGER_DIR:-/data/ledger}
+CRASHCAP_DIR=${DOC_CRASHCAP_DIR:-/data/crashcap}
+# Where the scorecard's windows can start at the earliest (docs/LEDGER.md §11),
+# on the device clock (local time under UTC): modem crash recovery first on,
+# and u60-uid taking the screen over.
+KEYLOG=${DOC_KEYLOG:-/data/logfs/key.log}
+MSS_RECOVERY=${DOC_MSS_RECOVERY:-/sys/class/remoteproc/remoteproc0/recovery}
+KMSG=${DOC_KMSG:-/dev/kmsg}
+BOOT_ID_FILE=${DOC_BOOT_ID_FILE:-/proc/sys/kernel/random/boot_id}
+LEDGER_TMP=${DOC_LEDGER_TMP:-/tmp/u60-guard/ledger}
+JSONFILTER=${DOC_JSONFILTER:-jsonfilter}
+DATAD_URL=${DOC_DATAD_URL:-http://127.0.0.1:9460/state}
+SELFTEST_WAIT=${DOC_SELFTEST_WAIT:-6}
+WAN_IF=${DOC_WAN_IF:-rmnet_data0}
+ROUTE=${DOC_ROUTE:-/proc/net/route}
+IP=${DOC_IP:-ip}
+RECOV_LIVE=1790458980 # 2026-09-26 21:43
+UID_LIVE=1790121600   # 2026-09-23
+CLOCK_YEAR_MIN=1767225600 # 2026-01-01 00:00
 
 # Standby sentinel. u60-guard writes one line per screen-off minute:
 #   <uptime> <cellular pkts/min> <tunnel pkts/min> <wakeups/s per program | ->
 # Columns 2-8 are judged against a baseline of median and MAD (median
 # absolute deviation) taken from those same records.
+# Standby baseline, version 2 (docs/LEDGER.md §12): besides "<col> <median> <MAD>"
+# it records, per column, the fingerprint of what that column measures — the
+# program's binary md5 (u60-guard caches them in $FP, computed once per boot or
+# pid change) plus its config files (small, hashed here). A column whose
+# fingerprint no longer matches was measured on other software: "baseline
+# stale", not judged, until someone recalibrates at home while naturally idle.
+FP=${DOC_FP:-/tmp/u60-guard/ledger/fp}
+FP_CHANGED=${DOC_FP_CHANGED:-/tmp/u60-guard/ledger/fp-changed}
+TS_TUNING=${DOC_TS_TUNING:-/data/tailscale/tuning.env}
+standby_progs='tailscaled u60pro-devui zwrt-datad zte-agent'
 standby_labels='- 蜂窝包/分 Tailscale隧道包/分 tailscaled唤醒/秒 触屏唤醒/秒 数据服务唤醒/秒 后台唤醒/秒'
 
+standby_last() { # the last column of a sentinel record: uptime, cellular, tunnel, then one per program
+    set -- $standby_progs
+    echo $((3 + $#))
+}
+cfg_md5() { # md5 prefix of a config file, "none" when it does not exist
+    _m=$(md5sum "$1" 2>/dev/null | cut -c1-8)
+    echo "${_m:-none}"
+}
+prog_md5() { # md5 prefix of a running program from u60-guard's cache, "?" when unknown
+    _m=
+    [ -f "$FP" ] && _m=$(awk -v n="$1" '$1 == n { print $3; exit }' "$FP" 2>/dev/null)
+    echo "${_m:-?}"
+}
+# one line "<column> <fingerprint>" for columns 3.. (column 2, cellular packets, has none)
+standby_fp() {
+    _tsm=$(prog_md5 tailscaled)
+    _tun=$(cfg_md5 "$TS_TUNING")
+    echo "3 $_tsm+$_tun"
+    _k=4
+    for _p in $standby_progs; do
+        case "$_p" in
+            tailscaled) _f="$_tsm+$_tun" ;;
+            *) _f=$(prog_md5 "$_p") ;;
+        esac
+        echo "$_k $_f"
+        _k=$((_k + 1))
+    done
+}
+
 calibrate_standby() {
-    n=$(wc -l <"$STANDBY_STAT" 2>/dev/null || echo 0)
+    n=$(wc -l 2>/dev/null <"$STANDBY_STAT" || echo 0)
     if [ "${n:-0}" -lt 30 ]; then
         echo "只有 ${n:-0} 行息屏记录，至少要 30 行（屏幕熄灭约 30 分钟后再试）"; return 1
     fi
-    awk '
+    {
+        echo v2
+        awk -v last="$(standby_last)" '
         function sortv(a, c,   i, j, v) { for (i = 2; i <= c; i++) { v = a[i]; j = i - 1; while (j > 0 && a[j] > v) { a[j + 1] = a[j]; j-- } a[j + 1] = v } }
         function med(a, c) { sortv(a, c); return (c % 2) ? a[(c + 1) / 2] : (a[c / 2] + a[c / 2 + 1]) / 2 }
-        { for (k = 2; k <= 8; k++) if ($k != "-" && $k != "") v[k, ++cnt[k]] = $k }
+        { for (k = 2; k <= last; k++) if ($k != "-" && $k != "") v[k, ++cnt[k]] = $k }
         END {
-            for (k = 2; k <= 8; k++) {
+            for (k = 2; k <= last; k++) {
                 c = cnt[k] + 0; if (c == 0) { print k, "-", "-"; continue }
                 for (i = 1; i <= c; i++) x[i] = v[k, i]
                 m = med(x, c)
                 for (i = 1; i <= c; i++) { d = v[k, i] - m; x[i] = (d < 0 ? -d : d) }   # busybox awk: ?: must be parenthesised
                 printf "%d %.1f %.1f\n", k, m, med(x, c)
             }
-        }' "$STANDBY_STAT" >"$STANDBY_BASE.tmp" && mv -f "$STANDBY_BASE.tmp" "$STANDBY_BASE" || return 1
+        }' "$STANDBY_STAT" || exit 1
+        standby_fp | sed 's/^/fp /'
+    } >"$STANDBY_BASE.tmp" && mv -f "$STANDBY_BASE.tmp" "$STANDBY_BASE" || return 1
     echo "基线已写入 $STANDBY_BASE（$n 行记录）"
+    # tell the ledger (docs/LEDGER.md §4 calib, §5): a spool file that survives a reboot
+    _cb=$(cat "$BOOT_ID_FILE" 2>/dev/null)
+    case "$_cb" in '' | *[!0-9a-f-]*) return 0 ;; esac
+    _cu=$(uptime_s)
+    _ci=calib-$(echo "$_cb" | cut -c1-8)-$_cu
+    mkdir -p "$LEDGER_DIR/spool" 2>/dev/null &&
+        printf '%s\t%s\t%s\tcalib\n,"rows":%d\n' "$_ci" "$_cb" "$_cu" "$n" >"$LEDGER_DIR/spool/$_ci.tmp" &&
+        dd if=/dev/null of="$LEDGER_DIR/spool/$_ci.tmp" conv=notrunc,fsync 2>/dev/null &&
+        mv -f "$LEDGER_DIR/spool/$_ci.tmp" "$LEDGER_DIR/spool/$_ci.ev" && sync
+    return 0
 }
 
-# prints "<ok|warn>\t<detail>"
+# prints "<ok|warn>\t<detail>". Only idle screen-off minutes are judged: a minute
+# whose cellular packets exceed the baseline median + 3 MAD is someone using
+# the network, and judging those raised false alarms (docs/LEDGER.md §12).
 standby_check() {
     [ -f "$STANDBY_BASE" ] || { printf 'ok\t未校准（屏幕熄灭 30~60 分钟后执行 doctor.sh --calibrate-standby）\n'; return; }
-    awk -v now="$(uptime_s)" -v labels="$standby_labels" -v base="$STANDBY_BASE" '
+    _bv=
+    { read -r _bv <"$STANDBY_BASE"; } 2>/dev/null
+    [ "$_bv" = v2 ] || { printf 'ok\t基线格式旧，不判；请在家自然空闲时重新校准（doctor.sh --calibrate-standby）\n'; return; }
+    _since=$(cat "$FP_CHANGED" 2>/dev/null)
+    case "$_since" in '' | *[!0-9]*) _since=0 ;; esac
+    awk -v now="$(uptime_s)" -v since="$_since" -v labels="$standby_labels" -v base="$STANDBY_BASE" -v last="$(standby_last)" \
+        -v fpnow="$(standby_fp | tr '\n' ';')" '
         function sortv(a, c,   i, j, v) { for (i = 2; i <= c; i++) { v = a[i]; j = i - 1; while (j > 0 && a[j] > v) { a[j + 1] = a[j]; j-- } a[j + 1] = v } }
         function med(a, c) { sortv(a, c); return (c % 2) ? a[(c + 1) / 2] : (a[c / 2] + a[c / 2 + 1]) / 2 }
-        BEGIN { split(labels, lab, " "); while ((getline l < base) > 0) { split(l, f, " "); bm[f[1]] = f[2]; bd[f[1]] = f[3] } }
-        $1 >= now - 900 { rows++; for (k = 2; k <= 8; k++) if ($k != "-" && $k != "") v[k, ++cnt[k]] = $k }
+        BEGIN {
+            split(labels, lab, " ")
+            while ((getline l < base) > 0) {
+                split(l, f, " ")
+                if (f[1] == "fp") bf[f[2]] = f[3]
+                else if (f[1] != "v2") { bm[f[1]] = f[2]; bd[f[1]] = f[3] }
+            }
+            np = split(fpnow, pairs, ";")
+            for (i = 1; i <= np; i++) if (pairs[i] != "") { split(pairs[i], q, " "); cf[q[1]] = q[2] }
+            thr = ((bm[2] == "-" || bm[2] == "") ? -1 : bm[2] + 3 * bd[2])
+        }
+        $1 >= now - 900 && $1 > since {
+            rows++
+            if (thr < 0 || $2 == "-" || $2 == "" || $2 + 0 > thr) { busy++; next }
+            idle++
+            for (k = 2; k <= last; k++) if ($k != "-" && $k != "") v[k, ++cnt[k]] = $k
+        }
         END {
-            if (rows < 8) { printf "ok\t最近 15 分钟息屏记录只有 %d 行，不判定\n", rows; exit }
-            out = ""
-            for (k = 2; k <= 8; k++) {
-                c = cnt[k] + 0; if (c == 0 || bm[k] == "-" || bm[k] == "") continue
+            if (idle < 8) {
+                if (rows >= 8 && busy * 2 > rows) printf "ok\t有流量在用，不判待机（最近 15 分钟 %d 行里 %d 行有流量）\n", rows, busy
+                else printf "ok\t最近 15 分钟空闲的息屏记录只有 %d 行，不判定\n", idle
+                exit
+            }
+            out = ""; stale = ""
+            for (k = 3; k <= last; k++) {
+                if (bm[k] == "-" || bm[k] == "") continue
+                if (!(k in bf) || !(k in cf) || bf[k] != cf[k] || index(cf[k], "?") > 0) {
+                    stale = stale (stale == "" ? "" : "、") lab[k]
+                    continue
+                }
+                c = cnt[k] + 0; if (c == 0) continue
                 for (i = 1; i <= c; i++) x[i] = v[k, i]
                 m = med(x, c)
-                if (k == 2) cell = m
                 if (m > bm[k] + 3 * bd[k] && m > 1.5 * bm[k] && m - bm[k] >= 1)
                     out = out (out == "" ? "" : "；") sprintf("%s %.0f（基线 %.0f）", lab[k], m, bm[k])
             }
-            if (out != "") printf "warn\t%s\n", out
-            else printf "ok\t正常（蜂窝每分钟 %.0f 个包）\n", cell
+            c = cnt[2] + 0
+            for (i = 1; i <= c; i++) x[i] = v[2, i]
+            cell = med(x, c)
+            tail = ((stale == "") ? "" : sprintf("；%s 基线过期，不判", stale))
+            if (out != "") printf "warn\t%s%s\n", out, tail
+            else printf "ok\t正常（蜂窝每分钟 %.0f 个包）%s\n", cell, tail
         }' "$STANDBY_STAT" 2>/dev/null || printf 'ok\t没有息屏记录\n'
 }
+
+# ── the scorecard: doctor.sh --report 24h|7d [--summary] (docs/LEDGER.md §11) ──
+# Reads the whole ledger and changes nothing. --summary prints the three lines
+# u60-guard keeps in $LEDGER_DIR/summary for the default output.
+REPORT_AWK='
+# The scorecard (docs/LEDGER.md §11). Input: every ledger segment, in file
+# name order. -v: W (window, s), LABEL, RECOV (recovery go-live, wall s),
+# UIDTK (u60-uid takeover, wall s), CAPF (capture files: "<boot8> <ends in a
+# crash line 0|1>"), WARNF (current health rows not ok), STBF (the standby
+# check verdict), ALERTQ, GAVEUP (1 when the u60-uid give-up flag
+# is set now), THR (standby idle threshold, pkts/min, or empty), SUMMARY (1:
+# print the three summary lines only).
+function fld(l, name,   p, v) { # a field of a flat JSON line; strings unquoted; "" when absent
+    if (!match(l, "\"" name "\":(\"[^\"]*\"|[^,}]*)")) return ""
+    p = length(name) + 3
+    v = substr(l, RSTART + p, RLENGTH - p)
+    if (v ~ /^"/) v = substr(v, 2, length(v) - 2)
+    return v
+}
+function isn(x) { return (x ~ /^-?[0-9]+(\.[0-9]+)?$/) }
+function idfrom(id,   n, a) { n = split(id, a, "-"); return a[n] + 0 } # h-/hp-/hq-<boot8>-<from>: where its hour began
+function trim(x) { sub(/；$/, "", x); return x }
+function wall(s, up) { return ((s in OFF) ? int(up) + OFF[s] : "") }
+function dur(x,   d, h, m) { # seconds as 天/小时/分
+    x = int(x); d = int(x / 86400); h = int((x % 86400) / 3600); m = int((x % 3600) / 60)
+    if (d > 0) return d " 天" ((h > 0) ? " " h " 小时" : "")
+    if (h > 0) return h " 小时" ((m > 0) ? " " m " 分" : "")
+    return m " 分"
+}
+function when(x) { return ((x == "") ? "时间不明" : strftime("%m-%d %H:%M", x)) }
+function place(net, home) { # MCC-MNC text; home when the countries agree
+    if (net == "" || net == "null" || home == "" || home == "null") return "不明"
+    return ((substr(net, 1, 3) == substr(home, 1, 3)) ? "在家" : "国外")
+}
+function klass(code) {
+    if (code == 1150 || code == 1152) return "manual"
+    if (code == 1112) return "scheduled"
+    if (code == 1134 || code == 1132) return "modem"
+    if (code == 1185) return "noui"
+    if (code == 1155) return "cutoff"
+    if (code == 1182) return "1182"
+    return "other"
+}
+function wstart(req, change,   s) { # the window start: requested length, the last relevant change, the start of the ledger
+    s = WEND - ((req < W) ? req : W)
+    if (change != "" && change > s) s = change
+    if (LSTART != "" && LSTART > s) s = LSTART
+    return s
+}
+# Coverage of [ws, WEND] for the sources in srcs: the awake seconds, the
+# seconds they were not working (the g_* of hour lines, plus holes between boots
+# that no power-off explains), and whether one gap passed 10 minutes.
+function cov(ws, srcs,   n, sv, i, j, a, g, hs, he, f, gi, long, x) {
+    n = split(srcs, sv, " "); a = 0; g = 0; long = 0
+    for (i = 1; i <= NH; i++) {
+        hs = HWS[i]; he = HWE[i]
+        if (hs == "" || he <= ws || hs >= WEND) continue
+        f = 1
+        if (he > hs) { x = ((he < WEND) ? he : WEND) - ((hs > ws) ? hs : ws); f = x / (he - hs) }
+        a += H_awake[i] * f
+        gi = 0
+        for (j = 1; j <= n; j++) { gi += H_g[i, sv[j]] * f; if (H_g[i, sv[j]] > 600) long = 1 }
+        g += ((gi > H_awake[i] * f) ? H_awake[i] * f : gi)
+    }
+    for (i = 1; i <= NHOLE; i++) { # only the part inside the window counts
+        x = ((HOLE_E[i] < WEND) ? HOLE_E[i] : WEND) - ((HOLE_S[i] > ws) ? HOLE_S[i] : ws)
+        if (x <= 0) continue
+        g += x; a += x
+        if (x > 600) long = 1
+    }
+    for (i = 1; i <= NGAP; i++) {
+        if (GAP_S[i] == "" || GAP_E[i] == "") continue
+        x = ((GAP_E[i] < WEND) ? GAP_E[i] : WEND) - ((GAP_S[i] > ws) ? GAP_S[i] : ws)
+        for (j = 1; j <= n; j++) if (GAP_SRC[i] == sv[j] && x > 600) long = 1
+    }
+    COV_A = a; COV_G = g
+    if (a <= 0) return "没有记录"
+    if (g > 0.05 * a || long) return sprintf("不完整（缺 %s / 醒着 %s%s）", dur(g), dur(a), (long ? "，有一段超过 10 分钟" : ""))
+    return "完整"
+}
+# One line per metric: id, name, value, tier, window, coverage, how judged.
+function row(id, name, val, tier, ws, req, cv, how) {
+    if (SUMMARY) return
+    printf "  %s %s：%s · %s", id, name, val, tier
+    if (req > 0) printf " · %s / %s", dur(WEND - ws), dur(req)
+    if (cv != "") printf " · 覆盖%s", cv
+    printf " · %s\n", how
+}
+function sub_(text) { if (!SUMMARY) printf "      %s\n", text }
+function tier(viol, cv, ws, req) {
+    if (cv != "完整") return "没测"
+    if (viol) return "不达标"
+    if (WEND - ws < req - 60) return "注意"
+    return "达标"
+}
+function p95(arr, n,   i, j, v, k) {
+    for (i = 2; i <= n; i++) { v = arr[i]; j = i - 1; while (j > 0 && arr[j] > v) { arr[j + 1] = arr[j]; j-- } arr[j + 1] = v }
+    k = int(n * 0.95); if (k < n * 0.95) k++; if (k < 1) k = 1
+    return arr[k]
+}
+BEGIN {
+    while ((getline l < CAPF) > 0) { split(l, x, " "); CAPEND[x[1]] = x[2] }
+    split("guard job watcher capture uidlog crashlog datad", gs, " ")
+    split("on_home on_abroad off_home off_abroad", cs, " ")
+    split("agent datad devui ts", rs, " ")
+}
+{
+    if ($0 !~ /^[{]"v":[0-9]+,"seq":[0-9]+,"n":[0-9]+,"up":[0-9.]+,"t":(null|[0-9]+),"k":"[a-z_]+"/) { BAD++; next }
+    if (fld($0, "v") + 0 > 1) { NEWER++; next }
+    id = fld($0, "id")
+    if (id != "") { if (id in SEEN) next; SEEN[id] = 1 }
+    k = fld($0, "k"); s = fld($0, "seq") + 0; up = fld($0, "up") + 0; t = fld($0, "t")
+    if (!(s in SEQS)) { SEQS[s] = 1; NS++; SQ[NS] = s }
+    if (t != "null") OFF[s] = t - int(up)
+    if (k == "boot") { B_CODE[s] = fld($0, "code"); B_ID[s] = fld($0, "boot"); B_MODE[s] = fld($0, "mode") }
+    else if (k == "boot_backfill") { NBF++; BF_SEQ[NBF] = s; BF_CODE[NBF] = fld($0, "code"); BF_AT[NBF] = fld($0, "at"); if (fld($0, "gap") == "1") BF_GAP[s] = 1 }
+    else if (k == "guard_start") { GS_N[s]++; if (!(s in GS_UP)) GS_UP[s] = up; if (fld($0, "requested") != "1" && GS_N[s] > 1) { NGX++; GX_S[NGX] = s; GX_UP[NGX] = up } }
+    else if (k == "ver") { p = fld($0, "prog"); m = fld($0, "md5"); if (m != "null" && (p in VER_M) && VER_M[p] != m) { VER_CS[p] = s; VER_CU[p] = up } if (m != "null") VER_M[p] = m; if (p == "zwrt-datad") DATAD_X = fld($0, "extra") }
+    else if (k == "ssr") { NSSR++; SSR_ID[NSSR] = id; SSR_S[NSSR] = s; SSR_UP[NSSR] = up; SSR_NET[NSSR] = fld($0, "net"); SSR_HOME[NSSR] = fld($0, "home"); SSR_RAT[NSSR] = fld($0, "rat"); SSR_BAND[NSSR] = fld($0, "band"); SSR_NR[NSSR] = fld($0, "nrband"); SSR_PPM[NSSR] = fld($0, "wan_ppm"); LAST_SSR[s] = NSSR }
+    else if (k == "ssr_result") { r = fld($0, "ssr"); RES[r] = fld($0, "result"); RES_REC[r] = fld($0, "recovered_s"); RES_RX[r] = fld($0, "rx_seen_s"); RES_RESUMED[r] = fld($0, "resumed"); RES_SLEPT[r] = fld($0, "slept") }
+    else if (k == "svc_exit") { NSX++; SX_S[NSX] = s; SX_UP[NSX] = up; SX_P[NSX] = fld($0, "prog"); SX_ST[NSX] = fld($0, "status") }
+    else if (k == "proc_restart") { NPR++; PR_S[NPR] = s; PR_UP[NPR] = up; PR_P[NPR] = fld($0, "prog"); PR_CL[NPR] = fld($0, "crashlog") }
+    else if (k == "uid") { if (fld($0, "what") == "gave_up") { NUG++; UG_S[NUG] = s; UG_UP[NUG] = up } }
+    else if (k == "datad_degraded") { st = fld($0, "state"); sc = fld($0, "since")
+        if (st == "start") { NDD++; DD_S[NDD] = s; DD_UP[NDD] = up; DD_SINCE[NDD] = sc; DDI[sc] = NDD }
+        else if (sc in DDI) { DD_DUR[DDI[sc]] = fld($0, "dur_s"); DD_HOW[DDI[sc]] = fld($0, "how") } }
+    else if (k == "gap") { NGAPR++; GR_S[NGAPR] = s; GR_SRC[NGAPR] = fld($0, "src"); GR_F[NGAPR] = fld($0, "from"); GR_T[NGAPR] = fld($0, "to") }
+    else if (k == "calib") { CAL_S = s; CAL_UP = up }
+    else if (k == "net_change") { NNC++; NC_S[NNC] = s; NC_UP[NNC] = up }
+    else if (k == "oom") { NOOM++; OOM_S[NOOM] = s; OOM_UP[NOOM] = up }
+    else if (k == "thermal") { NTH++; TH_S[NTH] = s; TH_UP[NTH] = up; TH_LV[NTH] = fld($0, "level") }
+    else if (k == "hour") { NH++; H_S[NH] = s; H_F[NH] = fld($0, "from") + 0; H_T[NH] = fld($0, "to") + 0; H_FT[NH] = fld($0, "ft"); H_TT[NH] = fld($0, "tt")
+        H_awake[NH] = fld($0, "awake") + 0; H_ab[NH] = fld($0, "abroad") + 0; H_NET[NH] = fld($0, "net"); H_HOME[NH] = fld($0, "home")
+        for (j = 1; j <= 7; j++) H_g[NH, gs[j]] = fld($0, "g_" gs[j]) + 0
+        HK[s, H_F[NH]] = NH
+        if (isn(H_TT[NH])) OFF[s] = H_TT[NH] - H_T[NH] }
+    else if (k == "hour_power") { i = HK[s, idfrom(id)]; if (i != "") { HP[i] = 1; HP_E[i] = fld($0, "e"); HP_PART[i] = fld($0, "e_partial"); HP_THR[i] = fld($0, "throttle_s")
+        for (j = 1; j <= 4; j++) { HP_CS[i, cs[j]] = fld($0, cs[j] "_s") + 0; HP_CE[i, cs[j]] = fld($0, cs[j] "_e") } } }
+    else if (k == "hour_proc") { i = HK[s, idfrom(id)]; if (i != "") { HQ[i] = 1; HQ_CPU[i] = fld($0, "cpu_datad")
+        HQ_TON[i] = fld($0, "ts_on_s"); HQ_TCK[i] = fld($0, "ts_chk_s"); HQ_TOK[i] = fld($0, "ts_ok_s")
+        for (j = 1; j <= 5; j++) HQ_RSS[i, rs[j]] = fld($0, "rss_" rs[j]) } }
+}
+END {
+    # ── time: each hour wall span, the window end, the start of the ledger ──
+    for (i = 1; i <= NH; i++) {
+        s = H_S[i]
+        HWS[i] = (isn(H_FT[i]) ? H_FT[i] + 0 : wall(s, H_F[i])); HWE[i] = (isn(H_TT[i]) ? H_TT[i] + 0 : wall(s, H_T[i]))
+        if (HWE[i] != "" && (WEND == "" || HWE[i] > WEND)) WEND = HWE[i]
+        if (HWS[i] != "" && (LSTART == "" || HWS[i] < LSTART)) LSTART = HWS[i]
+        if (!(s in BLAST) || H_T[i] > H_T[BLAST[s]]) BLAST[s] = i
+        if (!(s in BFIRST) || H_F[i] < H_F[BFIRST[s]]) BFIRST[s] = i
+    }
+    if (WEND == "") {
+        if (NH) printf "账本有 %d 小时的记录，但设备时钟一直没对上，排不进时间窗口（对时以后再看）\n", NH
+        else print "账本里还没有一小时的记录（上线一小时后再看）"
+        exit 1
+    }
+    # holes between boots that no power-off explains: coverage gaps (§8)
+    for (x = 1; x <= NS; x++) {
+        s = SQ[x]; p = SQ[x - 1]
+        if (x == 1 || !(s in BFIRST) || !(p in BLAST)) continue
+        hs = HWE[BLAST[p]]; he = HWS[BFIRST[s]]
+        if (hs == "" || he == "" || he - hs <= 300) continue
+        if (klass(B_CODE[s]) == "manual" || B_MODE[s] ~ /charg/) continue
+        NHOLE++; HOLE_S[NHOLE] = hs; HOLE_E[NHOLE] = he
+    }
+    for (i = 1; i <= NGAPR; i++) { s = GR_S[i]; NGAP++; GAP_SRC[NGAP] = GR_SRC[i]; GAP_S[NGAP] = wall(s, GR_F[i]); GAP_E[NGAP] = wall(s, GR_T[i]) }
+    # ── reboots, in order: each boot line and the key.log backfills written before it ──
+    for (x = 1; x <= NS; x++) {
+        s = SQ[x]
+        for (i = 1; i <= NBF; i++) if (BF_SEQ[i] == s) {
+            NR_++; R_CODE[NR_] = BF_CODE[i]; R_LEDGER[NR_] = 0
+            at = BF_AT[i]; gsub(/[-:]/, " ", at)
+            R_W[NR_] = ((substr(BF_AT[i], 1, 4) >= 2026) ? mktime(at) : ((s in OFF) ? OFF[s] - 1 : ""))
+        }
+        if (s in B_CODE) { NR_++; R_CODE[NR_] = B_CODE[s]; R_LEDGER[NR_] = s; R_W[NR_] = ((s in OFF) ? OFF[s] : "") }
+    }
+    for (i = 1; i <= NR_; i++) {
+        c = klass(R_CODE[i]); pl = "不明"; ps = ((i > 1) ? R_LEDGER[i - 1] : 0)
+        if (ps && (ps in BLAST)) pl = ((H_ab[BLAST[ps]] * 2 > H_awake[BLAST[ps]]) ? "国外" : "在家")
+        if (c == "1182") {
+            c = "unknown"
+            if (ps) {
+                j = LAST_SSR[ps]
+                if (j != "" && !(SSR_ID[j] in RES)) c = "modem"
+                else if (substr(B_ID[ps], 1, 8) in CAPEND && CAPEND[substr(B_ID[ps], 1, 8)] == 1) c = "modem"
+            }
+        }
+        R_CLASS[i] = c; R_PLACE[i] = pl
+        R_GAPCOL[i] = 0
+        if (c == "modem") { # before guard was up in the boot that ended: the S2a gap column
+            if (!ps || !(ps in GS_UP)) R_GAPCOL[i] = 1
+            else { j = LAST_SSR[ps]; if (j != "" && SSR_UP[j] < GS_UP[ps]) R_GAPCOL[i] = 1 }
+        }
+    }
+    if (!SUMMARY) {
+        printf "设备成绩单（%s，截至 %s）\n", LABEL, strftime("%Y-%m-%d %H:%M", WEND)
+        printf "  账本：%d 次开机，%d 小时的记录，从 %s 起%s%s\n\n", NS, NH, strftime("%m-%d %H:%M", LSTART),
+            (BAD ? sprintf("；%d 行读不懂，已跳过", BAD) : ""), (NEWER ? sprintf("；%d 行是更新的格式，已跳过", NEWER) : "")
+        print "稳"
+    }
+    D7 = 604800; D1 = 86400
+    # S1 unexpected reboots (key.log reason codes)
+    ws = wstart(D7, RECOV); n = 0; sch = 0; det = ""
+    for (i = 1; i <= NR_; i++) if (R_W[i] != "" && R_W[i] > ws && R_W[i] <= WEND) {
+        if (R_CLASS[i] == "scheduled") sch++
+        else if (R_CLASS[i] != "manual") { n++; det = det sprintf("%s %s（%s，%s）；", when(R_W[i]), R_CODE[i], R_CLASS[i], R_PLACE[i]) }
+    }
+    cv = "完整"; for (x = 1; x <= NS; x++) if (BF_GAP[SQ[x]]) cv = "不完整（key.log 补记的锚点丢过一次）"
+    S1N = n; S1T = tier(n > 0, cv, ws, D7)
+    row("S1", "意外整机重启", n " 次" (sch ? sprintf("（另有原厂定时 %d 次）", sch) : ""), S1T, ws, D7, cv, "自动")
+    if (det != "") sub_(det)
+    # S2a modem crash -> whole reboot, from guard up; the boot-gap column apart
+    ws = wstart(D7, RECOV); n = 0; ng = 0
+    for (i = 1; i <= NR_; i++) if (R_W[i] != "" && R_W[i] > ws && R_W[i] <= WEND && R_CLASS[i] == "modem") { if (R_GAPCOL[i]) ng++; else n++ }
+    cv = cov(ws, "watcher capture")
+    row("S2a", "基带崩溃升级成整机重启", n " 次（开机空档 " ng " 次）", tier(n > 0, cv, ws, D7), ws, D7, cv, "自动")
+    # S2b recovery time P95, from the ssr_result lines; S3 counts
+    lastnc = ""; for (i = 1; i <= NNC; i++) { x = wall(NC_S[i], NC_UP[i]); if (x != "" && (lastnc == "" || x > lastnc)) lastnc = x }
+    ws = wstart(D7, lastnc)
+    # crashes in the order they happened (spool files are drained by name, not by time)
+    for (i = 1; i <= NSSR; i++) ORD[i] = i
+    for (i = 2; i <= NSSR; i++) { v = ORD[i]; j = i - 1
+        while (j > 0 && (SSR_S[ORD[j]] > SSR_S[v] || (SSR_S[ORD[j]] == SSR_S[v] && SSR_UP[ORD[j]] > SSR_UP[v]))) { ORD[j + 1] = ORD[j]; j-- }
+        ORD[j + 1] = v }
+    nh = 0; na = 0; nsl = 0; nnd = 0
+    for (z = 1; z <= NSSR; z++) {
+        i = ORD[z]
+        x = wall(SSR_S[i], SSR_UP[i]); if (x == "" || x <= ws || x > WEND) continue
+        r = SSR_ID[i]; pl = place(SSR_NET[i], SSR_HOME[i])
+        if (RES[r] == "no_drop") { nnd++; continue }
+        if (RES[r] == "merged") continue # its chain is counted at the crash that ends it
+        if (!(r in RES) && SSR_S[i] == SQ[NS]) continue # still being followed
+        v = ""
+        if (RES[r] == "ok") v = RES_REC[r] + 0
+        else v = 600 # timeout, or the device rebooted first: at least 600 s
+        # merged crashes just before this one: one long outage from the first of them
+        sl_ = (RES_SLEPT[r] == "1")
+        y = z - 1; while (y >= 1 && SSR_S[ORD[y]] == SSR_S[i] && RES[SSR_ID[ORD[y]]] == "merged") {
+            v += SSR_UP[ORD[y + 1]] - SSR_UP[ORD[y]]; if (RES_SLEPT[SSR_ID[ORD[y]]] == "1") sl_ = 1; y-- }
+        if (sl_) { nsl++; continue } # asleep anywhere in the chain: kept apart, never for 达标
+        if (pl == "国外") { na++; PA[na] = v } else { nh++; PH[nh] = v }
+        b_ = ((THR == "" || !isn(SSR_PPM[i])) ? "不明" : ((SSR_PPM[i] + 0 <= THR + 0) ? "空闲" : "有流量"))
+        NB[pl "·" b_]++; BV[pl "·" b_, NB[pl "·" b_]] = v
+    }
+    cv = cov(ws, "watcher capture")
+    ph = (nh ? p95(PH, nh) : ""); pa = (na ? p95(PA, na) : "")
+    val = "在家 " (nh ? sprintf("P95 %d 秒（%d 次）", ph, nh) : "没有崩溃") "；国外 " (na ? sprintf("P95 %d 秒（%d 次）", pa, na) : "没有崩溃")
+    if (nnd) val = val sprintf("；没断网 %d 次另列", nnd)
+    if (nsl) val = val sprintf("；跟随中睡过 %d 次另列", nsl)
+    S2BT = tier((nh && ph > 45) || (na && pa > 45), cv, ws, D7)
+    if (S2BT == "达标" && nsl && !nh && !na) S2BT = "注意"
+    row("S2b", "基带崩溃后恢复用时", val, S2BT, ws, D7, cv, "自动")
+    det = ""; for (x in NB) { delete TMP; for (j = 1; j <= NB[x]; j++) TMP[j] = BV[x, j]; det = det sprintf("%s P95 %d 秒（%d 次）；", x, p95(TMP, NB[x]), NB[x]) }
+    if (det != "") sub_(det)
+    nh = 0; det = ""; delete CNT
+    for (i = 1; i <= NSSR; i++) {
+        x = wall(SSR_S[i], SSR_UP[i]); if (x == "" || x <= ws || x > WEND) continue
+        if (place(SSR_NET[i], SSR_HOME[i]) == "国外") CNT[SSR_NET[i] " " SSR_RAT[i] " " SSR_BAND[i] ((SSR_NR[i] != "null" && SSR_NR[i] != "") ? "/n" SSR_NR[i] : "")]++
+        else nh++
+    }
+    na = 0; for (x in CNT) { na += CNT[x]; det = det x " " CNT[x] " 次；" }
+    S3N = nh + na
+    row("S3", "基带崩溃（按国家、制式、频段）", "在家 " nh " 次；国外 " na " 次", tier(nh > 0, cv, ws, D7), ws, D7, cv, (na ? "在家：自动；国外有没有对策：人工" : "自动"))
+    if (det != "") sub_("国外：" det)
+    # S4 our programs, each from its last new build
+    split("zte-agent zwrt-datad u60pro-devui u60-uid u60-guard.sh", PG, " ")
+    split("agent datad 触屏 u60-uid guard", PL, " ")
+    val = ""; viol = 0; worst = "达标"; cvall = "完整"
+    for (q = 1; q <= 5; q++) {
+        p = PG[q]; ch = ((p in VER_CS) ? wall(VER_CS[p], VER_CU[p]) : "")
+        ws = wstart(D7, ch); n = 0; pre = 0
+        for (i = 1; i <= NSX; i++) if (SX_P[i] == p && SX_ST[i] != "0" && SX_ST[i] != "exit 0") { x = wall(SX_S[i], SX_UP[i]); if (x != "" && x > ws && x <= WEND) n++; else if (x != "") pre++ }
+        for (i = 1; i <= NPR; i++) if (PR_P[i] == p && PR_CL[i] != "1") { x = wall(PR_S[i], PR_UP[i]); if (x != "" && x > ws && x <= WEND) n++ }
+        if (p == "u60-guard.sh") for (i = 1; i <= NGX; i++) { x = wall(GX_S[i], GX_UP[i]); if (x != "" && x > ws && x <= WEND) n++ }
+        cv = cov(ws, "crashlog guard"); t_ = tier(n > 0, cv, ws, D7)
+        val = val PL[q] " " n ((t_ != "达标") ? "（" t_ ((t_ == "注意") ? " " dur(WEND - ws) : "") "）" : "") "；"
+        if (t_ == "不达标") worst = t_; else if (t_ == "没测" && worst != "不达标") worst = t_; else if (t_ == "注意" && worst == "达标") worst = t_
+    }
+    row("S4", "我们的程序意外退出", trim(val), worst, 0, 0, "", "自动；u60-uid 的 pid 变化含人为重启；退出码 0 的意外退出第二步才看得到")
+    # S5a / S5b the screen
+    ws = wstart(D7, UIDTK); n = 0
+    for (i = 1; i <= NR_; i++) if (R_W[i] != "" && R_W[i] > ws && R_W[i] <= WEND && R_CODE[i] == 1185) n++
+    row("S5a", "屏幕没界面导致重启", n " 次", tier(n > 0, "完整", ws, D7), ws, D7, "完整", "自动")
+    n = 0; for (i = 1; i <= NUG; i++) { x = wall(UG_S[i], UG_UP[i]); if (x != "" && x > ws && x <= WEND) n++ }
+    cv = cov(ws, "uidlog")
+    row("S5b", "屏幕交还原厂界面", n " 次" (GAVEUP ? "（现在仍停在原厂界面）" : ""), tier(n > 0 || GAVEUP, cv, ws, D7), ws, D7, cv, "自动")
+    # S6 datad degraded (one day)
+    ws = wstart(D1, ""); n = 0; tot = 0; unk = 0
+    for (i = 1; i <= NDD; i++) { x = wall(DD_S[i], DD_UP[i]); if (x != "" && x > ws && x <= WEND) { n++; if (isn(DD_DUR[i])) tot += DD_DUR[i]; else unk++ } }
+    cv = cov(ws, "guard datad")
+    S6N = n
+    row("S6", "datad 降级", n " 次" (n ? "，共 " dur(tot) (unk ? sprintf("（%d 次时长不明）", unk) : "") : ""), tier(n > 0, cv, ws, D1), ws, D1, cv, "自动")
+    row("S7", "上机安全和一致", "设备上的程序还没有全部对得上提交", "不达标", 0, 0, "", "E1 前靠已知事实")
+    # S8 exits. Tailscale: healthy seconds over the seconds guard could check it;
+    # an hour line without ts_chk_s is from before that check, all of it unchecked.
+    ws = wstart(D7, ""); con = 0; cok = 0; ton = 0; tck = 0; tok = 0; tlong = 0
+    for (i = 1; i <= NH; i++) if (HWE[i] > ws && HWS[i] < WEND && (i in HQ)) {
+        con += HQ_CON[i]; cok += HQ_COK[i]; ton += HQ_TON[i]
+        x = (isn(HQ_TCK[i]) ? HQ_TCK[i] + 0 : 0); tck += x
+        if (isn(HQ_TCK[i]) && isn(HQ_TOK[i])) tok += HQ_TOK[i]
+        if (HQ_TON[i] - x > 600) tlong = 1
+    }
+    cv = cov(ws, "guard")
+    # the coverage of Tailscale itself (docs/LEDGER.md §8): unchecked on-time <= 5%, and no hour with over 10 minutes of it
+    if (cv == "完整" && ton && (ton - tck > 0.05 * ton || tlong))
+        cv = sprintf("不完整（Tailscale 开着 %s，查到 %s%s）", dur(ton), dur(tck), (tlong ? "，有一小时里超过 10 分钟没查到" : ""))
+    tv = (ton ? (tck ? sprintf("%.1f%%", tok * 100 / tck) : "没查到过") : "没开过")
+    tbad = (ton && tok + ton - tck < 0.99 * ton) # under 99% even if every unchecked second was healthy
+    val = "Tailscale " tv
+    t_ = tier(tck && tok < 0.99 * tck, (ton ? cv : "没有记录"), ws, D7)
+    if (tbad) t_ = "不达标"
+    row("S8", "出口可用", val, t_, ws, D7, cv, "自动")
+    # ── 好用 ──
+    if (!SUMMARY) print "\n好用"
+    row("U1", "点了当场有反应", "首页每秒同步请求会卡几十到上百 ms，超过 50 ms", "不达标", 0, 0, "", "第二步前靠已知事实")
+    row("U2", "屏幕说的是真的", "崩溃后照常显示旧值；缺 SINR 当「中」；WAN 为空当「已连上」", "不达标", 0, 0, "", "第二步前靠已知事实")
+    row("U3", "出事说得清", "基带崩溃时屏幕没有一句解释", "不达标", 0, 0, "", "第二步前靠已知事实")
+    row("U4", "操作闭环", "原厂界面切制式没生效也不报错", "不达标", 0, 0, "", "E4 前靠已知事实")
+    row("U5", "不用 ssh", "出行中不得不开会话修", "不达标", 0, 0, "", "设备锁做好前靠已知事实")
+    # U6 alerts in the window, and the ▲ of the health check now
+    ws = wstart(D7, ""); n = 0; det = ""; oldest = ""; firstseq = ""
+    while ((getline l < ALERTQ) > 0) { split(l, a, "\t"); if (firstseq == "") { firstseq = a[1]; oldest = a[2] }
+        if (a[4] == "sms-test") continue
+        if (a[2] + 0 > ws && a[2] + 0 <= WEND) { n++; det = det sprintf("%s %s；", when(a[2] + 0), a[4]) } }
+    nw = 0; wdet = ""; while ((getline l < WARNF) > 0) { nw++; wdet = wdet l "；" }
+    cv = ((firstseq != "" && firstseq > 1 && oldest + 0 > ws) ? "不完整（告警队列剪过，最老一条晚于窗口起点）" : "完整")
+    row("U6", "体检和告警可信", sprintf("窗口内告警 %d 条，现在 ▲/■ %d 项", n, nw), ((cv == "完整") ? "人工" : "没测"), ws, D7, cv, "人工：逐条看是不是真问题")
+    if (det != "") sub_("告警：" det)
+    if (wdet != "") sub_("体检：" wdet)
+    # ── 省 ──
+    if (!SUMMARY) print "\n省"
+    ws = wstart(D7, ""); e = 0; es = 0; part = 0; delete CE; delete CSS
+    for (i = 1; i <= NH; i++) if (HWE[i] > ws && HWS[i] < WEND && (i in HP) && isn(HP_E[i])) {
+        e += HP_E[i]; if (HP_PART[i] == "1") part++
+        for (j = 1; j <= 4; j++) { c = cs[j]; CSS[c] += HP_CS[i, c]; if (isn(HP_CE[i, c])) CE[c] += HP_CE[i, c] } }
+    for (j = 1; j <= 4; j++) es += CSS[cs[j]]
+    cv = cov(ws, "guard")
+    P1V = (es ? sprintf("%.0f mW", e * 3600 / es) : "")
+    row("P1", "真实使用的续航", (es ? "平均 " P1V "（" dur(es) " 的样本" (part ? sprintf("，%d 小时只有部分能量", part) : "") "）" : "没有能量记录"), "没测（目标待定）", ws, D7, cv, "自动")
+    val = ""; split("亮屏在家 亮屏国外 息屏在家 息屏国外", CL, " ")
+    for (j = 1; j <= 4; j++) { c = cs[j]; val = val CL[j] " " ((CSS[c] >= 21600) ? sprintf("%.0f mW", CE[c] * 3600 / CSS[c]) : "样本不足") "；" }
+    row("P2", "同类场景的耗电", trim(val), "没测（目标待定）", ws, D7, cv, "自动；每格少于 6 小时写样本不足；小时记录不分空闲和有流量")
+    getline stb < STBF; split(stb, sb, "\t")
+    t_ = ((sb[2] ~ /未校准|没有息屏记录/) ? "没测" : ((sb[2] ~ /格式旧|基线过期/) ? "注意" : "达标"))
+    row("P3", "待机判断正确", sb[2], t_, 0, 0, "", "自动（只判空闲的息屏分钟，基线过期的列停判）")
+    ch = (("zwrt-datad" in VER_CS) ? wall(VER_CS["zwrt-datad"], VER_CU["zwrt-datad"]) : "")
+    ws = wstart(D1, ch); cpu = 0; nc = 0
+    for (i = 1; i <= NH; i++) if (HWE[i] > ws && HWS[i] < WEND && (i in HQ) && isn(HQ_CPU[i])) { cpu += HQ_CPU[i]; nc++ }
+    cv = cov(ws, "guard")
+    row("P4a", "datad 的 CPU", (nc ? sprintf("平均 %.1f%%（%d 小时）", cpu / nc / 10, nc) : "没有记录"), tier(nc && cpu / nc > 20, (nc ? cv : "没有记录"), ws, D1), ws, D1, cv, "自动")
+    row("P4b", "读数不派生进程", ((DATAD_X == "ubus=socket") ? "socket 后端" : "cli 后端，每读一次起一个 ubus 进程"), ((DATAD_X == "ubus=socket") ? "达标" : "不达标"), 0, 0, "", "设计事实")
+    # P5 memory over boots that ran 24 h; oom kills
+    ws = wstart(D7, ""); val = ""; viol = 0; long_ = 0; cmp_ = 0
+    for (x = 1; x <= NS; x++) { s = SQ[x]; if (!(s in BLAST) || H_T[BLAST[s]] < 86400) continue
+        long_ = 1; b = ""
+        for (i = 1; i <= NH; i++) if (H_S[i] == s && H_T[i] >= 3600 && (i in HQ) && (b == "" || H_F[i] < H_F[b])) b = i
+        l_ = BLAST[s]; if (b == "" || !(l_ in HQ)) continue
+        for (j = 1; j <= 5; j++) { r_ = rs[j]; if (isn(HQ_RSS[b, r_]) && isn(HQ_RSS[l_, r_]) && HQ_RSS[b, r_] > 0) { cmp_++
+            g_ = (HQ_RSS[l_, r_] - HQ_RSS[b, r_]) * 100 / HQ_RSS[b, r_]; if (g_ > 10) { viol = 1; val = val sprintf("%s +%.0f%%；", r_, g_) } } } }
+    n = 0; for (i = 1; i <= NOOM; i++) { x = wall(OOM_S[i], OOM_UP[i]); if (x != "" && x > ws && x <= WEND) n++ }
+    cv = cov(ws, "guard watcher")
+    m_ = ((!long_) ? "没有连续运行满 24 小时的开机" : ((!cmp_) ? "没有内存记录" : ((val != "") ? trim(val) : "RSS 增长都在 10% 以内")))
+    row("P5", "内存不涨", m_ "；OOM " n " 次", tier(viol || n > 0, ((long_ && cmp_) ? cv : "没有记录"), ws, D7), ws, D7, cv, "自动")
+    # P6 throttling and thermal level rises
+    thr = 0; nul = 0
+    for (i = 1; i <= NH; i++) if (HWE[i] > ws && HWS[i] < WEND && (i in HP)) { if (isn(HP_THR[i])) thr += HP_THR[i]; else nul++ }
+    n = 0; delete FL
+    for (i = 1; i <= NTH; i++) { s = TH_S[i]; lv = TH_LV[i]; v = ((lv ~ /^0x/) ? strtonum_(lv) : ""); if (v == "") continue
+        if (!(s in FL)) { FL[s] = v; continue }
+        x = wall(s, TH_UP[i]); if (v > FL[s] && x != "" && x > ws && x <= WEND) n++ }
+    cv = cov(ws, "guard watcher"); if (nul) cv = sprintf("不完整（%d 小时没有降频数据）", nul)
+    row("P6", "温度和降频", "降频 " dur(thr) "；过热等级上升 " n " 次", tier(thr > 0 || n > 0, cv, ws, D7), ws, D7, cv, "自动")
+    if (SUMMARY) {
+        printf "  账本（%s，截至 %s）：意外重启 %d 次（%s）、基带崩溃 %d 次、datad 降级今天 %d 次\n", LABEL, strftime("%m-%d %H:%M", WEND), S1N, S1T, S3N, S6N
+        printf "  耗电：%s\n", ((P1V != "") ? "平均 " P1V : "还没有能量记录")
+        printf "  详细成绩单：doctor.sh --report 7d\n"
+    }
+}
+function strtonum_(h,   i, c, v) { v = 0; h = tolower(substr(h, 3)); for (i = 1; i <= length(h); i++) { c = index("0123456789abcdef", substr(h, i, 1)); if (!c) return ""; v = v * 16 + c - 1 } return v }
+
+'
+report_ledger() { # <24h|7d> [--summary]
+    case "$1" in
+        24h) _rw=86400 _rl="24 小时" ;;
+        7d) _rw=604800 _rl="7 天" ;;
+        *) echo "用法：doctor.sh --report 24h|7d"; return 2 ;;
+    esac
+    _sum=0
+    [ "$2" = --summary ] && _sum=1
+    _segs=$(ls "$LEDGER_DIR"/boot-*.jsonl 2>/dev/null | sort)
+    if [ -z "$_segs" ]; then
+        echo "账本还没有记录（$LEDGER_DIR）"
+        return 1
+    fi
+    _rt=$(mktemp -d 2>/dev/null) || _rt=/tmp/doctor-report.$$
+    mkdir -p "$_rt"
+    # 1182 needs this: does each kept kernel log end in a modem crash line?
+    for _cf in "$CRASHCAP_DIR"/kmsg-*.log; do
+        [ -f "$_cf" ] || continue
+        _cb=${_cf##*/kmsg-}
+        printf '%s %s\n' "${_cb%.log}" "$(tail -n 40 "$_cf" | grep '^[0-9][0-9]*,[0-9][0-9]*,' | tail -n 1 |
+            grep -c -i -E 'fatal error received|watchdog received|crash detected|rproc recovery|subsystem restart|err_fatal')"
+    done >"$_rt/cap"
+    : >"$_rt/warn"
+    [ "$_sum" = 1 ] || sh "$0" --tsv 2>/dev/null | awk -F'\t' '$1 != "ok" { print $3 "：" $4 }' >"$_rt/warn"
+    standby_check >"$_rt/standby"
+    _thr=$(awk '$1 == "2" && $2 != "-" { print $2 + 3 * $3; exit }' "$STANDBY_BASE" 2>/dev/null)
+    _gave=0
+    [ -f "$UID_STATE/gave-up" ] && _gave=1
+    awk -v W="$_rw" -v LABEL="$_rl" -v RECOV="$RECOV_LIVE" -v UIDTK="$UID_LIVE" -v CAPF="$_rt/cap" -v WARNF="$_rt/warn" \
+        -v STBF="$_rt/standby" -v ALERTQ="$ALERTS/queue" -v GAVEUP="$_gave" -v THR="$_thr" -v SUMMARY="$_sum" \
+        "$REPORT_AWK" $_segs
+    _rc=$?
+    rm -rf "$_rt"
+    return $_rc
+}
+
+# ── doctor.sh --ledger-selftest (docs/LEDGER.md §13) ──
+# Whether the ledger can work on this device, item by item, PASS or FAIL.
+# Touches neither the ledger nor the recovery switch, starts no reader or
+# watcher; writes only $LEDGER_DIR/.selftest (removed again) and one test line
+# to the kernel log. Also tries each device tool u60-guard relies on, the way
+# u60-guard calls it, so a device build that lacks one shows up here first.
+selftest() {
+    _sf=0
+    st() { # st <PASS|FAIL> <item> [<why>]
+        [ "$1" = FAIL ] && _sf=$((_sf + 1))
+        printf '%s %s%s\n' "$1" "$2" "${3:+：$3}"
+    }
+    _sx=$(awk 'BEGIN { srand(); printf "%d", rand() * 1000000000 }')
+    # /data/ledger takes a 512-byte line, fsynced, and gives it back
+    _sl=$(printf '%0512d' 0 | tr 0 x)
+    if mkdir -p "$LEDGER_DIR" 2>/dev/null && printf '%s\n' "$_sl" >"$LEDGER_DIR/.selftest" 2>/dev/null &&
+        dd if=/dev/null of="$LEDGER_DIR/.selftest" conv=notrunc,fsync 2>/dev/null && [ "$(cat "$LEDGER_DIR/.selftest")" = "$_sl" ]; then
+        st PASS "账本目录可写（$LEDGER_DIR）"
+    else
+        st FAIL "账本目录可写（$LEDGER_DIR）" "写不进、fsync 失败或读回不一致"
+    fi
+    rm -f "$LEDGER_DIR/.selftest"
+    _sc=$(grep 'reboot_reason_code=[0-9]' "$KEYLOG" 2>/dev/null | tail -n 1 | sed -n 's/.*reboot_reason_code=\([0-9][0-9]*\).*/\1/p')
+    if [ -n "$_sc" ]; then st PASS "key.log 的原因码（这次开机 $_sc）"; else st FAIL "key.log 的原因码" "$KEYLOG 里找不到 reboot_reason_code="; fi
+    _sr=
+    { read -r _sr <"$MSS_RECOVERY"; } 2>/dev/null
+    if [ -n "$_sr" ]; then st PASS "基带崩溃自恢复开关（$_sr）"; else st FAIL "基带崩溃自恢复开关" "读不到 $MSS_RECOVERY"; fi
+    # device tools, called the way u60-guard calls them
+    _st=$(mktemp -d 2>/dev/null) || _st=/tmp/doctor-selftest.$$
+    mkdir -p "$_st"
+    printf 'abcdef\n' >"$_st/f"
+    [ "$(dd if="$_st/f" iflag=skip_bytes skip=2 bs=65536 2>/dev/null)" = cdef ] && st PASS "dd iflag=skip_bytes" || st FAIL "dd iflag=skip_bytes" "观察循环读不了落盘文件"
+    set -- $(ls -ln "$_st/f" 2>/dev/null)
+    [ "$5" = 7 ] && st PASS "ls -ln 第 5 列是大小" || st FAIL "ls -ln 第 5 列是大小" "读到 ${5:-空}"
+    case "$(awk 'BEGIN { print mktime("2026 01 01 00 00 00"), strftime("%Y", 1790500000) }' 2>/dev/null)" in
+        [0-9]*" 2026") st PASS "awk 的 mktime / strftime" ;;
+        *) st FAIL "awk 的 mktime / strftime" "成绩单没法换算时间" ;;
+    esac
+    [ "$(printf '1\n' | awk '{ v = (($1 == 1) ? "yes" : "no"); print v }')" = yes ] && st PASS "awk 的 ?:（括起来的写法）" || st FAIL "awk 的 ?:（括起来的写法）"
+    (exec 7>>"$_st/lock" && flock -n 7) && st PASS "flock -n" || st FAIL "flock -n" "账本写锁和观察循环的锁都用它"
+    case "$(echo '{"a":{"b":1}}' | $JSONFILTER -e 'X=@.a.b' -e 'Y=@.a.c' -e 'Z=@.a.b' 2>/dev/null)" in
+        *X=*Z=*) st PASS "jsonfilter 多个 -e（中间一个路径不存在）" ;;
+        *) st FAIL "jsonfilter 多个 -e（中间一个路径不存在）" "网络缓存读不全" ;;
+    esac
+    case "$($WGET -q -T 2 -O - "$DATAD_URL" 2>/dev/null | head -c 1)" in
+        "{") st PASS "wget -T 2 读 datad /state" ;;
+        *) st FAIL "wget -T 2 读 datad /state" "网络缓存没有来源（datad 没在跑也会这样）" ;;
+    esac
+    rm -rf "$_st"
+    # what the crash watcher calls the link up (S2b): an IPv4 address and the main table's default route
+    case "$($IP -4 -o addr show dev "$WAN_IF" 2>/dev/null)" in
+        *"inet "*) st PASS "ip -4 -o addr 看得到 $WAN_IF 的地址" ;;
+        *) st FAIL "ip -4 -o addr 看得到 $WAN_IF 的地址" "崩溃跟随判不出恢复（此刻没联网也会这样）" ;;
+    esac
+    if awk -v i="$WAN_IF" '$1 == i && $2 == "00000000" { f = 1 } END { exit !f }' "$ROUTE" 2>/dev/null; then
+        st PASS "默认路由走 $WAN_IF（$ROUTE）"
+    else
+        st FAIL "默认路由走 $WAN_IF（$ROUTE）" "崩溃跟随只能看地址（此刻没联网也会这样）"
+    fi
+    # a test line through /dev/kmsg shows up in this boot's capture file within the wait
+    _sb=$(cut -c1-8 "$BOOT_ID_FILE" 2>/dev/null)
+    _scf=$CRASHCAP_DIR/kmsg-${_sb:-boot}.log
+    if [ ! -f "$_scf" ]; then
+        st FAIL "kmsg 落盘" "没有这次开机的落盘文件 $_scf"
+    elif ! echo "u60-ledger-selftest $_sx" >>"$KMSG" 2>/dev/null; then
+        st FAIL "kmsg 落盘" "写不进 $KMSG"
+    else
+        _sw=0
+        while [ "$_sw" -le "$SELFTEST_WAIT" ] && ! grep -q "u60-ledger-selftest $_sx" "$_scf" 2>/dev/null; do
+            sleep 1
+            _sw=$((_sw + 1))
+        done
+        if ! grep -q "u60-ledger-selftest $_sx" "$_scf" 2>/dev/null; then
+            st FAIL "kmsg 落盘" "测试行 $SELFTEST_WAIT 秒内没出现在 $_scf"
+        else
+            st PASS "kmsg 落盘（${_sw} 秒内）"
+            # the watcher, when it runs, has read past it
+            _swp=
+            { read -r _swp _rest <"$LEDGER_TMP/w.pos"; } 2>/dev/null
+            if [ -n "$_swp" ]; then
+                _sat=$(awk -v m="u60-ledger-selftest $_sx" 'index($0, m) { print b + 0; exit } { b += length($0) + 1 }' "$_scf")
+                _sw=0
+                while [ "$_sw" -le "$SELFTEST_WAIT" ] && [ "${_swp:-0}" -le "${_sat:-0}" ]; do
+                    sleep 1
+                    _sw=$((_sw + 1))
+                    { read -r _swp _rest <"$LEDGER_TMP/w.pos"; } 2>/dev/null
+                done
+                if [ "${_swp:-0}" -gt "${_sat:-0}" ]; then st PASS "观察循环读过了测试行"; else st FAIL "观察循环读过了测试行" "它的位置 $_swp 没过 $_sat"; fi
+            fi
+        fi
+    fi
+    echo
+    if [ "$_sf" = 0 ]; then echo "全部通过"; else echo "$_sf 项没通过"; fi
+    [ "$_sf" = 0 ]
+}
+
+if [ "$1" = "--ledger-selftest" ]; then
+    selftest
+    exit $?
+fi
+
+if [ "$1" = "--report" ]; then
+    uptime_s() { cut -d. -f1 "$UPTIME_FILE" 2>/dev/null || echo 0; }
+    report_ledger "$2" "$3"
+    exit $?
+fi
 
 if [ "$1" = "--calibrate-standby" ]; then
     uptime_s() { cut -d. -f1 "$UPTIME_FILE" 2>/dev/null || echo 0; }
@@ -154,9 +791,30 @@ if [ -d "$OVERLAY_RCD" ]; then
     fi
 fi
 
-t=$(date +%s)
-if [ "$t" -ge "$CLOCK_SANE_AFTER" ]; then
-    report ok clock "时钟" "已对时（$(date '+%Y-%m-%d %H:%M') 设备当地时间）"
+# Clock trust: u60-guard's verdict when it is fresh, else the same rule here
+# (docs/LEDGER.md §7). Before NTP the device clock reads 2025-01-04.
+up=$(uptime_s)
+case "$up" in '' | *[!0-9]*) up=0 ;; esac
+t=$($DATE +%s)
+case "$t" in '' | *[!0-9]*) t=0 ;; esac
+ck=
+cu=
+{ read -r ck _cw cu _ch <"$CLOCK_OK"; } 2>/dev/null
+case "$cu" in '' | *[!0-9]*) cu= ;; esac
+if [ -n "$cu" ] && [ "$cu" -le "$up" ] && [ $((up - cu)) -le 300 ]; then
+    clk=$ck
+else
+    last=$(cat "$WALL_LAST" 2>/dev/null)
+    case "$last" in '' | *[!0-9]*) last=0 ;; esac
+    clk=0
+    if [ "$t" -ge "$CLOCK_YEAR_MIN" ] && { [ "$last" -eq 0 ] || [ "$t" -ge $((last - 86400)) ]; }; then
+        clk=1
+    fi
+fi
+if [ "$clk" = 1 ]; then
+    report ok clock "时钟" "已对时（$($DATE '+%Y-%m-%d %H:%M') 设备当地时间）"
+elif [ "$up" -lt 300 ]; then
+    report ok clock "时钟" "刚开机，还在对时"
 else
     report warn clock "时钟" "还没对时，告警短信在对时前不发"
 fi
@@ -229,7 +887,7 @@ fi
 # ── screen ──────────────────────────────────────────────────────────────────
 if [ -f "$UID_STATE/gave-up" ]; then
     report bad screen "触屏界面" "反复启动失败，已换回原厂界面（长按屏幕右下角 3 秒，或 echo devui > /tmp/u60-uid.ctl）"
-elif [ "$(cat /tmp/u60-uid.want 2>/dev/null)" = vendor ]; then
+elif [ "$(cat "$UID_WANT" 2>/dev/null)" = vendor ]; then
     report ok screen "触屏界面" "按要求显示原厂界面"
 elif [ "$(count_comm u60pro-devui)" -ge 1 ]; then
     a=$(cat "$UID_STATE/attempts" 2>/dev/null)
@@ -270,7 +928,7 @@ else
 fi
 
 # Last line, counted from the end: a long device name makes df wrap its row.
-free_kb=$(df -k "$DATA_DIR" 2>/dev/null | tail -n 1 | awk '{print $(NF - 2)}')
+free_kb=$($DF -k "$DATA_DIR" 2>/dev/null | tail -n 1 | awk '{print $(NF - 2)}')
 case "$free_kb" in '' | *[!0-9]*) free_kb= ;; esac
 if [ -z "$free_kb" ]; then
     report warn disk "/data 空间" "读不到"
@@ -291,6 +949,11 @@ if [ "$TSV" = 0 ]; then
         echo "  一切正常"
     else
         echo "  $NBAD 项异常，$NWARN 项需要注意"
+    fi
+    # the scorecard's three lines, as u60-guard last wrote them (docs/LEDGER.md §12)
+    if [ -s "$LEDGER_DIR/summary" ]; then
+        echo
+        cat "$LEDGER_DIR/summary"
     fi
 fi
 [ "$NBAD" = 0 ]

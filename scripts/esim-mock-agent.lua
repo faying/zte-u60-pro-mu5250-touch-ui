@@ -1,6 +1,6 @@
 -- 假 zte-agent：只实现 DevUI eSIM 页用到的 4 个接口，用来在真屏上走切换流程而不碰 SIM。
 -- 切换 job 跑 6 秒出结果；切往第 4 张（8944…001）模拟失败。第 4 张还带 3KB 图标和
--- 转义字符，用来测解析。用法见 docs/ESIM.md「不碰真卡的验证」。
+-- 转义字符，用来测解析。用法见 docs/ESIM.zh-CN.md「不碰真卡的验证」。
 --
 --   lua esim-mock-agent.lua [端口=9091] [token=mocktoken]     密码固定是 mock
 --

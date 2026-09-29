@@ -219,3 +219,33 @@ long json_get_int(const char *json, const char *key, long def)
     long v = strtol(buf, &end, 10);
     return (end == buf) ? def : v;
 }
+
+const char *json_arr_next(const char *p, char *out, size_t outlen)
+{
+    if (!p || !out || outlen == 0) return NULL;
+    if (*p == '[') p++;
+    while (*p && (is_ws(*p) || *p == ',')) p++;
+    if (!*p || *p == ']' || *p == '}') return NULL;   /* end, or not an array element */
+    const char *start = p;
+
+    size_t n = 0;
+    int depth = 0, in_str = 0, esc = 0;
+    for (; *p; p++) {
+        char c = *p;
+        if (in_str) {
+            if (esc) esc = 0;
+            else if (c == '\\') esc = 1;
+            else if (c == '"') in_str = 0;
+        } else if (c == '"') in_str = 1;
+        else if (c == '{' || c == '[') depth++;
+        else if (c == '}' || c == ']') {
+            if (depth == 0) break;            /* the array's own ']' */
+            depth--;
+        } else if (c == ',' && depth == 0) break;
+        if (n < outlen - 1) out[n++] = c;
+        if (!in_str && depth == 0 && (c == '}' || c == ']')) { p++; break; }
+    }
+    while (n && is_ws(out[n - 1])) n--;
+    out[n] = 0;
+    return p > start ? p : NULL;   /* never hand back the same position: no endless loop */
+}

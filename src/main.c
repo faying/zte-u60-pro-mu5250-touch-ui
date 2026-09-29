@@ -224,7 +224,9 @@ int main(int argc, char **argv)
         idle = lv_timer_handler();
         maybe_dump_fb(&g_disp);
 
-        int want_dark = !backlight_is_on();
+        /* A power key held on a dark screen must keep being polled, or the
+         * long press (power menu) is lost until release. */
+        int want_dark = !backlight_is_on() && !ui_key_held();
         if (want_dark != dark) {
             dark = want_dark;
             if (refr_timer) { if (dark) lv_timer_pause(refr_timer); else lv_timer_resume(refr_timer); }
@@ -258,6 +260,9 @@ int main(int argc, char **argv)
     }
 
     data_set_pace(1);   /* don't leave datad slow behind a stopped UI */
+    /* Killed by the shutdown we started: go dark before the framebuffer is
+     * freed, or the lit panel flashes garbage on the way down. */
+    if (ui_powering_down()) backlight_off();
     drm_disp_close(&g_disp);
     touch_input_close(&g_touch);
     return 0;

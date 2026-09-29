@@ -36,19 +36,6 @@ int ui_is_dark(ui_appear_t a, int now_min, int from_min, int to_min);
 /* Value written back to the legacy theme= key (litehtml: 0 = dark, 1 = light). */
 int ui_legacy_theme_value(int dark);
 
-/* Operator logo for the home card (2026-09-26): MCC/MNC of the network you
- * are on → file slug under operator-logos/ (<slug>.png, <slug>-w.png for
- * dark), NULL = no logo. Same table as manager web/src/lib/operatorLogo.ts,
- * minus slugs with no file. */
-const char *ui_operator_logo(int mcc, int mnc);
-/* The SIM's own logo: the card's brand name (SPN) first where one PLMN is shared
- * by several brands (CMLink and CMHK are both 454-12), else by MCC/MNC. */
-const char *ui_sim_logo(int mcc, int mnc, const char *spn);
-
-/* The SIM's own network from its IMSI: MCC = 3 digits, MNC = 3 digits in
- * North America (MCC 302/310–316) and a few others, else 2. 0 = not an IMSI. */
-int ui_imsi_plmn(const char *imsi, int *mcc, int *mnc);
-
 /* DHCP pool text for the Wi-Fi page from datad's /state dhcp block:
  * ip "192.168.0.1", start "100" (host number; a full address also works),
  * limit "50" → "192.168.0.100 - 192.168.0.149" (end capped at 254). No
@@ -184,80 +171,20 @@ ui_bat_state_t ui_bat_state(int pct, int charging);
 int ui_bat_body_w(int pct, int charging);   /* 27, 30 at 100 %; charging does not change it */
 int ui_bat_red_w(int pct, int body_w);      /* low state's red fill: ≥3 px, ≤ 20 % of the body */
 
-/* ---- home signal card ---- */
-typedef enum {
-    UI_SIG_LOADING = 0,   /* no snapshot since boot yet: 「正在读取…」            */
-    UI_SIG_STALE,         /* had data, data service gone: 「数字停在 hh:mm」       */
-    UI_SIG_NOSIM,         /* datad reports no usable SIM                          */
-    UI_SIG_NONE,          /* SIM fine, no service                                 */
-    UI_SIG_WEAK,
-    UI_SIG_GOOD,
-} ui_sig_state_t;
-
-/* ever_valid: a valid snapshot arrived since boot; valid: the current one is
- * valid; sim_state: datad's sim.state ("sim ready", "sim absent"… or "" when
- * unknown); bars: 0–5. Weak = 1–2 bars or SINR < 0 on the serving carrier. */
-ui_sig_state_t ui_sig_state(int ever_valid, int valid, const char *sim_state, int bars, int sinr_valid, double sinr);
-
 /* ---- radio technology names ----
  * datad's net.type is the modem's raw network_type: "SA", "NSA", "LTE",
  * "WCDMA", "GSM", … (and variants: ENDC, LTE-A, HSPA+, EDGE, TD-SCDMA…).
- * The status bar has room for two characters, the status card for a word. */
+ * Still used by the 信令 page; the home card's names come from datad. */
 typedef enum { UI_RAT_NONE = 0, UI_RAT_2G, UI_RAT_3G, UI_RAT_4G, UI_RAT_5G_NSA, UI_RAT_5G_SA } ui_rat_t;
 ui_rat_t    ui_rat(const char *raw);
-const char *ui_rat_short(const char *raw);   /* "5G" "4G" "3G" "2G"; anything else → "" */
-/* The finer name under the status bar label: "5G SA" "5G NSA"
- * "4G LTE" "3G WCDMA" "3G HSPA+" "2G EDGE"…; "" when not on a network. out ≥ 24. */
-void        ui_rat_long(const char *raw, int lte_active, char *out, int n);  /* 5G SA / 5G NSA · 4G 锚点 / 4G LTE-A … */
-
-/* The label a phone would show, from the raw type and how many carriers are
- * in use: "2G" "3G" "3G+" "4G" "4G+" "5G" "5G+" "5G-A"; "" when not on a
- * network. 5G+ = 2 NR carriers aggregated, 5G-A = 3 or more (the modem has no
- * 5G-Advanced flag; three-carrier NR is how Chinese carriers deliver it), or
- * the raw type already says 5G-A. */
-void ui_net_label(const char *raw, int nr_active, int lte_active, char *out, int n);
-/* The radio-mode preference (`net_select`) in words: "自动" "只用 5G SA"
- * "5G NSA + 4G" "只用 4G" "4G + 3G" …; the firmware's 14 values
- * (zte_topsw_nwinfo) are all named, anything else comes back as-is, "" as "-".
- * B27 reports both WL_AND_5G and TCHGWL_5G for automatic. */
-const char *ui_net_select_word(const char *sel);
-/* 1 for the two automatic values (WL_AND_5G, TCHGWL_5G). */
-int ui_net_select_is_auto(const char *sel);
-/* The specific technology for small print: "GPRS" "EDGE" "GSM" "CDMA 1X"
- * "WCDMA" "HSPA" "HSPA+" "TD-SCDMA" "CDMA2000" "LTE" "NR"; "" if unknown. */
-const char *ui_rat_family(const char *raw);
 
 /* A band as the modem writes it ("LTE BAND 3", "B3", "3", "NR5G BAND 78",
  * "n78") → "B3" / "n78" (nr = the NR prefix). No digits → the raw text. */
 void ui_band_short(const char *raw, int nr, char *out, int n);
 
-/* ---- what the network situation means, in words ----
- * The home status card leads with this, and shows the raw figures only as
- * supporting detail (2026-09-24: "不要直接暴露参数，要有让人听得懂的解读").
- * Every situation the card can be in is decided here, in one priority order,
- * so it can be tested as a table. */
-typedef struct {
-    int  ever_valid, valid;     /* datad snapshot state                        */
-    const char *sim_state;      /* "sim ready" …                               */
-    int  airplane;              /* operate_mode LPM / OFFLINE                  */
-    const char *net_type;       /* raw network_type                            */
-    int  bars;                  /* 0–5                                         */
-    int  data_up;               /* WAN connected (wan_status …connected)       */
-    int  roaming;               /* 1 / 0 / -1 unknown                          */
-    int  n_active;              /* active carriers                             */
-    int  nr_active, lte_active; /* of which NR / LTE (for 5G+ / 5G-A / 4G+)    */
-    int  mhz;                   /* their total bandwidth, 0 = unknown          */
-    int  sinr_valid;  double sinr;
-    int  rsrp_valid;  int rsrp;
-    int  rsrq_valid;  int rsrq; /* serving cell, dB                            */
-    int  mcc, mnc;              /* the network you are on (roaming: the visited one) */
-    int  nr_band;               /* primary NR band number (41, 77 …), 0 = none  */
-    int  nr_mhz;                /* active NR bandwidth                         */
-    long rx_bps;                /* cellular download now, bytes/s              */
-    double ambr_dl;             /* operator cap, Mbps; 0 = unknown             */
-    const char *net_select;     /* radio-mode preference (Only_LTE, WL_AND_5G…) */
-} ui_net_in_t;
-
+/* ---- the home card's verdict ----
+ * Decided by zwrt-datad since 2026-09-26 (/v2/screen, screen.rs); these are
+ * the shapes the screen parses it into (net_view.h). */
 typedef enum { UI_NET_OK = 0, UI_NET_WARN, UI_NET_BAD, UI_NET_NEUTRAL } ui_net_tone_t;
 
 /* Why it is slow (2026-09-25, docs/designs/home-net-card.md): the first
@@ -281,21 +208,6 @@ typedef struct {
     char load[12];          /* 负载 正常 / 高; "" when idle or signal too weak to tell */
     char limit[8];          /* 无 / 有 / — (AMBR unknown)                   */
 } ui_net_story_t;
-
-void ui_net_story(const ui_net_in_t *in, ui_net_story_t *out);
-
-/* Signal tier from the status-bar bars: 2 强 (4–5), 1 中 (3), 0 弱 (1–2), -1 none.
- * The status bar colours its dots by this and the Home card writes the word. */
-int ui_bars_tier(int bars);
-
-/* The status-bar label (docs/designs/home-net-card.md「状态栏和首页顶行的制式
- * 叫法」): plain 5G / 4G / 3G / 2G, plus the operator's own name where the
- * network you are on has one — 5G-A (mainland China: ≥3 NR carriers, or
- * China Unicom 2 carriers ≥ 200 MHz), 5G UC / 5G UW / 5G+ (T-Mobile n41,
- * Verizon n77/n48, AT&T n77 or ≥ 50 MHz), 4G+ (Taiwan, Japan: LTE CA),
- * LTE (US). Roaming uses the visited network's rules: they describe the
- * network you are actually on. The U60 Pro has no mmWave, so no mmWave rule. */
-void ui_net_badge(const ui_net_in_t *in, char *out, int n);
 
 /* A new verdict has to last 15 s before the headline changes, so it does
  * not flicker at a threshold. key = anything that tells verdicts apart

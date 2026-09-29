@@ -41,7 +41,8 @@ typedef struct {
     char wan_status[32];
     char net_select[16];
     int  hsr;
-    char sa_bands[256], nsa_bands[256], lte_bands[256];
+    char sa_bands[256], nsa_bands[256], lte_bands[256];          /* current lock sets */
+    char sa_sup[256], nsa_sup[256], lte_sup[256];             /* what the modem supports (datad *_supported_bands) */
 
     /* battery */
     int  bat_percent, bat_temp, charging, charger_connect;
@@ -159,5 +160,13 @@ void data_set_pace(int panel_lit);
 
 /* The SSE socket, or -1 while there is none (main.c waits on it while dark). */
 int data_backend_fd(void);
+/* Wall clock (s) of the last byte from datad; 0 = never. */
+long data_backend_alive_wall(void);
+/* 1 = datad answered before but has said nothing (no snapshot, no keep-alive,
+ * no HTTP reply) for 45 s. data_refresh() still hands out the last snapshot;
+ * the caller must not show it as live. */
+int data_backend_silent(void);
+/* Bumps each time a changed snapshot is committed (what data_refresh() hands out). */
+unsigned long long data_backend_version(void);
 
 #endif /* U60PRO_DATA_H */

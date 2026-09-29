@@ -21,12 +21,14 @@ LVGL_PATCH := patches/lvgl-v9.5.0-freetype-bold.patch
 LVGL_APPLY = cd / && git apply --directory=$(patsubst /%,%,$(CURDIR)) $(1) $(CURDIR)/$(LVGL_PATCH)
 
 # 只编 LVGL 路径实际用到的文件（main.c/ui.c 及其依赖），排除旧 litehtml
-# 渲染器专属的 htmlmain.c/devui_ext.c（含各自的 main() 或 litehtml 依赖），
+# 渲染器专属的 htmlmain.c/devui_ext.c（已删除，见 tag legacy-litehtml），
 # 以及独立工具 fbdump.c/fbserver.c/drm_test.c/touchsim.c（各带自己的 main()）。
 # tailscale.c/esim.c 都已接入 LVGL 版，直接用各自的 getter，不走 HTML。
-APP_SRCS  := src/main.c src/ui.c src/ui_logic.c src/ui_theme.c src/ui_kit.c src/ui_exec.c src/drm_disp.c src/touch_input.c src/backlight.c src/data.c src/key_input.c src/json.c src/tailscale.c src/esim.c src/speedtest.c src/scenario.c src/alerts.c src/netinfo.c src/estimate.c src/battery_est.c
+APP_SRCS  := src/main.c src/ui.c src/ui_logic.c src/ui_theme.c src/ui_kit.c src/ui_exec.c src/drm_disp.c src/touch_input.c src/backlight.c src/data.c src/key_input.c src/json.c src/http.c src/agent_client.c src/net_view.c src/screen_feed.c src/tailscale.c src/esim.c src/speedtest.c src/scenario.c src/alerts.c src/netinfo.c src/estimate.c src/battery_est.c
 LVGL_SRCS := $(shell find $(LVGL_DIR)/src -name '*.c' 2>/dev/null)
 OBJS      := $(APP_SRCS:.c=.o) $(LVGL_SRCS:.c=.o)
+# src/ui.c #includes the pages in src/ui_parts/ (one translation unit)
+UI_PARTS  := $(wildcard src/ui_parts/*.c)
 
 FT_DIR ?= /opt/freetype-musl
 
@@ -64,6 +66,8 @@ $(TARGET): $(OBJS)
 
 %.o: %.c
 	$(CC) $(CFLAGS) -c $< -o $@
+
+src/ui.o: $(UI_PARTS)
 
 # Standalone helper: corner long-press listener that hands the screen back to
 # the DevUI while the vendor UI is on screen. Links only touch_input.c + libc,
@@ -117,8 +121,8 @@ uid-test: tests/uid_core_test.c src/uid_core.c include/uid_core.h
 # Pure UI decisions (appearance, exec guard, status-bar/battery/signal state)
 # live in ui_logic.c so they can be unit-tested without LVGL:
 # `make ui-logic-test` → scripts/test/ui_logic/ui_logic_test (static, arm64 container).
-ui-logic-test: tests/ui_logic_test.c src/ui_logic.c include/ui_logic.h
-	$(CC) $(UID_CFLAGS) tests/ui_logic_test.c src/ui_logic.c -o scripts/test/ui_logic/ui_logic_test -static
+ui-logic-test: tests/ui_logic_test.c src/ui_logic.c src/key_input.c include/ui_logic.h include/key_input.h
+	$(CC) $(UID_CFLAGS) tests/ui_logic_test.c src/ui_logic.c src/key_input.c -o scripts/test/ui_logic/ui_logic_test -static
 
 # Theme switch = exec self: same pid, same comm, no fd leaks (arm64 container).
 ui-exec-test: tests/ui_exec_test.c src/ui_exec.c src/ui_logic.c include/ui_exec.h include/ui_logic.h
@@ -127,8 +131,8 @@ ui-exec-test: tests/ui_exec_test.c src/ui_exec.c src/ui_logic.c include/ui_exec.
 # Offscreen render test (tests/render): ui.c + fixtures + LVGL, static arm64.
 # Run it with scripts/test/render/render.sh (docker; needs the device fonts).
 RENDER_BIN  := scripts/test/render/render_test
-RENDER_SRCS := tests/render/render_test.c tests/render/fixtures.c src/ui_logic.c src/ui_theme.c src/ui_kit.c src/estimate.c
-render-test-bin: check-lvgl $(LVGL_SRCS:.c=.o) $(RENDER_SRCS) src/ui.c tests/render/fixtures.h
+RENDER_SRCS := tests/render/render_test.c tests/render/fixtures.c src/ui_logic.c src/ui_theme.c src/ui_kit.c src/estimate.c src/net_view.c src/json.c
+render-test-bin: check-lvgl $(LVGL_SRCS:.c=.o) $(RENDER_SRCS) src/ui.c $(UI_PARTS) tests/render/fixtures.h
 	$(CC) $(CFLAGS) -Itests/render -Wno-unused-function $(RENDER_SRCS) $(LVGL_SRCS:.c=.o) -o $(RENDER_BIN) $(LDFLAGS)
 
 render-test:

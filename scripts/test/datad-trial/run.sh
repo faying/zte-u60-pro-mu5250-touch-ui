@@ -24,6 +24,25 @@ check() { # check <description> <shell test…>
     if eval "$@"; then ok "$_d"; else bad "$_d  [$*]"; fi
 }
 
+# The device's busybox has no timeout(1): a watchdog stands in, so a hang
+# still fails one case instead of hanging the whole run. It needs the real
+# sleep: the cases put a fake-clock sleep first on PATH.
+if ! command -v timeout >/dev/null 2>&1; then
+    _real_sleep=$(command -v sleep)
+    timeout() { # timeout SECONDS CMD…
+        _to=$1
+        shift
+        "$@" &
+        _tp=$!
+        ("$_real_sleep" "$_to" && kill -9 "$_tp") </dev/null >/dev/null 2>&1 &
+        _tw=$!
+        wait "$_tp"
+        _trc=$?
+        kill "$_tw" 2>/dev/null
+        return $_trc
+    }
+fi
+
 setup() {
     T=$(mktemp -d)
     mkdir -p "$T/bin" "$T/pids"
@@ -573,6 +592,20 @@ esac
 # pidfile, unless $T/watcher-broken exists
 case "\$*" in *datad-trial.sh\ run*) [ -f $T/watcher-broken ] || { sh $T/fake/datad-trial.sh </dev/null >/dev/null 2>&1 & echo \$! >$T/trial.pid; } ;; esac
 exit 0
+EOF
+    # launch runs `env … nohup …`. The device's busybox env runs nohup as its
+    # own applet and never looks at PATH (FEATURE_PREFER_APPLETS; so does its
+    # xargs), which would skip the mock above and start the real thing. This
+    # env goes by PATH, as upstream busybox and coreutils do.
+    cat >"$T/bin/env" <<'EOF'
+#!/bin/sh
+while [ $# -gt 0 ]; do
+    case $1 in
+    *=*) export "$1" && shift ;;
+    *) break ;;
+    esac
+done
+exec "$@"
 EOF
     if [ "$1" = ssd ]; then
         cat >"$T/bin/ssd" <<EOF

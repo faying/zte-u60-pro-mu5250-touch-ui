@@ -52,7 +52,7 @@ int main(void)
              "\"in_use\":{\"apn\":\"ctiot\",\"id\":\"auto109590\",\"in_use\":true,\"name\":\"China Telecom\",\"pdp\":3,\"selected\":false},"
              "\"manual\":[{\"apn\":\"ctnet\",\"id\":\"manu1\",\"in_use\":false,\"name\":\"CTNET\",\"pdp\":3,\"selected\":true}],\"mode\":\"auto\"},"
              "\"clients\":{\"at\":1790250000,\"list\":["
-             "{\"connected_secs\":360,\"down_bytes\":5000000000,\"down_rate\":250000,\"iface\":\"wlan1\",\"ip\":\"192.168.0.109\",\"mac\":\"02:00:00:00:00:0a\",\"name\":\"MacBook\",\"signal\":-47,\"up_bytes\":1000,\"up_rate\":null,"
+             "{\"connected_secs\":360,\"down_bytes\":5000000000,\"down_rate\":250000,\"iface\":\"wlan1\",\"ip\":\"192.168.0.109\",\"mac\":\"02:00:00:00:00:0a\",\"name\":\"MacBook\",\"signal\":-47,\"signal_tier\":\"great\",\"up_bytes\":1000,\"up_rate\":null,"
              "\"band\":\"5 GHz\",\"channel\":44,\"width_mhz\":160,\"wifi_gen\":6,\"link_down_mbps\":2402,\"link_up_mbps\":1201},"
              "{\"connected_secs\":5,\"down_bytes\":20,\"down_rate\":null,\"iface\":\"wlan1\",\"ip\":null,\"mac\":\"02:00:00:00:00:0b\",\"name\":null,\"signal\":null,\"up_bytes\":10,\"up_rate\":null,\"band\":null,\"wifi_gen\":null,\"link_down_mbps\":null}]},"
              "\"data_connected\":true,"
@@ -94,6 +94,7 @@ int main(void)
     CHECK("client bytes > 4 GB", n->clients[0].down == 5000000000LL && n->clients[0].down_rate == 250000);
     CHECK("client no rate yet", n->clients[0].up_rate == -1 && n->clients[1].name[0] == 0);
     CHECK("client signal", n->clients[0].signal == -47 && n->clients[1].signal == 0);
+    CHECK("client signal tier from the agent", !strcmp(n->clients[0].signal_tier, "great") && !n->clients[1].signal_tier[0]);
     CHECK("client band", !strcmp(n->clients[0].band, "5 GHz") && n->clients[0].wifi_gen == 6 && n->clients[0].link_down == 2402);
     CHECK("client band null → empty", n->clients[1].band[0] == 0 && n->clients[1].wifi_gen == 0 && n->clients[1].link_down == 0);
     CHECK("scene fields", !strcmp(n->scenes[0].name, "在家") && n->scenes[0].wifi_off && n->scenes[2].abroad);

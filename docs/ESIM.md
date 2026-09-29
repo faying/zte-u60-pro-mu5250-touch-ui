@@ -1,27 +1,29 @@
-# eSIM 切换页
+# eSIM switching page
 
-触屏「蜂窝 → SIM 与 eSIM」列出 SIM 槽里那张可插拔 eUICC 卡（5ber、eSTK.me 这类）上的 profile，点两次切换。
-**只做切换**；下载、删除、改名在管理网页里做。
+**English** · [中文](ESIM.zh-CN.md)
 
-## 数据流：调 zte-agent，不自己跑 lpac
+On the touch screen, 「蜂窝 → SIM 与 eSIM」 (Cellular → SIM & eSIM) lists the profiles on the removable eUICC card in the SIM slot (5ber, eSTK.me and similar); tap twice to switch.
+**It only switches**; downloading, deleting and renaming are done in the admin web.
+
+## Data flow: call zte-agent, don't run lpac directly
 
 ```
-lpac（qmi_qrtr）◀── zte-agent（esim.rs）──HTTP 127.0.0.1:9090──▶ src/esim.c ──▶ 界面
+lpac (qmi_qrtr) ◀── zte-agent (esim.rs) ──HTTP 127.0.0.1:9090──▶ src/esim.c ──▶ UI
 ```
 
-用到的接口：`GET /api/esim/profiles`、`POST /api/esim/switch`、`GET /api/esim/job`（查切换进度）。
+Endpoints used: `GET /api/esim/profiles`, `POST /api/esim/switch`, `GET /api/esim/job` (switch progress).
 
-切换本身只是一条 `lpac profile enable`，难的是让中兴的协议栈认到新卡：它只在守护进程启动时读一次 SIM，
-所以 agent 会给 UIM 重新上电、重启 `zte_topsw_mdm`、等 IMSI 变化，一般 10 秒内完成。这些都在 agent 里做，界面只显示进度和结果。
+The switch itself is a single `lpac profile enable`; the hard part is getting ZTE's stack to recognize the new card: it reads the SIM only once when its daemon starts,
+so the agent power-cycles the UIM, restarts `zte_topsw_mdm` and waits for the IMSI to change, usually within 10 seconds. All of this happens in the agent; the UI only shows progress and the result.
 
-前提：设备上装了 eSIM 组件（`/data/esim` 的 lpac + 带 `/api/esim/*` 的 zte-agent，装机包 `./install.sh esim`），没装时页面会提示。
+Prerequisite: the eSIM component is installed on the device (lpac in `/data/esim` + a zte-agent with `/api/esim/*`, via the install kit's `./install.sh esim`); if it's missing, the page says so.
 
-## 登录
+## Login
 
-界面要用后台密码登录 agent。密码从 `/data/zte-agent.env` 的 `ZTE_AGENT_PASSWORD` 读（装机包写的），一般不用配。
-要覆盖就写 `/data/plugins/u60pro-devui/esim.conf`。
+The UI logs in to the agent with the admin password. The password is read from `ZTE_AGENT_PASSWORD` in `/data/zte-agent.env` (written by the install kit), so normally there is nothing to configure.
+To override it, write `/data/plugins/u60pro-devui/esim.conf`.
 
-## 注意
+## Notes
 
-- 有些卡（如 eSTK.me）短时间内连续操作会返回 `catBusy`：agent 有 5 分钟冷却保护，界面会显示原因，别反复点。
-- 如果你是通过这台 U60 自己的网络远程操作，别切到没有流量的 profile，切过去就连不回来了，只能到设备跟前在屏幕上切回。
+- Some cards (e.g. eSTK.me) return `catBusy` after several operations in a short time: the agent has a 5-minute cooldown, the UI shows the reason; don't keep tapping.
+- If you are operating remotely over this U60's own network, don't switch to a profile with no data; once switched, you can't connect back and have to switch back on the screen in front of the device.

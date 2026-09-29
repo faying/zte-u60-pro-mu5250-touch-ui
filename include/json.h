@@ -18,4 +18,9 @@ int  json_get(const char *json, const char *key, char *out, size_t outlen);
 /* Integer value of `key`, or `def` if missing/unparseable. */
 long json_get_int(const char *json, const char *key, long def);
 
+/* Walk an array json_get() returned: p = the array text on the first call,
+ * then the returned pointer. Copies the next element (object, array, string
+ * with its quotes, or scalar) into out; NULL when there are no more. */
+const char *json_arr_next(const char *p, char *out, size_t outlen);
+
 #endif /* U60_JSON_H */
