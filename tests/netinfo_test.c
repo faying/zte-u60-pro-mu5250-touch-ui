@@ -215,6 +215,20 @@ int main(void)
         CHECK("zh: operator fields", !strcmp(n->home.country, "阿联酋") && !strcmp(n->home.country_iso, "AE"));
     }
 
+    puts("L2: exit geo_en / isp_en");
+    {
+        static const char eb[] =
+            "{\"direct\":{\"geo\":\"日本 东京都\",\"geo_en\":\"Japan\",\"ip\":\"1.2.3.4\",\"isp\":\"电信\",\"isp_en\":\"China Telecom\"},"
+            "\"proxy\":{\"geo\":\"广东 深圳\",\"ip\":\"5.6.7.8\",\"isp\":\"某某宽带\"}}";
+        lang_set_en(1);
+        parse(eb);
+        CHECK("en: geo_en / isp_en", !strcmp(n->direct.geo, "Japan") && !strcmp(n->direct.isp, "China Telecom"));
+        CHECK("en: no twin → the Chinese", !strcmp(n->proxy.geo, "广东 深圳") && !strcmp(n->proxy.isp, "某某宽带"));
+        lang_set_en(0);
+        parse(eb);
+        CHECK("zh: geo / isp", !strcmp(n->direct.geo, "日本 东京都") && !strcmp(n->direct.isp, "电信"));
+    }
+
     printf("passed %d, failed %d\n", pass, fail);
     return fail != 0;
 }

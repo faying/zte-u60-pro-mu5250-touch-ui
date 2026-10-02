@@ -41,9 +41,18 @@ static lv_obj_t *home_tile_note(lv_obj_t *tile)
     return l;
 }
 
-/* 「国家 省 市」只留国家和最后一段（城市）；两段以内原样 */
+/* 「国家 省 市」只留国家和最后一段（城市）；两段以内原样。英文
+ * （agent geo_en）以「, 」分段，地名里本来就有空格（New Taipei） */
 static const char *geo_short(const char *geo, char *out, size_t n)
 {
+    const char *first_c = strstr(geo, ", ");
+    if (first_c) {
+        const char *last_c = first_c;
+        for (const char *p = first_c; (p = strstr(p + 2, ", ")); ) last_c = p;
+        if (last_c == first_c) { snprintf(out, n, "%s", geo); return out; }
+        snprintf(out, n, "%.*s%s", (int)(first_c - geo), geo, last_c);
+        return out;
+    }
     const char *first_sp = strchr(geo, ' ');
     const char *last_sp = strrchr(geo, ' ');
     if (!first_sp || first_sp == last_sp) { snprintf(out, n, "%s", geo); return out; }

@@ -46,8 +46,8 @@ const char *rt_scene_name(int s) { return s >= 0 && s < RT_SCENES ? k_names[s] :
 
 static void cp(char *dst, size_t n, const char *s) { snprintf(dst, n, "%s", s); }
 /* What datad/zte-agent send as the *_en sibling, picked like the parsers
- * do in English (--lang=en); user data (SSIDs, eSIM nicknames, node names,
- * geo) stays as it is. */
+ * do in English (--lang=en); user data (SSIDs, eSIM nicknames, node names)
+ * stays as it is. */
 #define EN(zh, en) (lang_is_en() ? (en) : (zh))
 
 /* ------------------------------------------------------------------ data */
@@ -559,8 +559,8 @@ const netinfo_t *netinfo_get(void)
     if (IS(RT_LOADING) || EMPTY) return n;
     n->direct.present = 1;
     cp(n->direct.ip, sizeof n->direct.ip, "203.0.113.24");
-    cp(n->direct.geo, sizeof n->direct.geo, LONG_NAMES ? "中国台湾 新北市 板桥区 Banqiao District" : "中国 广东 深圳");
-    cp(n->direct.isp, sizeof n->direct.isp, LONG_NAMES ? "Chunghwa Telecom Co., Ltd." : "电信");
+    cp(n->direct.geo, sizeof n->direct.geo, LONG_NAMES ? EN("中国台湾 新北市 板桥区 Banqiao District", "Taiwan, Banqiao District") : EN("中国 广东 深圳", "China"));
+    cp(n->direct.isp, sizeof n->direct.isp, LONG_NAMES ? "Chunghwa Telecom Co., Ltd." : EN("电信", "China Telecom"));
     ni_oper(&n->home, EN("中国电信", "China Telecom"), EN("中国", "China"), "460", "11");
     ni_oper(&n->serving, EN("中国电信", "China Telecom"), EN("中国", "China"), "460", "11");
     n->roaming = 0;
@@ -607,8 +607,8 @@ const netinfo_t *netinfo_get(void)
     if (IS(RT_ABROAD)) {
         /* 国内卡在台湾漫游 */
         cp(n->direct.ip, sizeof n->direct.ip, "198.51.100.40");
-        cp(n->direct.geo, sizeof n->direct.geo, "中国台湾 台北市");
-        cp(n->direct.isp, sizeof n->direct.isp, "中华电信");
+        cp(n->direct.geo, sizeof n->direct.geo, EN("中国台湾 台北市", "Taiwan"));
+        cp(n->direct.isp, sizeof n->direct.isp, EN("中华电信", "Chunghwa Telecom"));
         ni_oper(&n->serving, EN("中华电信", "Chunghwa Telecom"), EN("中国台湾", "Taiwan"), "466", "92");
         n->roaming = 1;
         cp(n->selection, sizeof n->selection, "manual");

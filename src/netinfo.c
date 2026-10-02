@@ -99,8 +99,8 @@ static void parse_exit(const char *data, const char *key, ni_exit_t *e)
     if (!json_get(data, key, o, sizeof o) || o[0] != '{') return;
     e->present = 1;
     jstr(o, "ip", e->ip, sizeof e->ip);
-    jstr(o, "geo", e->geo, sizeof e->geo);
-    jstr(o, "isp", e->isp, sizeof e->isp);
+    jstr_pick(o, "geo", "geo_en", e->geo, sizeof e->geo);
+    jstr_pick(o, "isp", "isp_en", e->isp, sizeof e->isp);
     jstr(o, "node", e->node, sizeof e->node);
     jstr_pick(o, "error", "error_en", e->err, sizeof e->err);
 }

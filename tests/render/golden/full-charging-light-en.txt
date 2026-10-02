@@ -2,14 +2,14 @@ charts-collecting.0 6a73ace8adf72083
 charts-collecting.1 158786bffbbb8f6b
 charts-collecting.2 be3de44a33c3a551
 charts-collecting.3 0bdc5d6b8ef343ef
-home.0 e5f89204a3789c1b
+home.0 8d937ab2e26dedd8
 home.1 953b7319752547c1
 cellular.0 988e02e41ae1f2bb
 cellular.1 ceca8d0df75f4b12
 wifi.0 05c29c6011dae317
 wifi.1 51a5b8b42aba258b
 wifi.2 6ac1053c46577cfb
-exit.0 284c90a9d5146f03
+exit.0 07c3172b3c4d5494
 system.0 6a73ace8adf72083
 system.1 aae127c4931f650b
 system.2 be3de44a33c3a551
@@ -43,7 +43,7 @@ perf.0 d906466162977276
 net.0 e5f4551e503f620f
 scene.0 f238d5eacf60f5f2
 apn.0 b245a37e4cf4fd05
-power-menu.0 0e1836f44a1ea397
+power-menu.0 b445e51f95bfa281
 system-vendor-armed.0 6a73ace8adf72083
 system-vendor-armed.1 aae127c4931f650b
 system-vendor-armed.2 ae01aa1af49611a9
