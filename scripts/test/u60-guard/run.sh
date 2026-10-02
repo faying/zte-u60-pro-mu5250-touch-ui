@@ -204,10 +204,12 @@ EOF
     export GUARD_SLEEP=$T/bin/sleep GUARD_KILL=$T/bin/kill GUARD_JSONFILTER=$T/bin/jsonfilter
     export ALERT_DIR=$T/alerts ALERT_UPTIME_FILE=$T/uptime
     export GUARD_DATAD_MARKER=$T/datad-degraded
+    export GUARD_DEVUI_CONF=$T/devui.conf # absent unless a case writes it: zh
     export GUARD_WALL_NOW=1790500000 GUARD_WALL_LAST=$T/wall.last GUARD_LEDGER_FG=1 \
         GUARD_LEDGER_DIR=$T/ledger GUARD_SPOOL_TMP=$T/spool-tmp GUARD_BOOT_ID_FILE=$T/bootid GUARD_DF=$T/bin/df \
         GUARD_WGET=$T/bin/wget GUARD_CURL=$T/bin/curl GUARD_TS_SOCK=$T/tailscaled.sock # a plain file stands in for the socket
     unset GUARD_LOCK_WAIT
+    export GUARD_SHIP_TXN=$T/u60-ship/txn GUARD_SHIP_HB=$T/u60-ship/heartbeat GUARD_SHIP=$T/u60-ship/u60-ship.sh
     # The cases below jump the clock between rounds freely; sleep detection
     # would read every jump as a suspend. Its own case turns it back on.
     export GUARD_WAKE_GAP=100000000
@@ -494,6 +496,107 @@ echo '138"},{"x' >"$T/alerts/sms-to"
 alert_add agent-crash x
 round
 check "malformed number never reaches ubus" '! grep -q send_sms $T/ubus.log && grep -q no-number $T/alerts/sms-log'
+teardown
+
+echo "## alert SMS language (devui.conf lang=, docs/ui-glossary.md §9)"
+# The Chinese texts exactly as they were before English existed: zh must not
+# move by one byte. The English ones are the glossary's, final.
+SMS_KINDS='wifi-takeover wifi-restore-failed agent-silent agent-hung agent-crash datad-crash datad-degraded devui-crash devui-gave-up sms-test devui-theme-paused'
+sms_zh() {
+    case "$1" in
+        wifi-takeover) m="管理后台没反应了。为了让你能上网，已自动打开U60的Wi-Fi。不用管。" ;;
+        wifi-restore-failed) m="想自动打开U60的Wi-Fi没成功，还在重试。如果手机连不上U60，请重启它。" ;;
+        agent-silent) m="管理后台超过5分钟没反应。上网一般不受影响；Wi-Fi要是关着，会自动打开。" ;;
+        agent-hung) m="管理后台卡住了，已强制重启。不用管。" ;;
+        agent-crash) m="管理后台意外退出，已自动重启。不用管。" ;;
+        datad-crash) m="屏幕的数据服务意外退出，已自动重启。不用管。" ;;
+        datad-degraded) m="屏幕的数据服务超过5分钟不正常，管理后台已改用备用方式读数据。上网不受影响。" ;;
+        devui-crash) m="屏幕界面闪退了，已自动重新打开。不用管。" ;;
+        devui-gave-up) m="屏幕界面连续打不开，已换成原厂界面，上网不受影响。长按屏幕右下角3秒可换回。" ;;
+        sms-test) m="这是测试短信。收到了，说明告警短信能正常发到你手机。" ;;
+        *) m="有一条新告警（$1），请到管理网页「系统→告警」查看。" ;;
+    esac
+    printf '【U60】%s（%s）' "$m" "$2"
+}
+sms_en() {
+    case "$1" in
+        wifi-takeover) m="Admin down; Wi-Fi turned on; no action needed" ;;
+        wifi-restore-failed) m="Wi-Fi didn't start; retrying; stuck? Restart U60" ;;
+        agent-silent) m="Admin silent 5+ min; internet usually fine" ;;
+        agent-hung) m="Admin hung; force-restarted; no action needed" ;;
+        agent-crash) m="Admin crashed; restarted; no action needed" ;;
+        datad-crash) m="Data service crashed; restarted; no action needed" ;;
+        datad-degraded) m="Data service down 5+ min; using fallback; net OK" ;;
+        devui-crash) m="Screen UI crashed; reopened; no action needed" ;;
+        devui-gave-up) m="Stock UI on; hold bottom-right 3s to switch back" ;;
+        sms-test) m="Test SMS: alert texts reach your phone" ;;
+        *) m="New alert $1; see Alerts on web" ;;
+    esac
+    printf '[U60] %s (%s)' "$m" "$2"
+}
+# sms_is <kind> <zh|en>: guard's text for <kind> equals the expected one, with
+# the time taken just before or just after (a minute may turn over between)
+sms_is() {
+    if [ "$2" = en ]; then
+        _b=$(LC_ALL=C date '+%d %b %H:%M'); SMS_GOT=$(sh "$GUARD" sms-text "$1"); _a=$(LC_ALL=C date '+%d %b %H:%M')
+        [ "$SMS_GOT" = "$(sms_en "$1" "$_b")" ] || [ "$SMS_GOT" = "$(sms_en "$1" "$_a")" ]
+    else
+        _b=$(date '+%m-%d %H:%M'); SMS_GOT=$(sh "$GUARD" sms-text "$1"); _a=$(date '+%m-%d %H:%M')
+        [ "$SMS_GOT" = "$(sms_zh "$1" "$_b")" ] || [ "$SMS_GOT" = "$(sms_zh "$1" "$_a")" ]
+    fi
+}
+# sms_all <zh|en>: every kind; prints the kinds that differ
+sms_all() { for k in $SMS_KINDS; do sms_is "$k" "$1" || printf '%s ' "$k"; done; }
+
+setup
+check "the reference texts: the English default with the longest kind is 68 chars" '[ "$(sms_en devui-theme-paused "01 Oct 14:32" | wc -c)" = 68 ]'
+check "the ASCII test below does catch Chinese" '[ -n "$(sms_zh agent-crash "10-01 14:32" | tr -d " -~")" ]'
+for k in $SMS_KINDS; do
+    printf 'theme=1\nlang=en\nbright=80\n' >"$T/devui.conf"
+    sms_is "$k" en; r=$?
+    check "lang=en, $k: the glossary text" '[ $r = 0 ]'
+    check "lang=en, $k: printable ASCII, <= 70 chars, no closing full stop (${#SMS_GOT})" \
+        '[ -z "$(printf "%s" "$SMS_GOT" | tr -d " -~")" ] && [ "$(printf "%s" "$SMS_GOT" | wc -c)" -le 70 ] && case "$SMS_GOT" in *". ("* | *.) false ;; *) true ;; esac'
+    check "lang=en, $k: time as 01 Oct 14:32" 'printf "%s" "$SMS_GOT" | grep -q " ([0-3][0-9] [A-Z][a-z][a-z] [0-2][0-9]:[0-5][0-9])$"'
+done
+rm -f "$T/devui.conf"
+check "no devui.conf: every kind in Chinese, byte for byte as before" '[ -z "$(sms_all zh)" ]'
+printf 'lang=zh\n' >"$T/devui.conf"
+check "lang=zh: Chinese" '[ -z "$(sms_all zh)" ]'
+: >"$T/devui.conf"
+check "empty devui.conf: Chinese" '[ -z "$(sms_all zh)" ]'
+for v in '' fr 1 'EN' 'en ' ' en' 'en_US' '$((x+1))' '`reboot`' 'zh;en'; do
+    printf 'theme=0\nlang=%s\n' "$v" >"$T/devui.conf"
+    check "lang=\"$v\" (not exactly en): Chinese" '[ -z "$(sms_all zh)" ]'
+done
+printf 'lang=en\r\n' >"$T/devui.conf"
+check "lang=en with a CR: Chinese" '[ -z "$(sms_all zh)" ]'
+printf 'lang=zh\nlang=en\n' >"$T/devui.conf"
+check "two lang= lines: the last wins, as on the screen (en)" '[ -z "$(sms_all en)" ]'
+printf 'lang=en\nlang=zh\n' >"$T/devui.conf"
+check "two lang= lines: the last wins (zh)" '[ -z "$(sms_all zh)" ]'
+printf 'xlang=en\n' >"$T/devui.conf"
+check "a key that only ends in lang=: Chinese" '[ -z "$(sms_all zh)" ]'
+mkdir -p "$T/dir.conf"; GUARD_DEVUI_CONF=$T/dir.conf
+check "devui.conf a directory (unreadable): Chinese" '[ -z "$(sms_all zh)" ]'
+export GUARD_DEVUI_CONF=$T/devui.conf
+printf 'lang=en\n' >"$T/devui.conf"
+check "an unknown kind is cut to 20 safe chars, still one SMS" 'g=$(sh "$GUARD" sms-text "a-very-long-kind-name-that-goes-on/\"x"); case "$g" in "[U60] New alert a-very-long-kind-nam; see Alerts on web ("*) [ "$(printf "%s" "$g" | wc -c)" -le 70 ] ;; *) false ;; esac'
+teardown
+
+setup
+echo "8.00" >"$T/tz"
+up 100
+. "$SCRIPTS/alert-lib.sh"
+echo "+8612300000000" >"$T/alerts/sms-to"
+printf 'lang=en\n' >"$T/devui.conf"
+alert_add agent-crash x
+round
+check "lang=en end to end: sent, English body in UCS-2 hex, still UNICODE" 'grep -q "agent-crash${TAB}sent" $T/alerts/sms-log && grep -q "\"message_body\":\"005B005500360030005D002000410064006D0069006E0020006300720061007300680065006400" $T/ubus.log && grep -q "\"encode_type\":\"UNICODE\"" $T/ubus.log'
+printf 'lang=zh\n' >"$T/devui.conf"
+alert_add datad-crash x
+round
+check "switched back to zh: the next SMS is Chinese, no restart" 'grep -q "datad-crash${TAB}sent" $T/alerts/sms-log && grep -q "\"message_body\":\"30100055003600303011" $T/ubus.log && [ "$(grep -c "\"message_body\":\"3010" $T/ubus.log)" = 1 ]'
 teardown
 
 echo "## log cap"
@@ -1635,6 +1738,114 @@ check "nothing of this run left behind: watcher gone, the ledger and summary job
 check "every ledger line of the soak is flat JSON" 'jsonok'
 unset GUARD_WATCHER GUARD_KMSG GUARD_CRASHCAP_DIR GUARD_WATCH_GAP GUARD_WATCH_SLEEP GUARD_WALL_FILE
 export GUARD_WALL_NOW=1790500000
+teardown
+
+# ── u60 ship: a transaction whose executor died (docs/SHIP.md, T4) ─────────
+shsetup() {
+    setup
+    mkdir -p "$T/u60-ship"
+    printf '#!/bin/sh\necho "$*" >>%s/ship.calls\n' "$T" >"$T/u60-ship/u60-ship.sh"
+    : >"$T/ship.calls"
+    up 2000
+    hb 1995
+}
+txn() { # txn <phase> [comp] [t_phase]
+    printf 'v=1\ntxn=20260930-120000-%s\ncomp=%s\nphase=%s\nt_phase=%s\nend=1\n' "${2:-datad}" "${2:-datad}" "$1" "${3:-1900}" >"$T/u60-ship/txn"
+}
+executor() { # executor <heartbeat uptime> alive|dead
+    echo "$1 4711 20260930-120000-datad check" >"$T/u60-ship/heartbeat"
+    rm -rf "$T/proc/4711"
+    if [ "$2" = alive ]; then
+        mkdir -p "$T/proc/4711"
+        printf 'sh\000/data/u60-guard/u60-ship.sh\000run\000' >"$T/proc/4711/cmdline"
+    fi
+}
+calls() { sleep 0.3; grep -c recover-live "$T/ship.calls"; }
+
+shsetup
+round
+check "ship: no transaction, nothing called" '[ "$(calls)" = 0 ]'
+teardown
+
+for ph in done rolledback aborted manifest_pending failed; do
+    shsetup
+    txn $ph
+    executor 1500 dead
+    round
+    check "ship: $ph is finished, not touched" '[ "$(calls)" = 0 ]'
+    teardown
+done
+
+shsetup
+txn check
+executor 1990 alive
+round
+check "ship: executor alive, heartbeat 10 s old: left alone" '[ "$(calls)" = 0 ]'
+teardown
+
+shsetup
+txn check
+executor 1969 alive
+round
+check "ship: heartbeat 31 s old (stuck): recover-live" '[ "$(calls)" = 1 ] && grep -q "u60-ship: transaction (datad, check) has no live executor (heartbeat 31s old)" "$T/guard.log"'
+teardown
+
+shsetup
+txn trial
+executor 1999 dead
+round
+check "ship: fresh heartbeat but the executor is gone: recover-live" '[ "$(calls)" = 1 ]'
+teardown
+
+shsetup
+txn promote
+round
+check "ship: no heartbeat at all: recover-live" '[ "$(calls)" = 1 ] && grep -q "heartbeat missing" "$T/guard.log"'
+teardown
+
+shsetup
+txn check guard
+executor 1500 dead
+round
+check "ship: a guard transaction is not the guard's to finish" '[ "$(calls)" = 0 ]'
+teardown
+
+shsetup
+txn staged datad 1900
+round
+check "ship: staged 100 s ago, not started yet: left alone" '[ "$(calls)" = 0 ]'
+txn staged datad 1600
+round
+check "ship: staged 400 s ago and never started: recover-live" '[ "$(calls)" = 1 ]'
+teardown
+
+shsetup
+txn check
+executor 1500 dead
+rm "$T/u60-ship/u60-ship.sh"
+round
+check "ship: no u60-ship.sh: nothing to call" '! grep -q u60-ship "$T/guard.log"'
+teardown
+
+shsetup
+head -c 2000 /dev/urandom >"$T/u60-ship/txn"
+round
+check "ship: garbage transaction log: nothing called, no shell error" '[ "$(calls)" = 0 ]'
+teardown
+
+# killed right after a heartbeat at 2000; rounds 60 s apart: taken over ≤ 90 s
+shsetup
+txn check
+executor 2000 dead
+mkdir -p "$T/proc/4711"
+printf 'sh\000/data/u60-guard/u60-ship.sh\000run\000' >"$T/proc/4711/cmdline"
+up 2029
+round
+check "ship: 29 s after the last heartbeat, alive: not yet" '[ "$(calls)" = 0 ]'
+rm -rf "$T/proc/4711" # the OOM killer
+up 2089
+round
+check "ship: executor killed: recover-live by the next round (≤ 90 s)" '[ "$(calls)" = 1 ]'
 teardown
 
 echo

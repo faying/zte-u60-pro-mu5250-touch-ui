@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: MIT
  */
 #include "ui_theme.h"
+#include "lang.h"
 #include "src/libs/freetype/lv_freetype.h"
 
 #include <stdio.h>
@@ -74,6 +75,17 @@ static const lv_font_t *num(const char *dir, const char *roboto, int weight, int
     return f;
 }
 
+/* Nunito `weight` at `size` over the CJK font `under`; `under` if it fails. */
+static const lv_font_t *text_en(const char *dir, int weight, int size, const lv_font_t *under)
+{
+    char p[256];
+    snprintf(p, sizeof p, "%s/Nunito-%d.ttf", dir, weight);
+    lv_font_t *f = ft(p, size, 0);
+    if (!f) return under;
+    f->fallback = under;
+    return f;
+}
+
 int ui_fonts_load(void)
 {
     const char *cj = env_or("U60_DEVUI_CJK_FONT", CJK_FONT_DEFAULT);
@@ -118,8 +130,27 @@ int ui_fonts_load(void)
     UF.n36 = num(dir, rob, 800, 36, UF.cj24b, &rb, &cf);
     UF.numerals = cf ? "cjk" : rb ? "roboto" : "nunito";
 
+    /* English: body text in Nunito too (design review D2, 10-01; regular →
+     * 600, bold → 800, as in the approved mockup), the same-size CJK font
+     * underneath for Chinese names (SSIDs, operators). No Nunito → the CJK
+     * set stays, as in Chinese. */
+    if (lang_is_en() && !rb && !cf) {
+        UF.cj11  = text_en(dir, 600, 11, UF.cj11);
+        UF.cj12  = text_en(dir, 600, 12, UF.cj12);
+        UF.cj13  = text_en(dir, 600, 13, UF.cj13);
+        UF.cj14  = text_en(dir, 600, 14, UF.cj14);
+        UF.cj15  = text_en(dir, 600, 15, UF.cj15);
+        UF.cj20  = text_en(dir, 600, 20, UF.cj20);
+        UF.cj15b = text_en(dir, 800, 15, UF.cj15b);
+        UF.cj17b = text_en(dir, 800, 17, UF.cj17b);
+        UF.cj20b = text_en(dir, 800, 20, UF.cj20b);
+        UF.cj22b = text_en(dir, 800, 22, UF.cj22b);
+        UF.cj24b = text_en(dir, 800, 24, UF.cj24b);
+    }
+
     UF.cjk = cjk_src;
-    fprintf(stderr, "ui: fonts cjk=%s numerals=%s (dir %s)\n", cjk_src, UF.numerals, dir);
+    fprintf(stderr, "ui: fonts cjk=%s numerals=%s text=%s (dir %s)\n", cjk_src, UF.numerals,
+            lang_is_en() && !rb && !cf ? "nunito" : "cjk", dir);
     fflush(stderr);
     return ok ? 0 : -1;
 }

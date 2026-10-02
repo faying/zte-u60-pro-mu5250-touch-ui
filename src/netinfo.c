@@ -10,6 +10,7 @@
 #include "netinfo.h"
 #include "agent_client.h"
 #include "json.h"
+#include "lang.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -24,7 +25,7 @@
 #define NI_RESP_MAX  32768   /* 完整读取带 apn（约 1 KB）后留足余量；截断会报「读网络信息失败」 */
 
 static netinfo_t s_ni;
-static char s_act_err[96];
+static char s_act_err[160];
 static int  s_was_mode;
 static long s_poll_ms;
 static unsigned s_sig;
@@ -48,6 +49,18 @@ static int ni_api(const char *method, const char *path, const char *json, char *
 static void jstr(const char *obj, const char *key, char *out, size_t cap)
 {
     if (!json_get(obj, key, out, cap) || !strcmp(out, "null")) out[0] = 0;
+}
+
+/* Text with an English twin (include/lang.h pick): in English mode take
+ * key_en when the agent gave it and it is not empty, else key; into the same
+ * field, since the language never changes while the process runs. */
+static void jstr_pick(const char *obj, const char *key, const char *key_en, char *out, size_t cap)
+{
+    if (lang_is_en()) {
+        jstr(obj, key_en, out, cap);
+        if (out[0]) return;
+    }
+    jstr(obj, key, out, cap);
 }
 
 /* 数组里的对象逐个截成独立字符串（json_get 只认第一层）。*cur 从 '[' 之后开始，
@@ -89,17 +102,18 @@ static void parse_exit(const char *data, const char *key, ni_exit_t *e)
     jstr(o, "geo", e->geo, sizeof e->geo);
     jstr(o, "isp", e->isp, sizeof e->isp);
     jstr(o, "node", e->node, sizeof e->node);
-    jstr(o, "error", e->err, sizeof e->err);
+    jstr_pick(o, "error", "error_en", e->err, sizeof e->err);
 }
 
 static void parse_oper(const char *data, const char *key, ni_oper_t *op)
 {
-    char o[256];
+    char o[512];   /* name + operator_en + country/_en/_iso: a long broadcast name twice */
 
     memset(op, 0, sizeof *op);
     if (!json_get(data, key, o, sizeof o) || o[0] != '{') return;
-    jstr(o, "name", op->name, sizeof op->name);
-    jstr(o, "country", op->country, sizeof op->country);
+    jstr_pick(o, "name", "operator_en", op->name, sizeof op->name);
+    jstr_pick(o, "country", "country_en", op->country, sizeof op->country);
+    jstr(o, "country_iso", op->country_iso, sizeof op->country_iso);
     jstr(o, "mcc", op->mcc, sizeof op->mcc);
     jstr(o, "mnc", op->mnc, sizeof op->mnc);
 }
@@ -118,7 +132,7 @@ static void parse_apn(const char *obj, ni_apn_t *a)
 static void parse(const char *data)
 {
     static char sub[8192];
-    char tmp[16], obj[768];
+    char tmp[16], obj[1024];   /* guard: reason (≤180 B) + reason_en (≤120) + the rest; target sorts last */
     const char *cur;
 
     s_ni.now = json_get_int(data, "now", 0);
@@ -132,11 +146,12 @@ static void parse(const char *data)
     s_ni.selection[0] = 0;
     if (json_get(data, "selection", obj, sizeof obj)) jstr(obj, "mode", s_ni.selection, sizeof s_ni.selection);
 
-    s_ni.guard_phase[0] = s_ni.guard_target[0] = s_ni.guard_reason[0] = 0;
+    s_ni.guard_phase[0] = s_ni.guard_target[0] = s_ni.guard_reason[0] = s_ni.guard_reason_code[0] = 0;
     if (json_get(data, "guard", obj, sizeof obj)) {
         jstr(obj, "phase", s_ni.guard_phase, sizeof s_ni.guard_phase);
         jstr(obj, "target", s_ni.guard_target, sizeof s_ni.guard_target);
-        jstr(obj, "reason", s_ni.guard_reason, sizeof s_ni.guard_reason);
+        jstr_pick(obj, "reason", "reason_en", s_ni.guard_reason, sizeof s_ni.guard_reason);
+        jstr(obj, "reason_code", s_ni.guard_reason_code, sizeof s_ni.guard_reason_code);
     }
 
     s_ni.scan_state[0] = s_ni.scan_err[0] = 0;
@@ -144,14 +159,15 @@ static void parse(const char *data)
     if (json_get(data, "scan", sub, sizeof sub)) {
         char arr[6144];
         jstr(sub, "state", s_ni.scan_state, sizeof s_ni.scan_state);
-        jstr(sub, "error", s_ni.scan_err, sizeof s_ni.scan_err);
+        jstr_pick(sub, "error", "error_en", s_ni.scan_err, sizeof s_ni.scan_err);
         if (json_get(sub, "operators", arr, sizeof arr)) {
             cur = arr;
             while (s_ni.nops < NI_MAX_OPS && next_obj(&cur, obj, sizeof obj)) {
                 ni_scan_op_t *op = &s_ni.ops[s_ni.nops++];
                 jstr(obj, "plmn", op->plmn, sizeof op->plmn);
-                jstr(obj, "name", op->name, sizeof op->name);
-                jstr(obj, "country", op->country, sizeof op->country);
+                jstr_pick(obj, "name", "operator_en", op->name, sizeof op->name);
+                jstr_pick(obj, "country", "country_en", op->country, sizeof op->country);
+                jstr(obj, "country_iso", op->country_iso, sizeof op->country_iso);
                 jstr(obj, "rat", op->rat, sizeof op->rat);
                 jstr(obj, "status", op->status, sizeof op->status);
             }
@@ -162,7 +178,7 @@ static void parse(const char *data)
     s_ni.nscenes = 0;
     s_ni.scene_current[0] = s_ni.scene_pin[0] = 0;
     if (json_get(data, "scenes", sub, sizeof sub)) {
-        char arr[2048];
+        char arr[4096];   /* list or list_en: 6 scenes × id, name, when, does */
         s_ni.scene_known = 1;
         jstr(sub, "enabled", tmp, sizeof tmp);
         s_ni.scene_enabled = !strcmp(tmp, "true");
@@ -182,6 +198,23 @@ static void parse(const char *data)
                 sc->abroad = !strcmp(tmp, "true");
                 jstr(obj, "when", sc->when, sizeof sc->when);
                 jstr(obj, "does", sc->does, sizeof sc->does);
+            }
+        }
+        /* English: a separate list_en, same order as list (name_en is null
+         * for a scenario the user renamed: the name stays as typed). */
+        if (lang_is_en() && json_get(sub, "list_en", arr, sizeof arr)) {
+            char id[24], v[160];
+            cur = arr;
+            for (int i = 0; i < s_ni.nscenes && next_obj(&cur, obj, sizeof obj); i++) {
+                ni_scene_t *sc = &s_ni.scenes[i];
+                jstr(obj, "id", id, sizeof id);
+                if (strcmp(id, sc->id)) continue;
+                jstr(obj, "name_en", v, sizeof v);
+                if (v[0]) snprintf(sc->name, sizeof sc->name, "%.*s", (int)sizeof sc->name - 1, v);
+                jstr(obj, "when_en", v, sizeof v);
+                if (v[0]) snprintf(sc->when, sizeof sc->when, "%.*s", (int)sizeof sc->when - 1, v);
+                jstr(obj, "does_en", v, sizeof v);
+                if (v[0]) snprintf(sc->does, sizeof sc->does, "%.*s", (int)sizeof sc->does - 1, v);
             }
         }
     }
@@ -237,7 +270,7 @@ static void parse(const char *data)
     if (json_get(data, "neighbors", sub, sizeof sub)) {
         char arr[6144];
         jstr(sub, "state", s_ni.nbr_state, sizeof s_ni.nbr_state);
-        jstr(sub, "error", s_ni.nbr_err, sizeof s_ni.nbr_err);
+        jstr_pick(sub, "error", "error_en", s_ni.nbr_err, sizeof s_ni.nbr_err);
         s_ni.nbr_at = json_get_int(sub, "scanned_at", 0);
         if (json_get(sub, "cells", arr, sizeof arr)) {
             cur = arr;
@@ -262,11 +295,11 @@ static int load(int mode)
                        mode == NI_CLIENTS ? "/api/netinfo?lite=1&clients=1" : "/api/netinfo?lite=1";
     int code = ni_api("GET", path, NULL, &b);
 
-    if (code == 0) { snprintf(s_ni.err, sizeof s_ni.err, "连不上管理后台"); return 0; }
-    if (code == 401) { snprintf(s_ni.err, sizeof s_ni.err, "登录管理后台失败（密码不对？）"); return 0; }
-    if (code == 404) { snprintf(s_ni.err, sizeof s_ni.err, "管理后台版本太旧，没有网络页接口"); return 0; }
+    if (code == 0) { snprintf(s_ni.err, sizeof s_ni.err, "%s", TR("连不上管理后台")); return 0; }
+    if (code == 401) { snprintf(s_ni.err, sizeof s_ni.err, "%s", TR("登录管理后台失败（密码不对？）")); return 0; }
+    if (code == 404) { snprintf(s_ni.err, sizeof s_ni.err, "%s", TR("管理后台版本太旧，没有网络页接口")); return 0; }
     if (code != 200 || !b || !json_get(b, "data", data, sizeof data)) {
-        snprintf(s_ni.err, sizeof s_ni.err, "读网络信息失败（HTTP %d）", code);
+        snprintf(s_ni.err, sizeof s_ni.err, TR("读网络信息失败（HTTP %d）"), code);
         return 0;
     }
     s_ni.err[0] = 0;
@@ -335,10 +368,10 @@ static void act(const char *path, const char *json)
     int code = ni_api("POST", path, json, &b);
 
     s_act_err[0] = 0;
-    if (code == 0) snprintf(s_act_err, sizeof s_act_err, "连不上管理后台");
+    if (code == 0) snprintf(s_act_err, sizeof s_act_err, "%s", TR("连不上管理后台"));
     else if (code >= 300) {
-        if (!b || !json_get(b, "error", s_act_err, sizeof s_act_err))
-            snprintf(s_act_err, sizeof s_act_err, "被拒绝（HTTP %d）", code);
+        if (b) jstr_pick(b, "error", "error_en", s_act_err, sizeof s_act_err);
+        if (!s_act_err[0]) snprintf(s_act_err, sizeof s_act_err, TR("被拒绝（HTTP %d）"), code);
     }
     s_poll_ms = 0;          /* 下一轮立即重读 */
     s_was_mode = 0;

@@ -79,6 +79,9 @@ STANDBY_PROGS="tailscaled u60pro-devui zwrt-datad zte-agent"
 # (then: echo 0 > /proc/sys/net/ipv6/conf/br-lan/disable_ipv6).
 LAN_V6_FLAG=${GUARD_LAN_V6_FLAG:-/data/u60-guard/lan-ipv6-off}
 LAN_V6_SYSCTL=${GUARD_LAN_V6_SYSCTL:-/proc/sys/net/ipv6/conf/br-lan/disable_ipv6}
+# The touch screen's settings file (src/ui.c DEVUI_CONF_FILE). Only its
+# lang= line is read here: lang=en sends the alert SMS in English.
+DEVUI_CONF=${GUARD_DEVUI_CONF:-/data/plugins/u60pro-devui/devui.conf}
 # Modem crash recovery (owner's choice, 2026-09-26): the firmware boots with
 # remoteproc recovery disabled, so any modem assert (e.g. the n77/n78 PA-cal
 # assert rf_nr5g_sub6_tx.c:5428 seen in Japan) reboots the whole device.
@@ -143,6 +146,14 @@ RC_LOCAL=${GUARD_RC_LOCAL:-/etc/rc.local}
 TS_START=${GUARD_TS_START:-/data/tailscale/start.sh} # Tailscale is meant to run when rc.local starts it
 TS_SOCK=${GUARD_TS_SOCK:-/tmp/tailscaled.sock}      # tailscaled's LocalAPI, where start.sh puts it
 CURL=${GUARD_CURL:-curl}                            # the only tool here that speaks HTTP over a unix socket
+
+# u60 ship (docs/SHIP.md): a transaction whose executor died (OOM kill -9) or
+# hangs is finished by `u60-ship.sh recover-live`; this guard only notices.
+SHIP=${GUARD_SHIP:-$HERE/u60-ship.sh}
+SHIP_TXN=${GUARD_SHIP_TXN:-/data/u60-ship/txn}
+SHIP_HB=${GUARD_SHIP_HB:-/tmp/u60-ship/heartbeat}
+SHIP_STALE=${GUARD_SHIP_STALE:-30}      # executor heartbeat older than this = dead or stuck
+SHIP_STAGED=${GUARD_SHIP_STAGED:-300}   # staged and never started for this long = the Mac went away
 
 TAB=$(printf '\t')
 
@@ -490,7 +501,8 @@ ucs2_hex() {
         }'
 }
 
-# What the owner reads on their phone. Plain Chinese, one SMS (<= 70 chars):
+# What the owner reads on their phone (sms_text picks Chinese or English by
+# the screen's language). Plain Chinese, one SMS (<= 70 chars):
 # what happened, whether it affects getting online, and whether to do anything.
 # The event's technical text stays in the web page's alert list.
 sms_body() { # <kind> <device-local time>
@@ -508,6 +520,48 @@ sms_body() { # <kind> <device-local time>
         *) m="有一条新告警（$1），请到管理网页「系统→告警」查看。" ;;
     esac
     printf '【U60】%s（%s）' "$m" "$2"
+}
+
+# The same in English (docs/ui-glossary.md §9): "[U60] <body> (01 Oct 14:32)",
+# printable ASCII only, the whole SMS <= 70 chars, no closing full stop.
+sms_body_en() { # <kind> <time as date '+%d %b %H:%M' in the C locale>
+    case "$1" in
+        wifi-takeover) m="Admin down; Wi-Fi turned on; no action needed" ;;
+        wifi-restore-failed) m="Wi-Fi didn't start; retrying; stuck? Restart U60" ;;
+        agent-silent) m="Admin silent 5+ min; internet usually fine" ;;
+        agent-hung) m="Admin hung; force-restarted; no action needed" ;;
+        agent-crash) m="Admin crashed; restarted; no action needed" ;;
+        datad-crash) m="Data service crashed; restarted; no action needed" ;;
+        datad-degraded) m="Data service down 5+ min; using fallback; net OK" ;;
+        devui-crash) m="Screen UI crashed; reopened; no action needed" ;;
+        devui-gave-up) m="Stock UI on; hold bottom-right 3s to switch back" ;;
+        sms-test) m="Test SMS: alert texts reach your phone" ;;
+        # a kind is ASCII by alert-lib's rules; kept to 20 safe chars so the
+        # SMS stays one message whatever comes in
+        *) m="New alert $(printf '%s' "$1" | tr -cd 'A-Za-z0-9_.-' | cut -c1-20); see Alerts on web" ;;
+    esac
+    printf '[U60] %s (%s)' "$m" "$2"
+}
+
+# The screen's language: en only for exactly lang=en (the last lang= line, as
+# the screen reads it); a missing file, an empty or unknown value is zh.
+# A plain string match, no arithmetic: a bad value must not stop guard.
+sms_lang() {
+    _lg=$(sed -n 's/^lang=//p' "$DEVUI_CONF" 2>/dev/null | tail -n 1)
+    case "$_lg" in
+        en) echo en ;;
+        *) echo zh ;;
+    esac
+}
+
+# sms_text <kind>: the SMS in the screen's language, with the time now.
+# Read on every send, so a language switch needs no guard restart.
+sms_text() {
+    if [ "$(sms_lang)" = en ]; then
+        sms_body_en "$1" "$(LC_ALL=C date '+%d %b %H:%M')"
+    else
+        sms_body "$1" "$(date '+%m-%d %H:%M')"
+    fi
 }
 
 # ZTE's "YY;MM;DD;HH;MM;SS;+TZ", TZ in whole hours as in sms_forward.rs.
@@ -580,7 +634,7 @@ sms_round() {
             break # rate limits need a real clock; leave it pending, not done
         elif ! rate_ok "$_kind" "$_w"; then
             sms_log "$_w" "$_seq" "$_kind" suppressed-rate
-        elif send_sms "$_number" "$(sms_body "$_kind" "$(date '+%m-%d %H:%M')")"; then
+        elif send_sms "$_number" "$(sms_text "$_kind")"; then
             sms_log "$_w" "$_seq" "$_kind" sent
             delete_sent_copy "$_number"
         else
@@ -2457,8 +2511,50 @@ watcher_round() {
     sh "$HERE/u60-guard.sh" watcher </dev/null >/dev/null 2>>"$LOG" 7>&- 8>&- 9>&- &
 }
 
+# ship_round (in a subshell): an unfinished ship transaction with no live
+# executor → start `u60-ship.sh recover-live` in the background (it checks
+# again itself and refuses while the executor is alive; its own heartbeat
+# keeps the next rounds from starting a second one). A transaction of the
+# guard component is not ours to finish: its executor's timeouts and the
+# boot-time u60-recover.sh cover it.
+ship_round() {
+    [ -f "$SHIP_TXN" ] || return 0
+    _sph=
+    _scomp=
+    _stp=
+    while IFS= read -r _sl; do
+        case "$_sl" in
+            phase=*) _sph=${_sl#phase=} ;;
+            comp=*) _scomp=${_sl#comp=} ;;
+            t_phase=*) _stp=${_sl#t_phase=} ;;
+        esac
+    done <"$SHIP_TXN"
+    case "$_sph" in staged | trial | promote | check | manifest | rollback) ;; *) return 0 ;; esac
+    [ "$_scomp" = guard ] && return 0
+    [ -f "$SHIP" ] || return 0
+    _now=$(uptime_s)
+    _hu=
+    _hp=
+    { read -r _hu _hp _r <"$SHIP_HB"; } 2>/dev/null
+    isint "$_hu" || _hu=
+    isint "$_hp" || _hp=
+    if [ -n "$_hu" ] && [ $((_now - _hu)) -le "$SHIP_STALE" ] && [ -n "$_hp" ] &&
+        { tr '\0' ' ' <"$PROC/$_hp/cmdline"; } 2>/dev/null | grep -q 'u60-ship\.sh'; then
+        return 0
+    fi
+    if [ "$_sph" = staged ] && [ -z "$_hu" ]; then
+        # staged, executor not started yet: the Mac starts it seconds later
+        isint "$_stp" && [ $((_now - _stp)) -le "$SHIP_STAGED" ] && return 0
+    fi
+    _sage=missing
+    [ -n "$_hu" ] && _sage="$((_now - _hu))s old"
+    log "u60-ship: transaction ($_scomp, $_sph) has no live executor (heartbeat $_sage); starting recover-live"
+    sh "$SHIP" recover-live </dev/null >>"$LOG" 2>&1 7>&- 8>&- 9>&- &
+}
+
 round() {
     mss_recovery_round
+    (ship_round) 2>>"$LOG"
     (clock_round) 2>>"$LOG"
     guard_round
     rtc_round
@@ -2478,6 +2574,9 @@ round() {
 case "$1" in
     once)
         round
+        ;;
+    sms-text) # tests: the SMS text for <kind>, as sms_round would send it now
+        sms_text "$2"
         ;;
     crashcap)
         crashcap_start

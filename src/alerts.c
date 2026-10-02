@@ -11,6 +11,7 @@
 #include "alerts.h"
 #include "agent_client.h"
 #include "json.h"
+#include "lang.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -52,6 +53,20 @@ static void json_str(const char *obj, const char *key, char *out, size_t cap)
     if (!json_get(obj, key, out, cap) || !strcmp(out, "null")) out[0] = 0;
 }
 
+/* Text zte-agent words in both languages: in English its <key>_en sibling
+ * (alerts.rs kind_label_en, health.rs label_en/detail_en) when that is there
+ * and not empty/null, else the Chinese (an agent from before 2026-10-01). */
+static void json_text(const char *obj, const char *key, char *out, size_t cap)
+{
+    if (lang_is_en()) {
+        char k[24];
+        snprintf(k, sizeof k, "%s_en", key);
+        json_str(obj, k, out, cap);
+        if (out[0]) return;
+    }
+    json_str(obj, key, out, cap);
+}
+
 /* events 是对象数组：每个对象先截成独立字符串再取字段（json_get 只认第一层、会往后扫） */
 static void parse_events(char *arr)
 {
@@ -81,13 +96,13 @@ static void parse_events(char *arr)
         e->time = json_get_int(p, "time", 0);   /* null → 0 */
         e->uptime = json_get_int(p, "uptime", 0);
         json_str(p, "kind", kind, sizeof kind);
-        json_str(p, "label", e->label, sizeof e->label);   /* zte-agent words it (alerts.rs kind_label) */
+        json_text(p, "label", e->label, sizeof e->label);  /* zte-agent words it (alerts.rs kind_label) */
         json_str(p, "text", e->text, sizeof e->text);
         json_str(p, "unread", unread, sizeof unread);
         e->unread = !strcmp(unread, "true");
         q[1] = save;
         p = q + 1;
-        if (!e->label[0]) snprintf(e->label, sizeof e->label, "其他告警（%s）", kind);   /* agent before 9-26 */
+        if (!e->label[0]) snprintf(e->label, sizeof e->label, TR("其他告警（%s）"), kind);   /* agent before 9-26 */
         n++;
     }
     s_count = n;
@@ -148,8 +163,8 @@ static void parse_checks(char *data)
             health_item_t *h = &s_hc[s_hc_n++];
             h->bad = !strcmp(level, "bad");
             json_str(o, "id", h->id, sizeof h->id);
-            json_str(o, "label", h->label, sizeof h->label);
-            json_str(o, "detail", h->detail, sizeof h->detail);
+            json_text(o, "label", h->label, sizeof h->label);
+            json_text(o, "detail", h->detail, sizeof h->detail);
         }
         *p = save;
     }
@@ -174,10 +189,10 @@ static int load(void)
     char *b;
     int code = al_api("GET", "/api/alerts", NULL, &b);
 
-    if (code == 0) { snprintf(s_err, sizeof s_err, "连不上管理后台"); return 0; }
-    if (code == 401) { snprintf(s_err, sizeof s_err, "登录管理后台失败（密码不对？）"); return 0; }
+    if (code == 0) { snprintf(s_err, sizeof s_err, "%s", TR("连不上管理后台")); return 0; }
+    if (code == 401) { snprintf(s_err, sizeof s_err, "%s", TR("登录管理后台失败（密码不对？）")); return 0; }
     if (code != 200 || !b || !json_get(b, "data", data, sizeof data)) {
-        snprintf(s_err, sizeof s_err, "读告警失败（HTTP %d）", code);
+        snprintf(s_err, sizeof s_err, TR("读告警失败（HTTP %d）"), code);
         return 0;
     }
     s_err[0] = 0;

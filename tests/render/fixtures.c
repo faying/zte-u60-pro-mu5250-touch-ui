@@ -18,6 +18,7 @@
 #include "tailscale.h"
 #include "touch_input.h"
 #include "ui_exec.h"
+#include "lang.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -25,6 +26,7 @@
 int  rt_scene;
 long rt_now = 1790250112L;            /* 2026-09-24 10:21:52 device-local */
 int  rt_refreshes;
+int  rt_busy;                         /* speedtest_running(): ui_busy() for the switch tests */
 int  rt_exec_calls;
 ui_launch_t rt_exec_last;
 int  rt_system_calls;
@@ -43,6 +45,10 @@ const char *rt_scene_name(int s) { return s >= 0 && s < RT_SCENES ? k_names[s] :
 #define EMPTY IS(RT_EMPTY)
 
 static void cp(char *dst, size_t n, const char *s) { snprintf(dst, n, "%s", s); }
+/* What datad/zte-agent send as the *_en sibling, picked like the parsers
+ * do in English (--lang=en); user data (SSIDs, eSIM nicknames, node names,
+ * geo) stays as it is. */
+#define EN(zh, en) (lang_is_en() ? (en) : (zh))
 
 /* ------------------------------------------------------------------ data */
 static void fill_data(devui_data_t *d)
@@ -51,7 +57,7 @@ static void fill_data(devui_data_t *d)
     d->valid = 1;
     cp(d->net_type, sizeof d->net_type, "SA");   /* the modem's raw network_type */
     d->bars = 5;
-    cp(d->operator_name, sizeof d->operator_name, LONG_NAMES ? "中华电信 Chunghwa Telecom Co., Ltd. 4G/5G" : "中国电信");
+    cp(d->operator_name, sizeof d->operator_name, LONG_NAMES ? "中华电信 Chunghwa Telecom Co., Ltd. 4G/5G" : TR("中国电信"));   /* data.c maps the raw name through TR */
     cp(d->roaming, sizeof d->roaming, "Home");
     cp(d->band, sizeof d->band, "n78");
     cp(d->nr_band, sizeof d->nr_band, "n78");
@@ -375,7 +381,8 @@ void tailscale_get_peer(int i, tailscale_peer_t *o)
 static int s_esim_armed = -1;
 int esim_poll(int active) { (void)active; return 1; }
 const char *esim_current(void) { return EMPTY ? "" : "中国联通 · 主号"; }
-const char *esim_state(void) { return IS(RT_LOADING) ? "" : "就绪"; }
+const char *esim_state(void) { return IS(RT_LOADING) ? "" : TR("就绪"); }
+int esim_ready(void) { return !IS(RT_LOADING); }
 const char *esim_list_html(void) { return ""; }
 int esim_select(int i) { if (i == 0) return ESIM_SEL_CURRENT; s_esim_armed = i; return ESIM_SEL_ARMED; }   /* profile 0 is the enabled one */
 int agent_post(const char *p) { (void)p; return 200; }
@@ -401,7 +408,7 @@ int esim_prefetch(const char *key) { (void)key; return 0; }
 static int st_up(void) { return !EMPTY; }
 int speedtest_poll(int active) { (void)active; return 1; }
 speedtest_phase_t speedtest_phase(void) { return st_up() ? ST_COMPLETE : ST_IDLE; }
-const char *speedtest_phase_label(void) { return st_up() ? "完成" : ""; }
+const char *speedtest_phase_label(void) { return st_up() ? TR("完成") : ""; }
 int    speedtest_progress_pct(void) { return st_up() ? 100 : 0; }
 double speedtest_live_mbps(void) { return 0; }
 double speedtest_ping_ms(void) { return st_up() ? 23 : -1; }
@@ -410,7 +417,7 @@ double speedtest_download_mbps(void) { return st_up() ? 812.4 : -1; }
 double speedtest_upload_mbps(void) { return st_up() ? 96.2 : -1; }
 const char *speedtest_server(void) { return st_up() ? "China Telecom (Shanghai)" : ""; }
 const char *speedtest_error(void) { return ""; }
-int speedtest_running(void) { return 0; }
+int speedtest_running(void) { return rt_busy; }
 int speedtest_agent_reachable(void) { return st_up(); }
 int speedtest_start(void) { return 1; }
 int speedtest_stop(void) { return 1; }
@@ -448,10 +455,10 @@ void scenario_get_status(scenario_status_t *o)
     o->enabled = 1;
     if (IS(RT_LOADING)) return;                    /* 判定中 */
     if (IS(RT_ABROAD)) {
-        cp(o->name, sizeof o->name, "国外");
+        cp(o->name, sizeof o->name, EN("国外", "Abroad"));
         o->abroad = 1;
     } else {
-        cp(o->name, sizeof o->name, "在家");
+        cp(o->name, sizeof o->name, EN("在家", "Home"));
         o->wifi_off = 1;
     }
     o->last_switch = rt_now - 3 * 3600;
@@ -470,28 +477,39 @@ void alerts_get(int i, alert_item_t *o)
     o->seq = 40 + i;
     o->time = i == 0 ? rt_now - 1800 : 0;
     o->uptime = 95;
-    cp(o->label, sizeof o->label, i == 0 ? "Wi-Fi 看门狗重新打开了 Wi-Fi" : "触屏界面闪退，已自动重新打开");
+    cp(o->label, sizeof o->label, i == 0 ? EN("Wi-Fi 看门狗重新打开了 Wi-Fi", "Wi-Fi watchdog turned Wi-Fi back on")
+                                         : EN("触屏界面闪退，已自动重新打开", "Screen UI exited unexpectedly"));
     cp(o->text, sizeof o->text, i == 0 ? "agent gone (no answer 3 min), Wi-Fi was off; turning it on" : "exit 139 (SIGSEGV)");
     o->unread = IS(RT_FULL_CHARGING);
 }
 const char *alerts_error(void) { return ""; }
 void alerts_mark_all_read(void) {}
-/* 体检：good = 一项注意（短信告警没配），full-charging = 一项异常，其余都正常 */
-int  health_count(void) { return IS(RT_GOOD) ? 1 : IS(RT_FULL_CHARGING) ? 1 : 0; }
+/* 体检：good = 一项注意（短信告警没配），full-charging = 一项异常 + 设备清单对不上
+ * （doctor --tsv 的最后一行，docs/SHIP.md；清单一致时是 ok 行，和别的 ok 行一样不显示），
+ * 其余都正常 */
+int  health_count(void) { return IS(RT_GOOD) ? 1 : IS(RT_FULL_CHARGING) ? 2 : 0; }
 int  health_checked(void) { return 27; }
 void health_get(int i, health_item_t *o)
 {
     memset(o, 0, sizeof *o);
+    if (IS(RT_FULL_CHARGING) && i == 1) {
+        snprintf(o->id, sizeof o->id, "manifest");
+        snprintf(o->label, sizeof o->label, "%s", EN("清单", "Manifest"));
+        snprintf(o->detail, sizeof o->detail, "%s", EN("不一致的是 zwrt-datad（清单 6bbf6ea6，实际 af3c8ad8）",
+                                                     "Mismatch: zwrt-datad (manifest 6bbf6ea6, actual af3c8ad8)"));
+        return;
+    }
     if (i != 0) return;
     if (IS(RT_FULL_CHARGING)) {
         o->bad = 1;
         snprintf(o->id, sizeof o->id, "disk");
-        snprintf(o->label, sizeof o->label, "/data 空间");
-        snprintf(o->detail, sizeof o->detail, "只剩 12 MB");
+        snprintf(o->label, sizeof o->label, "%s", EN("/data 空间", "/data space"));
+        snprintf(o->detail, sizeof o->detail, "%s", EN("只剩 12 MB", "Only 12 MB left"));
     } else {
         snprintf(o->id, sizeof o->id, "sms");
-        snprintf(o->label, sizeof o->label, "短信告警");
-        snprintf(o->detail, sizeof o->detail, "没配置号码：后台挂了你不会知道");
+        snprintf(o->label, sizeof o->label, "%s", EN("短信告警", "Alert SMS"));
+        snprintf(o->detail, sizeof o->detail, "%s", EN("没配置号码：后台挂了你不会知道",
+                                                     "No number set: you won't hear if the admin backend dies"));
     }
 }
 
@@ -502,6 +520,7 @@ static void ni_oper(ni_oper_t *o, const char *name, const char *country, const c
 {
     cp(o->name, sizeof o->name, name); cp(o->country, sizeof o->country, country);
     cp(o->mcc, sizeof o->mcc, mcc); cp(o->mnc, sizeof o->mnc, mnc);
+    cp(o->country_iso, sizeof o->country_iso, !strcmp(mcc, "460") ? "CN" : !strcmp(mcc, "466") ? "TW" : "");
 }
 const netinfo_t *netinfo_get(void)
 {
@@ -516,28 +535,34 @@ const netinfo_t *netinfo_get(void)
             { "away", "外出", 0, 0, "其他情景都不符合时（默认）", "开 Wi-Fi" },
             { "abroad", "国外", 0, 1, "插的不是中国的卡时（当地卡、境外 eSIM）", "开 Wi-Fi" },
         };
+        /* scenes.list_en as scenario.rs writes it */
+        static const char *const k_sc_en[3][3] = {
+            { "Home", "When Wi-Fi \"My-Home-5G\", \"My-Home\" is nearby", "Wi-Fi off · No sleep; Tailscale stays reachable" },
+            { "Away", "When no other scenario matches (default)", "Wi-Fi on" },
+            { "Abroad", "SIM not from China (local or foreign eSIM)", "Wi-Fi on" },
+        };
         n->scene_known = 1;
         n->scene_enabled = 1;
         n->nscenes = 3;
         for (int i = 0; i < 3; i++) {
             cp(n->scenes[i].id, sizeof n->scenes[i].id, k_sc[i].id);
-            cp(n->scenes[i].name, sizeof n->scenes[i].name, k_sc[i].name);
+            cp(n->scenes[i].name, sizeof n->scenes[i].name, EN(k_sc[i].name, k_sc_en[i][0]));
             n->scenes[i].wifi_off = k_sc[i].wifi_off;
             n->scenes[i].abroad = k_sc[i].abroad;
-            cp(n->scenes[i].when, sizeof n->scenes[i].when, k_sc[i].when);
-            cp(n->scenes[i].does, sizeof n->scenes[i].does, k_sc[i].does);
+            cp(n->scenes[i].when, sizeof n->scenes[i].when, EN(k_sc[i].when, k_sc_en[i][1]));
+            cp(n->scenes[i].does, sizeof n->scenes[i].does, EN(k_sc[i].does, k_sc_en[i][2]));
         }
         cp(n->scene_current, sizeof n->scene_current, IS(RT_ABROAD) ? "abroad" : "home");
         if (IS(RT_FULL_CHARGING)) cp(n->scene_pin, sizeof n->scene_pin, "home");
     }
-    if (IS(RT_DATAD_DOWN)) { cp(n->err, sizeof n->err, "连不上管理后台"); return n; }
+    if (IS(RT_DATAD_DOWN)) { cp(n->err, sizeof n->err, TR("连不上管理后台")); return n; }
     if (IS(RT_LOADING) || EMPTY) return n;
     n->direct.present = 1;
     cp(n->direct.ip, sizeof n->direct.ip, "203.0.113.24");
     cp(n->direct.geo, sizeof n->direct.geo, LONG_NAMES ? "中国台湾 新北市 板桥区 Banqiao District" : "中国 广东 深圳");
     cp(n->direct.isp, sizeof n->direct.isp, LONG_NAMES ? "Chunghwa Telecom Co., Ltd." : "电信");
-    ni_oper(&n->home, "中国电信", "中国", "460", "11");
-    ni_oper(&n->serving, "中国电信", "中国", "460", "11");
+    ni_oper(&n->home, EN("中国电信", "China Telecom"), EN("中国", "China"), "460", "11");
+    ni_oper(&n->serving, EN("中国电信", "China Telecom"), EN("中国", "China"), "460", "11");
     n->roaming = 0;
     cp(n->selection, sizeof n->selection, "auto");
     /* APN as read on the owner's device 2026-09-25: auto mode dialling ctiot;
@@ -554,11 +579,11 @@ const netinfo_t *netinfo_get(void)
     cp(n->guard_phase, sizeof n->guard_phase, "idle");
     cp(n->scan_state, sizeof n->scan_state, "idle");
     cp(n->nbr_state, sizeof n->nbr_state, "unsupported");
-    cp(n->nbr_err, sizeof n->nbr_err, "原厂扫描会断网且拿不到数据，已停用");
+    cp(n->nbr_err, sizeof n->nbr_err, EN("原厂扫描会断网且拿不到数据，已停用", "Off: the stock scan drops data, finds nothing"));
     if (IS(RT_GOOD) || LONG_NAMES) {
         /* 邻区：原厂扫描已停用（agent 报 unsupported）；搜过一次网 */
         cp(n->nbr_state, sizeof n->nbr_state, "unsupported");
-        cp(n->nbr_err, sizeof n->nbr_err, "原厂扫描会断网且拿不到数据，已停用");
+        cp(n->nbr_err, sizeof n->nbr_err, EN("原厂扫描会断网且拿不到数据，已停用", "Off: the stock scan drops data, finds nothing"));
         n->ncells = 0;
         cp(n->cells[0].rat, 4, "NR"); cp(n->cells[0].pci, 8, "101"); cp(n->cells[0].arfcn, 12, "627264"); cp(n->cells[0].rsrp, 8, "-92");
         cp(n->cells[1].rat, 4, "NR"); cp(n->cells[1].pci, 8, "388"); cp(n->cells[1].arfcn, 12, "627264"); cp(n->cells[1].rsrp, 8, "-101");
@@ -575,16 +600,16 @@ const netinfo_t *netinfo_get(void)
         cp(n->clients[1].band, 12, "2.4 GHz"); n->clients[1].signal = -72; cp(n->clients[1].signal_tier, 8, "fair");
         cp(n->scan_state, sizeof n->scan_state, "done");
         n->nops = 3;
-        cp(n->ops[0].plmn, 8, "46011"); cp(n->ops[0].name, 48, "中国电信"); cp(n->ops[0].country, 24, "中国"); cp(n->ops[0].rat, 8, "12"); cp(n->ops[0].status, 4, "2");
-        cp(n->ops[1].plmn, 8, "46001"); cp(n->ops[1].name, 48, "中国联通"); cp(n->ops[1].country, 24, "中国"); cp(n->ops[1].rat, 8, "12"); cp(n->ops[1].status, 4, "1");
-        cp(n->ops[2].plmn, 8, "46000"); cp(n->ops[2].name, 48, "中国移动"); cp(n->ops[2].country, 24, "中国"); cp(n->ops[2].rat, 8, "7"); cp(n->ops[2].status, 4, "3");
+        cp(n->ops[0].plmn, 8, "46011"); cp(n->ops[0].name, 48, EN("中国电信", "China Telecom")); cp(n->ops[0].country, 24, EN("中国", "China")); cp(n->ops[0].rat, 8, "12"); cp(n->ops[0].status, 4, "2");
+        cp(n->ops[1].plmn, 8, "46001"); cp(n->ops[1].name, 48, EN("中国联通", "China Unicom")); cp(n->ops[1].country, 24, EN("中国", "China")); cp(n->ops[1].rat, 8, "12"); cp(n->ops[1].status, 4, "1");
+        cp(n->ops[2].plmn, 8, "46000"); cp(n->ops[2].name, 48, EN("中国移动", "China Mobile")); cp(n->ops[2].country, 24, EN("中国", "China")); cp(n->ops[2].rat, 8, "7"); cp(n->ops[2].status, 4, "3");
     }
     if (IS(RT_ABROAD)) {
         /* 国内卡在台湾漫游 */
         cp(n->direct.ip, sizeof n->direct.ip, "198.51.100.40");
         cp(n->direct.geo, sizeof n->direct.geo, "中国台湾 台北市");
         cp(n->direct.isp, sizeof n->direct.isp, "中华电信");
-        ni_oper(&n->serving, "中华电信", "中国台湾", "466", "92");
+        ni_oper(&n->serving, EN("中华电信", "Chunghwa Telecom"), EN("中国台湾", "Taiwan"), "466", "92");
         n->roaming = 1;
         cp(n->selection, sizeof n->selection, "manual");
         cp(n->guard_phase, sizeof n->guard_phase, "ok");

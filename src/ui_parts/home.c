@@ -120,10 +120,10 @@ static void build_home(lv_obj_t *t)
     uk_show(s_cc_logo, 0);
     /* 摘要行（2026-09-25 按任务分标签）：蜂窝 / Wi-Fi / 出口 各一行，点了跳到
      * 那个标签；流量只读，没有 ›、没有按下态。 */
-    home_row(&s_hr_ca, c, "载波", tab_go_cb, (void *)(intptr_t)TAB_CELL);
+    home_row(&s_hr_ca, c, TR("载波"), tab_go_cb, (void *)(intptr_t)TAB_CELL);
     home_row(&s_hr_wifi, c, "Wi-Fi", tab_go_cb, (void *)(intptr_t)TAB_WIFI);
-    home_row(&s_hr_exit, c, "出口", tab_go_cb, (void *)(intptr_t)TAB_EXIT);
-    home_row(&s_hr_traf, c, "流量", NULL, NULL);
+    home_row(&s_hr_exit, c, TR("出口"), tab_go_cb, (void *)(intptr_t)TAB_EXIT);
+    home_row(&s_hr_traf, c, TR("流量"), NULL, NULL);
     s_hr_ca_sub = uk_label_w(s_hr_ca.box, UF.cj12, T->t3, UK_PAD, 34, UK_CARD_W - 2 * UK_PAD - 16, 0, "");
     s_hr_exit_sub = uk_label_w(s_hr_exit.box, UF.cj12, T->t3, UK_PAD, 34, UK_CARD_W - 2 * UK_PAD - 16, 0, "");
     lv_obj_t *subs[2] = { s_hr_ca_sub, s_hr_exit_sub };
@@ -152,7 +152,7 @@ static void build_home(lv_obj_t *t)
     /* 和上面「出口」一行同一写法：左键名、右边情景名 ›，小字一行铺满卡宽（9-26 真机：
      * 原来按半块磁贴排，大字 + 两行小字，字多了就折行、右边空一大片） */
     s_sc_card = uk_card(t, UK_MARGIN, 0, UK_CARD_W, SC_CARD_H);
-    uk_label(s_sc_card, UF.cj14, T->t2, UK_PAD, 11, "情景");
+    uk_label(s_sc_card, UF.cj14, T->t2, UK_PAD, 11, TR("情景"));
     s_sc_state = uk_label_r(s_sc_card, UF.cj14, T->t1, UK_CARD_W - UK_PAD - 16, 11, "");
     s_sc_note = uk_label_w(s_sc_card, UF.cj12, T->t2, UK_PAD, 34, UK_CARD_W - 2 * UK_PAD, 0, "");
     uk_chevron(s_sc_card, 0);   /* 开页：有 ›（DESIGN.md §4 导航） */
@@ -164,7 +164,7 @@ static void build_home(lv_obj_t *t)
     {
         lv_obj_t *r = uk_box(s_nh_card, 0, 0, UK_CARD_W, NET_EXIT_ROW_H, T->card, 0);
         lv_obj_set_style_bg_opa(r, LV_OPA_TRANSP, 0);
-        uk_label(r, UF.cj14, T->t2, UK_PAD, 7, "出口");
+        uk_label(r, UF.cj14, T->t2, UK_PAD, 7, TR("出口"));
         s_nh_ip  = uk_label_r(r, UF.n15, T->t1, UK_CARD_W - UK_PAD - 16, 6, "");
         s_nh_geo = uk_label_w(r, UF.cj12, T->t3, UK_PAD, 29, UK_CARD_W - 2 * UK_PAD - 16, 0, "");
         uk_label_r(r, UF.cj15, T->t3, UK_CARD_W - UK_PAD, 14, "›");
@@ -189,7 +189,7 @@ static void build_home(lv_obj_t *t)
     /* 载波明细: every carrier row (moved to the top of 蜂窝 by build_cellular) */
     s_ca_card = uk_card(t, UK_MARGIN, 0, UK_CARD_W, CA_CARD_TOP + 40);
     uk_show(s_ca_card, 0);
-    uk_label(s_ca_card, UF.cj12, T->t3, UK_PAD, 10, "载波");
+    uk_label(s_ca_card, UF.cj12, T->t3, UK_PAD, 10, TR("载波"));
     s_ca_qos = uk_label_r(s_ca_card, UF.n12, T->t2, UK_CARD_W - UK_PAD, 9, "");
     c = s_ca_card;
     for (int i = 0; i < CA_SLOTS; i++) {
@@ -206,7 +206,7 @@ static void build_home(lv_obj_t *t)
         k->pci    = uk_label_r(k->box, UF.n11, T->t3, UK_CARD_W - UK_PAD, 5, "");
         k->arfcn  = uk_label_r(k->box, UF.n11, T->t3, UK_CARD_W - UK_PAD, 21, "");
         k->ina      = uk_label(k->box, UF.n15, T->t3, UK_PAD, 7, "");
-        k->ina_tag  = uk_label(k->box, UF.cj12, T->t3, 100, 9, "未激活");
+        k->ina_tag  = uk_label(k->box, UF.cj12, T->t3, 100, 9, TR("未激活"));
         k->ina_info = uk_label_r(k->box, UF.n11, T->t3, UK_CARD_W - UK_PAD, 9, "");
         uk_show(k->box, 0);
     }
@@ -216,7 +216,9 @@ static void build_home(lv_obj_t *t)
     /* Tailscale: hidden entirely when the device has no tailscaled. The card
      * is the entry to the peer list (no 功能 tile for it). */
     s_ts_card = uk_card(t, UK_MARGIN, 500, UK_CARD_W, UK_ROW_H);
-    static const char *const ts_keys[TS_HOME_ROWS] = { "Tailscale", "本机", "节点", "子网", "出口" };
+    /* 「节点」「出口」here are Tailscale peers / exit node: own TRC keys, other pages say them differently */
+    const char *const ts_keys[TS_HOME_ROWS] = { "Tailscale", TRC("tailscale", "本机"), TRC("tailscale", "节点"),
+                                                TRC("tailscale", "子网"), TRC("tailscale", "出口") };
     for (int i = 0; i < TS_HOME_ROWS; i++) {
         if (i) s_ts_sep[i] = uk_sep(s_ts_card, i * UK_ROW_H);
         s_ts_key[i] = uk_label(s_ts_card, UF.cj14, i ? T->t2 : T->t1, UK_PAD, i * UK_ROW_H + 11, ts_keys[i]);
@@ -272,7 +274,7 @@ static void home_signal_down(void)
     home_logo_set(NULL);   /* 数据停了：不知道现在在谁的网上 */
     home_logo_place();
     if (!s_ever_valid) {
-        set_label_fmt(s_cc_hero.st, c_st, sizeof c_st, "%s", "正在读取…");
+        set_label_fmt(s_cc_hero.st, c_st, sizeof c_st, "%s", TR("正在读取…"));
         lv_label_set_text(s_cc_hero.big, "--");
         lv_label_set_text(s_cc_hero.rtop, "");
         lv_label_set_text(s_cc_hero.r1, "");
@@ -284,9 +286,9 @@ static void home_signal_down(void)
         time_t tt = (time_t)(alive ? alive : s_last_valid_wall);
         struct tm tm;
         if (localtime_r(&tt, &tm)) strftime(hm, sizeof hm, "%H:%M", &tm);
-        set_label_fmt(s_cc_hero.st, c_st, sizeof c_st, "数据服务掉线 · 数字停在 %s", hm);
+        set_label_fmt(s_cc_hero.st, c_st, sizeof c_st, TR("数据服务掉线 · 数字停在 %s"), hm);
         lv_label_set_text(s_cc_hero.rtop, "");
-        lv_label_set_text(s_cc_hero.big, "读不到数据");
+        lv_label_set_text(s_cc_hero.big, TR("读不到数据"));
     }
     for (int i = 0; i < CA_SLOTS; i++) {
         uk_text_color(s_ca[i].band, T->t3);
@@ -395,10 +397,10 @@ static void sw_apply(lv_obj_t *sw, int on)
  * signal_tier), the admin web words the same grade in its own language. */
 static const char *wifi_sig_word(const char *tier)
 {
-    if (!strcmp(tier, "great")) return "信号很好";
-    if (!strcmp(tier, "good"))  return "信号好";
-    if (!strcmp(tier, "fair"))  return "信号一般";
-    if (!strcmp(tier, "weak"))  return "信号弱";
+    if (!strcmp(tier, "great")) return TR("信号很好");
+    if (!strcmp(tier, "good"))  return TR("信号好");
+    if (!strcmp(tier, "fair"))  return TR("信号一般");
+    if (!strcmp(tier, "weak"))  return TR("信号弱");
     return NULL;
 }
 

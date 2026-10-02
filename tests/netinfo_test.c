@@ -130,6 +130,91 @@ int main(void)
     parse("{\"neighbors\":{\"cells\":[{\"pci\":\"1\"");
     CHECK("truncated body does not crash", n->ncells == 0);
 
+    puts("L2: English twins (operator_en, country_en/_iso, reason_en/_code, error_en, scenes.list_en)");
+    {
+        static const char l2[] =
+            "{\"guard\":{\"phase\":\"reverted\",\"reason\":\"手动恢复自动\",\"reason_code\":\"manual_auto\","
+            "\"reason_en\":\"Back to automatic on request\",\"target\":\"44020\"},"
+            "\"home_operator\":{\"country\":\"中国\",\"country_en\":\"China\",\"country_iso\":\"CN\",\"mcc\":\"460\",\"mnc\":\"01\","
+            "\"name\":\"中国联通\",\"operator_en\":\"China Unicom\"},"
+            "\"neighbors\":{\"cells\":[],\"error\":\"原厂扫描会断网且拿不到数据，已停用\","
+            "\"error_en\":\"Off: the stock scan drops data, finds nothing\",\"state\":\"unsupported\"},"
+            "\"scan\":{\"error\":\"没搜到网络\",\"error_en\":\"No networks found\",\"operators\":["
+            "{\"country\":\"中国台湾\",\"country_en\":\"Taiwan\",\"country_iso\":\"TW\",\"name\":\"中华电信\","
+            "\"operator_en\":\"Chunghwa Telecom\",\"plmn\":\"46692\",\"rat\":\"7\",\"status\":\"1\"},"
+            "{\"country\":null,\"country_en\":null,\"country_iso\":null,\"name\":\"X\",\"operator_en\":\"X\",\"plmn\":\"52098\",\"rat\":\"7\",\"status\":\"1\"}],"
+            "\"state\":\"error\"},"
+            "\"scenes\":{\"current\":\"home\",\"enabled\":true,\"guard_takeover\":false,\"list\":["
+            "{\"abroad\":false,\"does\":\"关 Wi-Fi\",\"id\":\"home\",\"name\":\"在家\",\"when\":\"附近有 Wi-Fi「A」时\",\"wifi_off\":true},"
+            "{\"abroad\":false,\"does\":\"开 Wi-Fi\",\"id\":\"office\",\"name\":\"办公室\",\"when\":\"插的是日本的卡时\",\"wifi_off\":false}],"
+            "\"list_en\":["
+            "{\"does_en\":\"Wi-Fi off\",\"id\":\"home\",\"name_en\":\"Home\",\"when_en\":\"When Wi-Fi \\\"A\\\" is nearby\"},"
+            "{\"does_en\":\"Wi-Fi on\",\"id\":\"office\",\"name_en\":null,\"when_en\":\"When the SIM is from Japan\"}],"
+            "\"pin\":null},"
+            "\"serving_operator\":{\"country\":\"日本\",\"country_en\":\"Japan\",\"country_iso\":\"JP\",\"mcc\":\"440\",\"mnc\":\"20\","
+            "\"name\":\"SoftBank\",\"operator_en\":\"SoftBank\"}}";
+        /* before L2: the same body without any *_en / *_iso / reason_code */
+        static const char old[] =
+            "{\"guard\":{\"phase\":\"reverted\",\"reason\":\"注册失败\",\"target\":\"44020\"},"
+            "\"home_operator\":{\"country\":\"中国\",\"mcc\":\"460\",\"mnc\":\"01\",\"name\":\"中国联通\"},"
+            "\"scan\":{\"error\":\"没搜到网络\",\"operators\":[],\"state\":\"error\"},"
+            "\"scenes\":{\"current\":\"home\",\"enabled\":true,\"list\":["
+            "{\"abroad\":false,\"does\":\"关 Wi-Fi\",\"id\":\"home\",\"name\":\"在家\",\"when\":\"w\",\"wifi_off\":true}],\"pin\":null}}";
+
+        lang_set_en(0);
+        parse(l2);
+        CHECK("zh: operator stays Chinese", !strcmp(n->home.name, "中国联通") && !strcmp(n->home.country, "中国"));
+        CHECK("zh: iso read for comparing", !strcmp(n->home.country_iso, "CN") && !strcmp(n->serving.country_iso, "JP"));
+        CHECK("zh: reason Chinese, code read", !strcmp(n->guard_reason, "手动恢复自动") && !strcmp(n->guard_reason_code, "manual_auto"));
+        CHECK("zh: errors Chinese", !strcmp(n->scan_err, "没搜到网络") && !strcmp(n->nbr_err, "原厂扫描会断网且拿不到数据，已停用"));
+        CHECK("zh: scan op Chinese", !strcmp(n->ops[0].name, "中华电信") && !strcmp(n->ops[0].country, "中国台湾") && !strcmp(n->ops[0].country_iso, "TW"));
+        CHECK("zh: scenes Chinese", n->nscenes == 2 && !strcmp(n->scenes[0].name, "在家") && !strcmp(n->scenes[0].when, "附近有 Wi-Fi「A」时"));
+
+        lang_set_en(1);
+        parse(l2);
+        CHECK("en: operator_en", !strcmp(n->home.name, "China Unicom") && !strcmp(n->serving.name, "SoftBank"));
+        CHECK("en: country_en", !strcmp(n->home.country, "China") && !strcmp(n->serving.country, "Japan"));
+        CHECK("en: reason_en, code", !strcmp(n->guard_reason, "Back to automatic on request") && !strcmp(n->guard_reason_code, "manual_auto"));
+        CHECK("en: scan error_en", !strcmp(n->scan_err, "No networks found"));
+        CHECK("en: neighbors error_en, whole", !strcmp(n->nbr_err, "Off: the stock scan drops data, finds nothing"));
+        CHECK("en: scan op English", !strcmp(n->ops[0].name, "Chunghwa Telecom") && !strcmp(n->ops[0].country, "Taiwan"));
+        CHECK("en: op with null country", !strcmp(n->ops[1].name, "X") && !n->ops[1].country[0] && !n->ops[1].country_iso[0]);
+        CHECK("en: factory scene name_en", !strcmp(n->scenes[0].name, "Home"));
+        CHECK("en: when_en / does_en (escaped quotes)", !strcmp(n->scenes[0].when, "When Wi-Fi \"A\" is nearby") && !strcmp(n->scenes[0].does, "Wi-Fi off"));
+        CHECK("en: renamed scene keeps its name (name_en null)", !strcmp(n->scenes[1].name, "办公室") && !strcmp(n->scenes[1].when, "When the SIM is from Japan"));
+        CHECK("en: ids untouched", !strcmp(n->scenes[0].id, "home") && !strcmp(n->scene_current, "home"));
+
+        parse(old);
+        CHECK("en, old agent: falls back to the Chinese", !strcmp(n->home.name, "中国联通") && !strcmp(n->guard_reason, "注册失败") && !strcmp(n->scan_err, "没搜到网络"));
+        CHECK("en, old agent: no code / iso", !n->guard_reason_code[0] && !n->home.country_iso[0]);
+        CHECK("en, old agent: scenes Chinese", n->nscenes == 1 && !strcmp(n->scenes[0].name, "在家") && !strcmp(n->scenes[0].when, "w"));
+        lang_set_en(0);
+    }
+
+    puts("L2: longest twins still leave the fields after them");
+    {
+        static char lb[4096];
+        char zh[200] = "", en[140], nm[60];
+        for (int i = 0; i < 60; i++) strcat(zh, "长");          /* 180 bytes, the agent's clip */
+        memset(en, 'e', 120); en[120] = 0;
+        memset(nm, 'N', 47); nm[47] = 0;
+        snprintf(lb, sizeof lb,
+                 "{\"guard\":{\"finished_at\":1790250000,\"last_result\":\"%s\",\"phase\":\"revert_failed\",\"rat\":\"12\","
+                 "\"reason\":\"%s\",\"reason_code\":\"auto_retry\",\"reason_en\":\"%s\",\"started_at\":1790240000,\"target\":\"44020\"},"
+                 "\"home_operator\":{\"country\":\"阿联酋\",\"country_en\":\"United Arab Emirates\",\"country_iso\":\"AE\","
+                 "\"mcc\":\"424\",\"mnc\":\"02\",\"name\":\"%s\",\"operator_en\":\"%s\"}}",
+                 zh, zh, en, nm, nm);
+        lang_set_en(1);
+        parse(lb);
+        CHECK("en: long reason_en whole", strlen(n->guard_reason) == 120);
+        CHECK("en: target after it still read", !strcmp(n->guard_target, "44020") && !strcmp(n->guard_reason_code, "auto_retry"));
+        CHECK("en: long operator, mnc after it", !strcmp(n->home.mnc, "02") && !strcmp(n->home.country, "United Arab Emirates"));
+        lang_set_en(0);
+        parse(lb);
+        CHECK("zh: long Chinese reason whole", !strcmp(n->guard_reason, zh) && !strcmp(n->guard_target, "44020"));
+        CHECK("zh: operator fields", !strcmp(n->home.country, "阿联酋") && !strcmp(n->home.country_iso, "AE"));
+    }
+
     printf("passed %d, failed %d\n", pass, fail);
     return fail != 0;
 }

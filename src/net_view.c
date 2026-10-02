@@ -6,6 +6,7 @@
  */
 #include "net_view.h"
 #include "json.h"
+#include "lang.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -14,6 +15,20 @@
 static void str(const char *obj, const char *key, char *out, size_t cap)
 {
     if (!json_get(obj, key, out, cap) || !strcmp(out, "null")) out[0] = 0;
+}
+
+/* A text field: in English its <key>_en sibling when datad sent one that is
+ * not empty (docs/API.md: only fields with non-ASCII Chinese have one), else
+ * the Chinese. The language is fixed for the process, so pick it here once. */
+static void text(const char *obj, const char *key, char *out, size_t cap)
+{
+    if (lang_is_en()) {
+        char k[24];
+        snprintf(k, sizeof k, "%s_en", key);
+        str(obj, k, out, cap);
+        if (out[0]) return;
+    }
+    str(obj, key, out, cap);
 }
 
 static int flag(const char *obj, const char *key)
@@ -42,6 +57,19 @@ static ui_net_cause_t cause(const char *obj)
     return UI_CAUSE_NONE;
 }
 
+static nv_state_t state(const char *obj)
+{
+    static const char *const names[] = {
+        "", "ok", "nosim", "airplane", "sos", "nosvc", "nodata",
+        "limit", "weak", "noise", "crowd", "only2g", "only3g", "narrow",
+    };
+    char v[12];
+    if (!json_get(obj, "state", v, sizeof v) || !v[0]) return NV_STATE_UNKNOWN;
+    for (int i = 1; i < (int)(sizeof names / sizeof *names); i++)
+        if (!strcmp(v, names[i])) return (nv_state_t)i;
+    return NV_STATE_UNKNOWN;
+}
+
 static void carrier(const char *o, nv_carrier_t *c)
 {
     char kind[8];
@@ -63,6 +91,9 @@ static void carrier(const char *o, nv_carrier_t *c)
 
 int net_view_parse(const char *net, net_view_t *v)
 {
+    /* Sizes: datad's screen/tests.rs response_fits_the_old_screens_buffers
+     * keeps the whole reply, with every *_en field (2026-10-01), inside these
+     * and screen_feed.c's resp/net. */
     static char arr[4096], item[768], st[1024];
     const char *p;
 
@@ -80,13 +111,13 @@ int net_view_parse(const char *net, net_view_t *v)
     v->sim_usable = flag(net, "sim_usable");
     v->other = flag(net, "other");
     str(net, "logo", v->logo, sizeof v->logo);
-    str(net, "fine", v->fine, sizeof v->fine);
-    str(net, "name", v->name, sizeof v->name);
-    str(net, "where", v->where, sizeof v->where);
-    str(net, "ca_val", v->ca_val, sizeof v->ca_val);
-    str(net, "ca_sub", v->ca_sub, sizeof v->ca_sub);
+    text(net, "fine", v->fine, sizeof v->fine);
+    text(net, "name", v->name, sizeof v->name);
+    text(net, "where", v->where, sizeof v->where);
+    text(net, "ca_val", v->ca_val, sizeof v->ca_val);
+    text(net, "ca_sub", v->ca_sub, sizeof v->ca_sub);
     v->bars_tier = (int)json_get_int(net, "bars_tier", -1);
-    str(net, "mode_word", v->mode_word, sizeof v->mode_word);
+    text(net, "mode_word", v->mode_word, sizeof v->mode_word);
     v->mode_auto = flag(net, "mode_auto");
 
     ui_net_story_t *s = &v->story;
@@ -94,14 +125,15 @@ int net_view_parse(const char *net, net_view_t *v)
     s->cause = cause(st);
     s->sig_tone = tone(st, "sig_tone");
     s->noise_tone = tone(st, "noise_tone");
-    str(st, "headline", s->headline, sizeof s->headline);
-    str(st, "hint", s->hint, sizeof s->hint);
-    str(st, "rat", s->rat, sizeof s->rat);
-    str(st, "link", s->link, sizeof s->link);
-    str(st, "sig", s->sig, sizeof s->sig);
-    str(st, "noise", s->noise, sizeof s->noise);
-    str(st, "load", s->load, sizeof s->load);
-    str(st, "limit", s->limit, sizeof s->limit);
+    v->state = state(st);
+    text(st, "headline", s->headline, sizeof s->headline);
+    text(st, "hint", s->hint, sizeof s->hint);
+    text(st, "rat", s->rat, sizeof s->rat);
+    text(st, "link", s->link, sizeof s->link);
+    text(st, "sig", s->sig, sizeof s->sig);
+    text(st, "noise", s->noise, sizeof s->noise);
+    text(st, "load", s->load, sizeof s->load);
+    text(st, "limit", s->limit, sizeof s->limit);
     return s->headline[0] != 0;
 }
 

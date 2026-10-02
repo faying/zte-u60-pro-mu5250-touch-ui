@@ -25,7 +25,8 @@ int esim_poll(int active);
 
 /* 显示值，只读缓存，不发请求。 */
 const char *esim_current(void);     /* 当前启用的 profile */
-const char *esim_state(void);       /* 状态行：就绪 / 切换中 · 已 N 秒 / 失败原因… */
+const char *esim_state(void);       /* 状态行：就绪 / 切换中 · 已 N 秒 / 失败原因…（已按界面语言 TR，只显示，别拿去比） */
+int esim_ready(void);               /* 1 = esim_state() 是「就绪」：没在切换、没出错、没有待看的结果 */
 const char *esim_list_html(void);   /* 生成的 profile 列表（act:esim:N） */
 
 #define ESIM_SEL_FAIL    -1

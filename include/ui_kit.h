@@ -64,11 +64,12 @@ lv_obj_t *uk_row_nav(lv_obj_t *c, int y, const char *key, int first, lv_event_cb
 lv_obj_t *uk_chevron(lv_obj_t *c, int y);
 
 /* ---- controls ---- */
+#define UK_SEG_MAX 5
 typedef struct {
-    lv_obj_t *obj, *item[4], *lbl[4];
+    lv_obj_t *obj, *item[UK_SEG_MAX], *lbl[UK_SEG_MAX];
     int n, sel;
 } uk_seg_t;
-/* Segmented control, 30 px high. cb gets user = index. */
+/* Segmented control, 30 px high, up to UK_SEG_MAX items. cb gets user = index. */
 void uk_seg(uk_seg_t *s, lv_obj_t *p, int x, int y, int w, const char *const *items, int n, lv_event_cb_t cb);
 void uk_seg_set(uk_seg_t *s, int sel);
 /* Draw item i as "armed" (first tap of a two-step confirm: fillOrange). */

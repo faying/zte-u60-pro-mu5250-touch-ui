@@ -5,4 +5,4 @@
 ROOT=$(cd "$(dirname "$0")/../../.." && pwd)
 exec docker run --rm -v "$ROOT":/src:ro -w /src rust:1-slim sh -c '
 cc -std=c11 -D_GNU_SOURCE -g -O1 -fsanitize=address,undefined -fno-omit-frame-pointer -Wall -Wextra -Wno-unused-function \
-   -Iinclude tests/alerts_test.c src/json.c src/http.c src/agent_client.c -o /tmp/alerts_test && /tmp/alerts_test'
+   -I. -Iinclude tests/alerts_test.c src/json.c src/http.c src/agent_client.c src/lang.c -o /tmp/alerts_test && /tmp/alerts_test'

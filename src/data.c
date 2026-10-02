@@ -6,6 +6,7 @@
 #include "data.h"
 #include "ui_logic.h"
 #include "json.h"
+#include "lang.h"
 
 #include <arpa/inet.h>
 #include <errno.h>
@@ -144,20 +145,21 @@ static void getstr(const char *obj, const char *key, char *dst, size_t n)
     if (!json_get(obj, key, dst, n)) dst[0] = 0;
 }
 
+/* Shown only (refresh.c); English names from manager docs/ui-glossary.md §8. */
 static const char *mainland_operator_cn(int mcc, int mnc, const char *raw)
 {
     if (mcc == 460) {
-        if (mnc == 0 || mnc == 2 || mnc == 4 || mnc == 7 || mnc == 8) return "中国移动";
-        if (mnc == 1 || mnc == 6 || mnc == 9) return "中国联通";
-        if (mnc == 3 || mnc == 5 || mnc == 11) return "中国电信";
-        if (mnc == 15) return "中国广电";
+        if (mnc == 0 || mnc == 2 || mnc == 4 || mnc == 7 || mnc == 8) return TR("中国移动");
+        if (mnc == 1 || mnc == 6 || mnc == 9) return TR("中国联通");
+        if (mnc == 3 || mnc == 5 || mnc == 11) return TR("中国电信");
+        if (mnc == 15) return TR("中国广电");
     }
     if (!raw || !raw[0]) return NULL;
-    if (!strcmp(raw, "China Mobile") || !strcmp(raw, "CMCC")) return "中国移动";
-    if (!strcmp(raw, "China Unicom") || !strcmp(raw, "CUCC")) return "中国联通";
-    if (!strcmp(raw, "China Telecom") || !strcmp(raw, "CTCC")) return "中国电信";
+    if (!strcmp(raw, "China Mobile") || !strcmp(raw, "CMCC")) return TR("中国移动");
+    if (!strcmp(raw, "China Unicom") || !strcmp(raw, "CUCC")) return TR("中国联通");
+    if (!strcmp(raw, "China Telecom") || !strcmp(raw, "CTCC")) return TR("中国电信");
     if (!strcmp(raw, "China Broadnet") ||
-        !strcmp(raw, "China Broadcasting Network")) return "中国广电";
+        !strcmp(raw, "China Broadcasting Network")) return TR("中国广电");
     return NULL;
 }
 

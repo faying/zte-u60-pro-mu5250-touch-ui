@@ -31,19 +31,19 @@ static void build_sub_speed(lv_obj_t *t)
     t = uk_scroll(t, 0, UI_SUB_VIEW, 4 + 220 + 10 + 20 + ST_SRV_ROWS * UK_ROW_H + 16);
 
     s_st_card = uk_card(t, UK_MARGIN, 4, UK_CARD_W, 220);
-    uk_label(s_st_card, UF.cj12, T->t3, UK_PAD, 10, "网络测速");
+    uk_label(s_st_card, UF.cj12, T->t3, UK_PAD, 10, TR("网络测速"));
     s_st_phase = uk_label_r(s_st_card, UF.cj12, T->t2, UK_CARD_W - UK_PAD, 10, "");
     s_st_live = uk_label(s_st_card, UF.n36, T->t1, UK_PAD, 30, "--");
     s_st_unit = uk_label(s_st_card, UF.n15, T->t3, 100, 50, "Mbps");
     s_st_detail = uk_label_w(s_st_card, UF.cj13, T->t2, UK_PAD, 82, UK_CARD_W - 2 * UK_PAD, 0, "");
     s_st_result = uk_label_w(s_st_card, UF.n15, T->t1, UK_PAD, 104, UK_CARD_W - 2 * UK_PAD, 0, "");
     s_st_server = uk_label_w(s_st_card, UF.cj12, T->t3, UK_PAD, 128, UK_CARD_W - 2 * UK_PAD, 0, "");
-    s_st_btn = uk_button(s_st_card, UK_PAD, 160, UK_CARD_W - 2 * UK_PAD, 42, "开始测速", UK_BTN_PRIMARY,
+    s_st_btn = uk_button(s_st_card, UK_PAD, 160, UK_CARD_W - 2 * UK_PAD, 42, TR("开始测速"), UK_BTN_PRIMARY,
                          speedtest_btn_cb, NULL, &s_st_btn_lbl);
     s_st_offline = uk_label_w(s_st_card, UF.cj13, T->badT, UK_PAD, 190, UK_CARD_W - 2 * UK_PAD, 1, "");
     uk_show(s_st_offline, 0);
 
-    uk_section(t, 4 + 220 + 10, "服务器");
+    uk_section(t, 4 + 220 + 10, TR("服务器"));
     s_st_srv_card = uk_card(t, UK_MARGIN, 4 + 220 + 10 + 20, UK_CARD_W, ST_SRV_ROWS * UK_ROW_H);
     for (int i = 0; i < ST_SRV_ROWS; i++) {
         lv_obj_t *row = uk_box(s_st_srv_card, 0, i * UK_ROW_H, UK_CARD_W, UK_ROW_H, T->card, 0);
@@ -55,7 +55,7 @@ static void build_sub_speed(lv_obj_t *t)
         s_st_srv_name[i] = uk_label_w(row, UF.cj14, T->t1, UK_PAD + 22, 11, UK_CARD_W - 2 * UK_PAD - 22, 0, "");
         if (i > 0) uk_show(row, 0);   /* shown once the list arrives */
     }
-    lv_label_set_text(s_st_srv_name[0], "自动（最佳服务器）");
+    lv_label_set_text(s_st_srv_name[0], TR("自动（最佳服务器）"));
     lv_obj_scroll_to_y(t, 0, LV_ANIM_OFF);
 }
 

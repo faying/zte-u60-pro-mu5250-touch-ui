@@ -5,8 +5,19 @@
 #   sh /data/u60-guard/doctor.sh          human-readable (install.sh doctor)
 #   sh /data/u60-guard/doctor.sh --tsv    one check per line for zte-agent:
 #                                          <ok|warn|bad>\t<id>\t<label>\t<detail>
+#                                          (last row: the device manifest, docs/SHIP.md)
+#   sh /data/u60-guard/doctor.sh --tsv2   the same rows with English beside them, for the
+#                                          English UI (docs/designs/ui-english.md R2):
+#                                          first line "#tsv2", then
+#                                          <ok|warn|bad>\t<id>\t<label>\t<detail>\t<label_en>\t<detail_en>
+#                                          (columns 1-4 always equal the --tsv row; --tsv
+#                                          itself never changes, the agent on the device splits it in 4)
+#   sh /data/u60-guard/doctor.sh --manifest  the manifest, entry by entry:
+#                                          <same|differs|unrecorded>\t<kind:name>\t<path>\t<recorded>\t<actual>
+#                                          then state\t<ok|warn>\t<verdict>
 #   sh /data/u60-guard/doctor.sh --report 24h|7d   the scorecard from the ledger
 #   sh /data/u60-guard/doctor.sh --ledger-selftest can the ledger work here (PASS/FAIL)
+#   sh /data/u60-guard/doctor.sh --tree-fp <dir>  a directory's fingerprint (docs/SHIP.md)
 #   sh /data/u60-guard/doctor.sh --calibrate-standby
 #                                          set the standby sentinel's baseline from
 #                                          u60-guard's screen-off records (≥30 lines;
@@ -77,6 +88,7 @@ FP_CHANGED=${DOC_FP_CHANGED:-/tmp/u60-guard/ledger/fp-changed}
 TS_TUNING=${DOC_TS_TUNING:-/data/tailscale/tuning.env}
 standby_progs='tailscaled u60pro-devui zwrt-datad zte-agent'
 standby_labels='- 蜂窝包/分 Tailscale隧道包/分 tailscaled唤醒/秒 触屏唤醒/秒 数据服务唤醒/秒 后台唤醒/秒'
+standby_labels_en='-|Cell pkts/min|Tailscale tunnel pkts/min|tailscaled wakeups/s|Screen UI wakeups/s|Data service wakeups/s|Admin wakeups/s'
 
 standby_last() { # the last column of a sentinel record: uptime, cellular, tunnel, then one per program
     set -- $standby_progs
@@ -142,22 +154,32 @@ calibrate_standby() {
     return 0
 }
 
-# prints "<ok|warn>\t<detail>". Only idle screen-off minutes are judged: a minute
+# prints "<ok|warn>\t<detail>"; "standby_check en": the detail in English.
+# Only idle screen-off minutes are judged: a minute
 # whose cellular packets exceed the baseline median + 3 MAD is someone using
 # the network, and judging those raised false alarms (docs/LEDGER.md §12).
 standby_check() {
-    [ -f "$STANDBY_BASE" ] || { printf 'ok\t未校准（屏幕熄灭 30~60 分钟后执行 doctor.sh --calibrate-standby）\n'; return; }
+    if [ ! -f "$STANDBY_BASE" ]; then
+        if [ "$1" = en ]; then printf 'ok\tNot calibrated (run doctor.sh --calibrate-standby after 30-60 min with the screen off)\n'
+        else printf 'ok\t未校准（屏幕熄灭 30~60 分钟后执行 doctor.sh --calibrate-standby）\n'; fi
+        return
+    fi
     _bv=
     { read -r _bv <"$STANDBY_BASE"; } 2>/dev/null
-    [ "$_bv" = v2 ] || { printf 'ok\t基线格式旧，不判；请在家自然空闲时重新校准（doctor.sh --calibrate-standby）\n'; return; }
+    if [ "$_bv" != v2 ]; then
+        if [ "$1" = en ]; then printf 'ok\tOld baseline format, not judged; recalibrate at home while idle (doctor.sh --calibrate-standby)\n'
+        else printf 'ok\t基线格式旧，不判；请在家自然空闲时重新校准（doctor.sh --calibrate-standby）\n'; fi
+        return
+    fi
     _since=$(cat "$FP_CHANGED" 2>/dev/null)
     case "$_since" in '' | *[!0-9]*) _since=0 ;; esac
     awk -v now="$(uptime_s)" -v since="$_since" -v labels="$standby_labels" -v base="$STANDBY_BASE" -v last="$(standby_last)" \
-        -v fpnow="$(standby_fp | tr '\n' ';')" '
+        -v fpnow="$(standby_fp | tr '\n' ';')" -v en="$1" -v labels_en="$standby_labels_en" '
         function sortv(a, c,   i, j, v) { for (i = 2; i <= c; i++) { v = a[i]; j = i - 1; while (j > 0 && a[j] > v) { a[j + 1] = a[j]; j-- } a[j + 1] = v } }
         function med(a, c) { sortv(a, c); return (c % 2) ? a[(c + 1) / 2] : (a[c / 2] + a[c / 2 + 1]) / 2 }
         BEGIN {
-            split(labels, lab, " ")
+            if (en == "en") split(labels_en, lab, "|")
+            else split(labels, lab, " ")
             while ((getline l < base) > 0) {
                 split(l, f, " ")
                 if (f[1] == "fp") bf[f[2]] = f[3]
@@ -175,6 +197,11 @@ standby_check() {
         }
         END {
             if (idle < 8) {
+                if (en == "en") {
+                    if (rows >= 8 && busy * 2 > rows) printf "ok\tNetwork in use, standby not judged (%d of %d rows in the last 15 min had traffic)\n", busy, rows
+                    else printf "ok\tToo few idle screen-off rows in the last 15 min (%d), not judged\n", idle
+                    exit
+                }
                 if (rows >= 8 && busy * 2 > rows) printf "ok\t有流量在用，不判待机（最近 15 分钟 %d 行里 %d 行有流量）\n", rows, busy
                 else printf "ok\t最近 15 分钟空闲的息屏记录只有 %d 行，不判定\n", idle
                 exit
@@ -183,22 +210,33 @@ standby_check() {
             for (k = 3; k <= last; k++) {
                 if (bm[k] == "-" || bm[k] == "") continue
                 if (!(k in bf) || !(k in cf) || bf[k] != cf[k] || index(cf[k], "?") > 0) {
-                    stale = stale (stale == "" ? "" : "、") lab[k]
+                    if (en == "en") stale = stale (stale == "" ? "" : ", ") lab[k]
+                    else stale = stale (stale == "" ? "" : "、") lab[k]
                     continue
                 }
                 c = cnt[k] + 0; if (c == 0) continue
                 for (i = 1; i <= c; i++) x[i] = v[k, i]
                 m = med(x, c)
-                if (m > bm[k] + 3 * bd[k] && m > 1.5 * bm[k] && m - bm[k] >= 1)
-                    out = out (out == "" ? "" : "；") sprintf("%s %.0f（基线 %.0f）", lab[k], m, bm[k])
+                if (m > bm[k] + 3 * bd[k] && m > 1.5 * bm[k] && m - bm[k] >= 1) {
+                    if (en == "en") out = out (out == "" ? "" : "; ") sprintf("%s %.0f (baseline %.0f)", lab[k], m, bm[k])
+                    else out = out (out == "" ? "" : "；") sprintf("%s %.0f（基线 %.0f）", lab[k], m, bm[k])
+                }
             }
             c = cnt[2] + 0
             for (i = 1; i <= c; i++) x[i] = v[2, i]
             cell = med(x, c)
+            if (en == "en") {
+                tail = ((stale == "") ? "" : sprintf("; baseline out of date for %s, not judged", stale))
+                if (out != "") printf "warn\t%s%s\n", out, tail
+                else printf "ok\tNormal (cell %.0f pkts/min)%s\n", cell, tail
+                exit
+            }
             tail = ((stale == "") ? "" : sprintf("；%s 基线过期，不判", stale))
             if (out != "") printf "warn\t%s%s\n", out, tail
             else printf "ok\t正常（蜂窝每分钟 %.0f 个包）%s\n", cell, tail
-        }' "$STANDBY_STAT" 2>/dev/null || printf 'ok\t没有息屏记录\n'
+        }' "$STANDBY_STAT" 2>/dev/null || {
+        if [ "$1" = en ]; then printf 'ok\tNo screen-off records\n'; else printf 'ok\t没有息屏记录\n'; fi
+    }
 }
 
 # ── the scorecard: doctor.sh --report 24h|7d [--summary] (docs/LEDGER.md §11) ──
@@ -640,8 +678,10 @@ selftest() {
         st FAIL "账本目录可写（$LEDGER_DIR）" "写不进、fsync 失败或读回不一致"
     fi
     rm -f "$LEDGER_DIR/.selftest"
-    _sc=$(grep 'reboot_reason_code=[0-9]' "$KEYLOG" 2>/dev/null | tail -n 1 | sed -n 's/.*reboot_reason_code=\([0-9][0-9]*\).*/\1/p')
-    if [ -n "$_sc" ]; then st PASS "key.log 的原因码（这次开机 $_sc）"; else st FAIL "key.log 的原因码" "$KEYLOG 里找不到 reboot_reason_code="; fi
+    # key.log.0 too: the firmware rotates key.log, and right after a rotation
+    # this boot's code is only in the older file
+    _sc=$(cat "$KEYLOG.0" "$KEYLOG" 2>/dev/null | grep 'reboot_reason_code=[0-9]' | tail -n 1 | sed -n 's/.*reboot_reason_code=\([0-9][0-9]*\).*/\1/p')
+    if [ -n "$_sc" ]; then st PASS "key.log 的原因码（这次开机 $_sc）"; else st FAIL "key.log 的原因码" "$KEYLOG 和 $KEYLOG.0 里都找不到 reboot_reason_code="; fi
     _sr=
     { read -r _sr <"$MSS_RECOVERY"; } 2>/dev/null
     if [ -n "$_sr" ]; then st PASS "基带崩溃自恢复开关（$_sr）"; else st FAIL "基带崩溃自恢复开关" "读不到 $MSS_RECOVERY"; fi
@@ -714,6 +754,268 @@ selftest() {
     [ "$_sf" = 0 ]
 }
 
+# ── the device manifest (docs/SHIP.md): doctor's first line, --tsv's last ───
+# Two kinds of entries in /data/u60-manifest.jsonl: what `u60 ship` put on
+# the device (the last "ship"/"kit" line of each component, one md5 per file)
+# and the files we only record (the last "record" line of each name; settings
+# rewritten in normal use are deliberately not among them). Each is compared with
+# the file's md5 now. md5s are cached by (path, size, inode, m/ctime) in /tmp,
+# so a 30 MB binary is hashed once per change, not on every minute's run.
+MANIFEST=${DOC_MANIFEST:-/data/u60-manifest.jsonl}
+SHIP_TXN=${DOC_SHIP_TXN:-/data/u60-ship/txn}
+SHIP_HB=${DOC_SHIP_HB:-/tmp/u60-ship/heartbeat}
+MD5_CACHE=${DOC_MD5_CACHE:-/tmp/u60-doctor/md5}
+MD5SUM=${DOC_MD5SUM:-md5sum}
+TS_DIR=${DOC_TS_DIR:-/data/tailscale}
+DEVUI_DIR=${DOC_DEVUI_DIR:-/data/plugins/u60pro-devui}
+OBSERVE=3600
+TREE_FRESH=     # --manifest: directory fingerprints always computed afresh
+
+m_uptime() { _mu=$(cut -d. -f1 "$UPTIME_FILE" 2>/dev/null); case "$_mu" in '' | *[!0-9]*) _mu=0 ;; esac; echo "$_mu"; }
+
+# The files we only record, "<name> <path>" (u60-ship.sh record knows the same list).
+record_list() {
+    echo "tailscale-start.sh $TS_DIR/start.sh"
+    echo "tuning.env $TS_TUNING"
+    echo "tailscaled $TS_DIR/tailscaled"
+    echo "tailscaled-nofight $TS_DIR/nofight/tailscaled"
+    for _s in zte-agent zwrt-datad u60-guard u60-uid; do echo "init.d/$_s $INITD/$_s"; done
+    echo "rc.local $RC"
+    echo "u60-recover.sh ${SHIP_TXN%/*}/u60-recover.sh"
+    # directories (third word "tree"): compared by their fingerprint
+    echo "devui-fonts $DEVUI_DIR/fonts tree"
+    echo "devui-logos $DEVUI_DIR/operator-logos tree"
+}
+
+_TNL='
+'
+# tree_fp <dir>: the directory fingerprint (docs/SHIP.md): "<md5> <path>"
+# per regular file (path without "./", LC_ALL=C order of the paths, one
+# newline each), md5 of the whole text. Fails (1, nothing printed) for a
+# missing directory or a link to one, anything but files and directories
+# inside, names with a newline or "|", a file md5sum cannot read. The same
+# function is in u60-ship.sh and u60-recover.sh (scripts/test/tree-fp).
+tree_fp() {
+    [ -d "$1" ] && [ ! -L "$1" ] || return 1
+    (
+        cd "$1" 2>/dev/null || exit 1
+        [ -z "$(find . ! -type f ! -type d 2>/dev/null | head -n 1)" ] || exit 1
+        [ -z "$(find . -name '*|*' 2>/dev/null | head -n 1)" ] || exit 1
+        [ -z "$(find . -name "*$_TNL*" 2>/dev/null | head -n 1)" ] || exit 1
+        _tn=$(find . -type f 2>/dev/null | wc -l | tr -dc 0-9)
+        _tl=$(find . -type f -exec md5sum {} + 2>/dev/null |
+            sed -n 's/^\([0-9a-f]\{32\}\)  \.\/\(.*\)$/\2|\1/p' | LC_ALL=C sort -t '|' -k 1,1)
+        [ "$(printf '%s' "$_tl" | grep -c '|' | tr -dc 0-9)" = "${_tn:-x}" ] || exit 1
+        printf '%s' "$_tl" | awk -F '|' 'NF { print $2 " " $1 }' | md5sum | cut -d' ' -f1
+    )
+}
+
+# md5c <path>: its md5, "-" when it does not exist; cached.
+md5c() {
+    [ -f "$1" ] || { echo -; return; }
+    # size, inode, mtime and ctime to the nanosecond: a same-size rewrite in
+    # the same second still changes the key
+    _mk=$(stat -c '%s:%i:%y:%z' "$1" 2>/dev/null | tr ' ' '_')
+    _mh=$(awk -v p="$1" -v k="$_mk" '$1 == p && $2 == k { print $3; exit }' "$MD5_CACHE" 2>/dev/null)
+    if [ -n "$_mh" ]; then echo "$_mh"; return; fi
+    _mh=$($MD5SUM "$1" 2>/dev/null | cut -d' ' -f1)
+    if [ -n "$_mh" ] && [ -n "$_mk" ] && mkdir -p "${MD5_CACHE%/*}" 2>/dev/null; then
+        { grep -v "^$1 " "$MD5_CACHE" 2>/dev/null; echo "$1 $_mk $_mh"; } >"$MD5_CACHE.$$" 2>/dev/null &&
+            mv -f "$MD5_CACHE.$$" "$MD5_CACHE" 2>/dev/null
+        rm -f "$MD5_CACHE.$$" 2>/dev/null
+    fi
+    echo "${_mh:--}"
+}
+
+# treec <dir>: its fingerprint, "-" when it does not exist, "unreadable" when
+# it cannot be taken. --manifest computes it every time (docs/SHIP.md); the
+# minute-by-minute --tsv keeps it in the md5 cache under a key made of every
+# file's name, size, inode and m/ctime, so unchanged trees are not re-hashed.
+treec() {
+    [ -e "$1" ] || [ -L "$1" ] || { echo -; return; }
+    if [ -z "$TREE_FRESH" ]; then
+        _tk=$( (cd "$1" 2>/dev/null && find . -exec stat -c '%n|%s|%i|%y|%z' {} + 2>/dev/null) | LC_ALL=C sort | md5sum | cut -d' ' -f1)
+        _th=$(awk -v p="tree:$1" -v k="$_tk" '$1 == p && $2 == k { print $3; exit }' "$MD5_CACHE" 2>/dev/null)
+        if [ -n "$_th" ]; then echo "$_th"; return; fi
+    fi
+    _th=$(tree_fp "$1")
+    if [ -n "$_th" ] && [ -z "$TREE_FRESH" ] && mkdir -p "${MD5_CACHE%/*}" 2>/dev/null; then
+        { grep -v "^tree:$1 " "$MD5_CACHE" 2>/dev/null; echo "tree:$1 $_tk $_th"; } >"$MD5_CACHE.$$" 2>/dev/null &&
+            mv -f "$MD5_CACHE.$$" "$MD5_CACHE" 2>/dev/null
+        rm -f "$MD5_CACHE.$$" 2>/dev/null
+    fi
+    echo "${_th:-unreadable}"
+}
+
+# manifest_entries: "<comp|record> <name> <path> <md5> [tree]" for what the
+# manifest says is on the device now (last line per component / name wins);
+# "tree" = a directory, compared by its fingerprint.
+manifest_entries() {
+    awk '
+        function fld(k,   m) {
+            if (match($0, "\"" k "\":\"[^\"]*\"")) { m = substr($0, RSTART, RLENGTH); sub("^\"" k "\":\"", "", m); sub("\"$", "", m); return m }
+            return ""
+        }
+        /^\{"v":1,/ {
+            k = fld("kind")
+            if (k == "ship" || k == "kit") {
+                c = fld("comp"); if (c == "") next
+                s = $0; f = ""
+                while (match(s, /"path":"[^"]*","(md5|tree)":"[^"]*"/)) {
+                    e = substr(s, RSTART, RLENGTH); s = substr(s, RSTART + RLENGTH)
+                    t = (index(e, "\"tree\":") ? " tree" : "")
+                    gsub(/"path":"|"md5":"|"tree":"|"/, "", e); sub(",", " ", e)
+                    f = f "comp " c " " e t "\n"
+                }
+                files[c] = f
+            } else if (k == "record") {
+                n = fld("name"); if (n == "") next
+                if (index($0, "\"tree\":\"")) rec[n] = "record " n " " fld("path") " " fld("tree") " tree\n"
+                else rec[n] = "record " n " " fld("path") " " fld("md5") "\n"
+            }
+        }
+        END { for (c in files) printf "%s", files[c]; for (n in rec) printf "%s", rec[n] }
+    ' "$MANIFEST" 2>/dev/null | sort
+}
+
+phase_word() {
+    case "$1" in
+        staged) echo 已暂存 ;; trial) echo 试跑中 ;; promote) echo 转正中 ;; check) echo 检查中 ;;
+        manifest) echo 写清单中 ;; rollback) echo 退回中 ;; *) echo "$1" ;;
+    esac
+}
+phase_word_en() {
+    case "$1" in
+        staged) echo staged ;; trial) echo "on trial" ;; promote) echo promoting ;; check) echo checking ;;
+        manifest) echo "writing the manifest" ;; rollback) echo "rolling back" ;; *) echo "$1" ;;
+    esac
+}
+# en_why <reason>: " (<reason>)" when it is printable ASCII, else nothing;
+# u60-ship writes its reasons in Chinese, and the English column stays English.
+en_why() {
+    [ -n "$1" ] && [ -z "$(printf '%s' "$1" | tr -d ' -~')" ] && printf ' (%s)' "$1"
+    return 0
+}
+
+# manifest_state: M_LEVEL (ok|warn) and M_TEXT, the first line's verdict
+# (M_TEXT_EN: the same in English, for --tsv2).
+# M_ROWS gets "<same|differs> <kind> <name> <path> <recorded> <actual>" lines.
+manifest_state() {
+    M_ROWS=
+    _ph= _cp= _rs= _tp= _bt=
+    if [ -f "$SHIP_TXN" ]; then
+        while IFS= read -r _l; do
+            case "$_l" in
+                phase=*) _ph=${_l#phase=} ;; comp=*) _cp=${_l#comp=} ;; reason=*) _rs=${_l#reason=} ;;
+                t_phase=*) _tp=${_l#t_phase=} ;; boot_id=*) _bt=${_l#boot_id=} ;;
+            esac
+        done <"$SHIP_TXN"
+    fi
+    case "$_ph" in
+        staged | trial | promote | check | manifest | rollback)
+            _hu= _hp=
+            { read -r _hu _hp _x <"$SHIP_HB"; } 2>/dev/null
+            case "$_hu" in '' | *[!0-9]*) _hu= ;; esac
+            case "$_hp" in '' | *[!0-9]*) _hp= ;; esac
+            _u=$(m_uptime)
+            if [ -n "$_hu" ] && [ -n "$_hp" ] && [ $((_u - _hu)) -le 30 ] &&
+                { tr '\0' ' ' <"$PROC/$_hp/cmdline"; } 2>/dev/null | grep -q 'u60-ship\.sh'; then
+                M_LEVEL=ok M_TEXT="正在上机：$_cp（$(phase_word "$_ph")）"
+                M_TEXT_EN="Deploying $_cp ($(phase_word_en "$_ph"))"
+            else
+                M_LEVEL=warn M_TEXT="上次上机停在半路：$_cp（$(phase_word "$_ph")），guard 或 u60 status 会收尾"
+                M_TEXT_EN="Last deploy stopped midway: $_cp ($(phase_word_en "$_ph")); guard or u60 status will finish it"
+            fi
+            return
+            ;;
+        failed)
+            M_LEVEL=warn M_TEXT="上次上机停在半路，要人处理：$_cp（$_rs）"
+            M_TEXT_EN="Last deploy stopped midway, needs attention: $_cp$(en_why "$_rs")"
+            return
+            ;;
+        manifest_pending)
+            M_LEVEL=warn M_TEXT="清单待补：$_cp 已转正并通过检查，清单还没写上（下次 ship 或 u60 status 补）"
+            M_TEXT_EN="Manifest pending: $_cp is live and checked, not yet in the manifest (next ship or u60 status adds it)"
+            return
+            ;;
+    esac
+    if [ ! -f "$MANIFEST" ]; then
+        M_LEVEL=ok M_TEXT="还没有清单"
+        M_TEXT_EN="No manifest yet"
+        return
+    fi
+    _ents=$(manifest_entries)
+    if [ -z "$_ents" ]; then
+        M_LEVEL=warn M_TEXT="清单读不懂（$MANIFEST）"
+        M_TEXT_EN="Manifest unreadable ($MANIFEST)"
+        return
+    fi
+    _n=0 _bad=0 _first= _first_en=
+    _ifs=$IFS
+    IFS='
+'
+    for _e in $_ents; do
+        IFS=$_ifs
+        set -- $_e
+        if [ "$5" = tree ]; then _act=$(treec "$3"); else _act=$(md5c "$3"); fi
+        _n=$((_n + 1))
+        if [ "$_act" = "$4" ]; then
+            M_ROWS="${M_ROWS}same $1 $2 $3 $4 $_act
+"
+        else
+            M_ROWS="${M_ROWS}differs $1 $2 $3 $4 $_act
+"
+            _bad=$((_bad + 1))
+            [ -n "$_first" ] || _first="${3##*/}（清单 $(printf '%s' "$4" | cut -c1-8)，实际 $(printf '%s' "$_act" | cut -c1-8)）"
+            [ -n "$_first_en" ] || _first_en="${3##*/} (manifest $(printf '%s' "$4" | cut -c1-8), actual $(printf '%s' "$_act" | cut -c1-8))"
+        fi
+    done
+    IFS=$_ifs
+    if [ "$_bad" -gt 0 ]; then
+        M_LEVEL=warn M_TEXT="不一致的是 $_first"
+        M_TEXT_EN="Mismatch: $_first_en"
+        [ "$_bad" -gt 1 ] && M_TEXT="$M_TEXT 等 $_bad 项" && M_TEXT_EN="$M_TEXT_EN and $((_bad - 1)) more"
+        return
+    fi
+    M_LEVEL=ok M_TEXT="一致（$_n 项）"
+    M_TEXT_EN="All match ($_n)"
+    case "$_tp" in '' | *[!0-9]*) _tp= ;; esac
+    _now_boot=$(tr -dc '0-9a-f-' <"$BOOT_ID_FILE" 2>/dev/null)
+    if [ "$_ph" = done ] && [ -n "$_tp" ] && [ "$_bt" = "$_now_boot" ]; then
+        _left=$((OBSERVE - ($(m_uptime) - _tp)))
+        [ "$_left" -gt 0 ] && M_TEXT="观察中（还剩 $(((_left + 59) / 60)) 分钟）：$_cp 刚上机；$M_TEXT" &&
+            M_TEXT_EN="Watching ($(((_left + 59) / 60)) min left): $_cp just deployed; $M_TEXT_EN"
+    fi
+    case "$_ph" in
+        rolledback) M_TEXT="$M_TEXT；上次上机已退回：$_cp（$_rs）" M_TEXT_EN="$M_TEXT_EN; last deploy rolled back: $_cp$(en_why "$_rs")" ;;
+        aborted) M_TEXT="$M_TEXT；上次上机已中止：$_cp（$_rs）" M_TEXT_EN="$M_TEXT_EN; last deploy aborted: $_cp$(en_why "$_rs")" ;;
+    esac
+}
+
+# doctor.sh --manifest: one row per entry, then the verdict (for u60 status).
+manifest_report() {
+    TREE_FRESH=1
+    manifest_state
+    printf '%s' "$M_ROWS" | awk 'NF == 6 { printf "%s\t%s:%s\t%s\t%s\t%s\n", $1, $2, $3, $4, $5, $6 }'
+    # the files we only record but never did
+    record_list | while read -r _n _p _k; do
+        printf '%s' "$M_ROWS" | awk -v n="$_n" '$2 == "record" && $3 == n { f = 1 } END { exit !f }' && continue
+        if [ "$_k" = tree ]; then _a=$(treec "$_p"); else _a=$(md5c "$_p"); fi
+        printf 'unrecorded\trecord:%s\t%s\t-\t%s\n' "$_n" "$_p" "$_a"
+    done
+    printf 'state\t%s\t%s\n' "$M_LEVEL" "$M_TEXT"
+}
+
+if [ "$1" = "--manifest" ]; then
+    manifest_report
+    exit 0
+fi
+
+if [ "$1" = "--tree-fp" ]; then
+    tree_fp "$2"
+    exit $?
+fi
+
 if [ "$1" = "--ledger-selftest" ]; then
     selftest
     exit $?
@@ -732,14 +1034,21 @@ fi
 
 TSV=0
 [ "$1" = "--tsv" ] && TSV=1
+[ "$1" = "--tsv2" ] && TSV=2
+[ "$TSV" = 2 ] && echo "#tsv2"
 NBAD=0
 NWARN=0
 
-# report <ok|warn|bad> <id> <label> <detail>
+# report <ok|warn|bad> <id> <label> <detail> <label_en> <detail_en>
+# English wording: docs/DESIGN.md §1 item 6 and docs/ui-glossary.md §3 (no
+# closing full stop, no "Please", ASCII only; scripts/test/doctor checks).
 report() {
     case "$1" in bad) NBAD=$((NBAD + 1)) ;; warn) NWARN=$((NWARN + 1)) ;; esac
     if [ "$TSV" = 1 ]; then
         printf '%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$(printf '%s' "$4" | tr '\t\n' '  ')"
+    elif [ "$TSV" = 2 ]; then
+        printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$(printf '%s' "$4" | tr '\t\n' '  ')" \
+            "$(printf '%s' "$5" | tr '\t\n' '  ')" "$(printf '%s' "$6" | tr '\t\n' '  ')"
     else
         case "$1" in ok) s='●' ;; warn) s='▲' ;; *) s='■' ;; esac
         printf '  %s %s：%s\n' "$s" "$3" "$4"
@@ -759,20 +1068,24 @@ svc_running() {
     $UBUS call service list "{\"name\":\"$1\"}" 2>/dev/null | grep -q '"running": *true'
 }
 
+# ── the manifest: first line for people, last row for --tsv (R9) ───────────
+manifest_state
+[ "$TSV" != 0 ] || report "$M_LEVEL" manifest "清单" "$M_TEXT" Manifest "$M_TEXT_EN"
+
 # ── boot and firmware ───────────────────────────────────────────────────────
 sync=$($UBUS call zwrt_topsw_daemon.sync get_sync_info '{}' 2>/dev/null | sed -n 's/.*"noSyncModuleName": *"\([^"]*\)".*/\1/p')
 if [ "$sync" = "sync success" ]; then
-    report ok boot-sync "开机同步" "sync success"
+    report ok boot-sync "开机同步" "sync success" "Boot sync" "All stock services registered (sync success)"
 else
-    report bad boot-sync "开机同步" "${sync:-读不到}（有原厂服务没注册：屏幕卡 logo / 不拨号的根源）"
+    report bad boot-sync "开机同步" "${sync:-读不到}（有原厂服务没注册：屏幕卡 logo / 不拨号的根源）" "Boot sync" "${sync:-Unreadable} (a stock service did not register: why the screen sticks on the logo or nothing dials)"
 fi
 
 mode=$($UCI -q get zwrt_zte_dm.dm_update.dm_update_mode)
 poll=$($UCI -q get zwrt_zte_dm.dm_update.TURNOFFPOLLING)
 if [ "$mode" = 0 ] && [ "$poll" = 1 ]; then
-    report ok fota "ZTE 自动升级" "已关闭"
+    report ok fota "ZTE 自动升级" "已关闭" "ZTE auto-update" "Off"
 else
-    report bad fota "ZTE 自动升级" "没有完全关闭（dm_update_mode=${mode:-?} TURNOFFPOLLING=${poll:-?}）；升级会覆盖 rc.local"
+    report bad fota "ZTE 自动升级" "没有完全关闭（dm_update_mode=${mode:-?} TURNOFFPOLLING=${poll:-?}）；升级会覆盖 rc.local" "ZTE auto-update" "Not fully off (dm_update_mode=${mode:-?} TURNOFFPOLLING=${poll:-?}); an update would overwrite rc.local"
 fi
 
 # Whiteouts in the /etc overlay's rc.d silently delete boot links. On a daemon
@@ -785,9 +1098,10 @@ if [ -d "$OVERLAY_RCD" ]; then
         grep -qE "^[^#]*[[:space:]]$n\$" "$DAEMON_CONF" 2>/dev/null && hit="$hit $w"
     done
     if [ -n "$hit" ]; then
-        report bad whiteout "开机链接" "被屏蔽的原厂服务:$hit（删掉 $OVERLAY_RCD 里对应的字符设备）"
+        report bad whiteout "开机链接" "被屏蔽的原厂服务:$hit（删掉 $OVERLAY_RCD 里对应的字符设备）" "Boot links" "Stock services masked:$hit (delete their character devices in $OVERLAY_RCD)"
     else
-        report ok whiteout "开机链接" "开机同步名单里的服务没有被屏蔽${wo:+（另有 $(echo $wo | wc -w) 个无关的：$(echo $wo | tr '\n' ' ')）}"
+        report ok whiteout "开机链接" "开机同步名单里的服务没有被屏蔽${wo:+（另有 $(echo $wo | wc -w) 个无关的：$(echo $wo | tr '\n' ' ')）}" \
+            "Boot links" "No boot-sync service is masked${wo:+ ($(echo $wo | wc -w) unrelated: $(echo $wo))}"
     fi
 fi
 
@@ -812,50 +1126,51 @@ else
     fi
 fi
 if [ "$clk" = 1 ]; then
-    report ok clock "时钟" "已对时（$($DATE '+%Y-%m-%d %H:%M') 设备当地时间）"
+    _dt=$($DATE '+%Y-%m-%d %H:%M')
+    report ok clock "时钟" "已对时（$_dt 设备当地时间）" Clock "Synced ($_dt device local time)"
 elif [ "$up" -lt 300 ]; then
-    report ok clock "时钟" "刚开机，还在对时"
+    report ok clock "时钟" "刚开机，还在对时" Clock "Just booted; still syncing"
 else
-    report warn clock "时钟" "还没对时，告警短信在对时前不发"
+    report warn clock "时钟" "还没对时，告警短信在对时前不发" Clock "Not synced yet; no alert SMS until it is"
 fi
 
 # ── our services ────────────────────────────────────────────────────────────
 for s in zte-agent zwrt-datad u60-guard u60-uid; do
     case "$s" in
-        zte-agent) label="高级后台" ;;
-        zwrt-datad) label="数据服务" ;;
-        u60-guard) label="Wi-Fi 兜底看门狗" ;;
-        u60-uid) label="屏幕守护进程" ;;
+        zte-agent) label="高级后台" label_en="Admin backend" ;;
+        zwrt-datad) label="数据服务" label_en="Data service" ;;
+        u60-guard) label="Wi-Fi 兜底看门狗" label_en="Wi-Fi watchdog" ;;
+        u60-uid) label="屏幕守护进程" label_en="Screen supervisor" ;;
     esac
     if [ ! -x "$INITD/$s" ]; then
-        report warn "svc-$s" "$label" "没装 procd 服务（旧装法：崩了没人拉起）"
+        report warn "svc-$s" "$label" "没装 procd 服务（旧装法：崩了没人拉起）" "$label_en" "No procd service (old install: nothing restarts it after a crash)"
     elif svc_running "$s"; then
         if grep -q "^[^#]*$INITD/$s start" "$RC" 2>/dev/null; then
-            report ok "svc-$s" "$label" "procd 监督中"
+            report ok "svc-$s" "$label" "procd 监督中" "$label_en" "Supervised by procd"
         else
-            report warn "svc-$s" "$label" "在跑，但 rc.local 里没有启动它：重启后不会起来"
+            report warn "svc-$s" "$label" "在跑，但 rc.local 里没有启动它：重启后不会起来" "$label_en" "Running, but rc.local doesn't start it: it won't come back after a reboot"
         fi
     else
-        report bad "svc-$s" "$label" "procd 服务没在运行（logread 看原因；/etc/init.d/$s start）"
+        report bad "svc-$s" "$label" "procd 服务没在运行（logread 看原因；/etc/init.d/$s start）" "$label_en" "procd service not running (see logread; /etc/init.d/$s start)"
     fi
 done
 
 for p in zte-agent zwrt-datad u60pro-devui; do
     n=$(count_comm "$p")
     if [ "$n" -gt 1 ]; then
-        report bad "dup-$p" "$p 实例数" "$n 份在跑（应当只有 1 份）"
+        report bad "dup-$p" "$p 实例数" "$n 份在跑（应当只有 1 份）" "$p instances" "$n running (should be 1)"
     fi
 done
 
 if $WGET -q -T 5 -O /dev/null http://127.0.0.1:9090/ 2>/dev/null; then
-    report ok agent-http "管理网页 :9090" "能访问"
+    report ok agent-http "管理网页 :9090" "能访问" "Web admin :9090" "Reachable"
 else
-    report bad agent-http "管理网页 :9090" "打不开"
+    report bad agent-http "管理网页 :9090" "打不开" "Web admin :9090" "Not reachable"
 fi
 if $WGET -q -T 5 -O /dev/null http://127.0.0.1:9460/state 2>/dev/null; then
-    report ok datad-http "数据服务 :9460" "能访问"
+    report ok datad-http "数据服务 :9460" "能访问" "Data service :9460" "Reachable"
 else
-    report bad datad-http "数据服务 :9460" "读不到 /state（屏幕会没有数据）"
+    report bad datad-http "数据服务 :9460" "读不到 /state（屏幕会没有数据）" "Data service :9460" "Can't read /state (the screen will have no data)"
 fi
 
 # ── Wi-Fi safety net ────────────────────────────────────────────────────────
@@ -863,38 +1178,39 @@ up=$(uptime_s)
 hb=$(cat "$HEARTBEAT" 2>/dev/null)
 case "$hb" in '' | *[!0-9]*) hb= ;; esac
 if [ -z "$hb" ]; then
-    report bad heartbeat "后台心跳" "没有心跳文件（后台没在运行？）"
+    report bad heartbeat "后台心跳" "没有心跳文件（后台没在运行？）" "Admin heartbeat" "No heartbeat file (admin backend not running?)"
 elif [ $((up - hb)) -le 120 ]; then
-    report ok heartbeat "后台心跳" "$((up - hb)) 秒前"
+    report ok heartbeat "后台心跳" "$((up - hb)) 秒前" "Admin heartbeat" "$((up - hb)) s ago"
 else
-    report bad heartbeat "后台心跳" "$((up - hb)) 秒没更新（情景引擎卡住了？看门狗 5 分钟后会接管 Wi-Fi）"
+    report bad heartbeat "后台心跳" "$((up - hb)) 秒没更新（情景引擎卡住了？看门狗 5 分钟后会接管 Wi-Fi）" "Admin heartbeat" "No update for $((up - hb)) s (scenario engine stuck? The watchdog takes over Wi-Fi after 5 min)"
 fi
 if [ -f "$MARKER" ]; then
-    report warn takeover "Wi-Fi 看门狗" "接管中：情景固定暂停，后台稳定 10 分钟后自动交回"
+    report warn takeover "Wi-Fi 看门狗" "接管中：情景固定暂停，后台稳定 10 分钟后自动交回" "Wi-Fi watchdog" "In control: scenarios paused; handed back after 10 min of stable admin backend"
 fi
 aps=$($PS 2>/dev/null | awk '/\/hostapd( |$)/ && !/awk/ {n++} END {print n+0}')
 if [ "$aps" -gt 0 ]; then
-    report ok wifi "Wi-Fi" "在广播"
+    report ok wifi "Wi-Fi" "在广播" Wi-Fi "Broadcasting"
 else
     # 情景有意关掉的（在家）不算问题：问后台当前情景是不是关 Wi-Fi 的那种
     pub=$($WGET -q -T 3 -O - http://127.0.0.1:9090/api/public/status 2>/dev/null)
     case "$pub" in
-        *'"wifi_off":true'*) report ok wifi "Wi-Fi" "当前情景关着 Wi-Fi（按设定）" ;;
-        *) report warn wifi "Wi-Fi" "没有在广播，当前情景也没要求关" ;;
+        *'"wifi_off":true'*) report ok wifi "Wi-Fi" "当前情景关着 Wi-Fi（按设定）" Wi-Fi "Off by the current scenario (as set)" ;;
+        *) report warn wifi "Wi-Fi" "没有在广播，当前情景也没要求关" Wi-Fi "Not broadcasting, and the current scenario doesn't turn it off" ;;
     esac
 fi
 
 # ── screen ──────────────────────────────────────────────────────────────────
 if [ -f "$UID_STATE/gave-up" ]; then
-    report bad screen "触屏界面" "反复启动失败，已换回原厂界面（长按屏幕右下角 3 秒，或 echo devui > /tmp/u60-uid.ctl）"
+    report bad screen "触屏界面" "反复启动失败，已换回原厂界面（长按屏幕右下角 3 秒，或 echo devui > /tmp/u60-uid.ctl）" \
+        "Screen UI" "Kept failing to start; stock UI on (hold bottom-right 3 s, or echo devui > /tmp/u60-uid.ctl)"
 elif [ "$(cat "$UID_WANT" 2>/dev/null)" = vendor ]; then
-    report ok screen "触屏界面" "按要求显示原厂界面"
+    report ok screen "触屏界面" "按要求显示原厂界面" "Screen UI" "Stock UI on, as asked"
 elif [ "$(count_comm u60pro-devui)" -ge 1 ]; then
     a=$(cat "$UID_STATE/attempts" 2>/dev/null)
-    case "$a" in '' | 0) report ok screen "触屏界面" "运行中" ;;
-        *) report ok screen "触屏界面" "运行中（刚启动，稳定 10 分钟后确认）" ;; esac
+    case "$a" in '' | 0) report ok screen "触屏界面" "运行中" "Screen UI" "Running" ;;
+        *) report ok screen "触屏界面" "运行中（刚启动，稳定 10 分钟后确认）" "Screen UI" "Running (just started; confirmed after 10 min stable)" ;; esac
 else
-    report bad screen "触屏界面" "没在运行"
+    report bad screen "触屏界面" "没在运行" "Screen UI" "Not running"
 fi
 
 # ── alerts, crashes, storage ────────────────────────────────────────────────
@@ -905,43 +1221,46 @@ if [ -f "$ALERTS/queue" ]; then
     unread=$(awk -F'\t' -v r="$read_seq" 'NF == 5 && $1 + 0 > r + 0' "$ALERTS/queue" | wc -l)
 fi
 if [ "$unread" -gt 0 ]; then
-    report warn alerts "告警" "$unread 条未读（管理网页「系统 → 告警」）"
+    report warn alerts "告警" "$unread 条未读（管理网页「系统 → 告警」）" Alerts "$unread unread (Alerts in web admin)"
 else
-    report ok alerts "告警" "没有未读"
+    report ok alerts "告警" "没有未读" Alerts "None unread"
 fi
 if [ -s "$ALERTS/sms-to" ]; then
-    report ok sms "短信告警" "已配置"
+    report ok sms "短信告警" "已配置" "Alert SMS" "Set up"
 else
-    report warn sms "短信告警" "没配置号码：后台挂了你不会知道"
+    report warn sms "短信告警" "没配置号码：后台挂了你不会知道" "Alert SMS" "No number set: you won't hear if the admin backend dies"
 fi
 
 recent=$(find "$CRASH" -name '*.log' -mtime -1 2>/dev/null | wc -l)
 if [ "$recent" -gt 0 ]; then
     # 每次崩溃都会记一条告警；告警都读过了，就只记一笔、不再算「注意」
     if [ "$unread" -gt 0 ]; then
-        report warn crashes "崩溃记录" "最近 24 小时 $recent 份（$CRASH）"
+        report warn crashes "崩溃记录" "最近 24 小时 $recent 份（$CRASH）" "Crash logs" "$recent in the last 24h ($CRASH)"
     else
-        report ok crashes "崩溃记录" "最近 24 小时 $recent 份，对应告警已读"
+        report ok crashes "崩溃记录" "最近 24 小时 $recent 份，对应告警已读" "Crash logs" "$recent in the last 24h; their alerts read"
     fi
 else
-    report ok crashes "崩溃记录" "最近 24 小时没有"
+    report ok crashes "崩溃记录" "最近 24 小时没有" "Crash logs" "None in the last 24h"
 fi
 
 # Last line, counted from the end: a long device name makes df wrap its row.
 free_kb=$($DF -k "$DATA_DIR" 2>/dev/null | tail -n 1 | awk '{print $(NF - 2)}')
 case "$free_kb" in '' | *[!0-9]*) free_kb= ;; esac
 if [ -z "$free_kb" ]; then
-    report warn disk "/data 空间" "读不到"
+    report warn disk "/data 空间" "读不到" "/data space" "Unreadable"
 elif [ "$free_kb" -lt 20480 ]; then
-    report bad disk "/data 空间" "只剩 $((free_kb / 1024)) MB"
+    report bad disk "/data 空间" "只剩 $((free_kb / 1024)) MB" "/data space" "Only $((free_kb / 1024)) MB left"
 elif [ "$free_kb" -lt 102400 ]; then
-    report warn disk "/data 空间" "只剩 $((free_kb / 1024)) MB"
+    report warn disk "/data 空间" "只剩 $((free_kb / 1024)) MB" "/data space" "Only $((free_kb / 1024)) MB left"
 else
-    report ok disk "/data 空间" "剩 $((free_kb / 1024)) MB"
+    report ok disk "/data 空间" "剩 $((free_kb / 1024)) MB" "/data space" "$((free_kb / 1024)) MB free"
 fi
 
 _sb=$(standby_check)
-report "${_sb%%	*}" standby "待机" "${_sb#*	}"
+_sbe=
+[ "$TSV" = 2 ] && _sbe=$(standby_check en)
+report "${_sb%%	*}" standby "待机" "${_sb#*	}" Standby "${_sbe#*	}"
+[ "$TSV" != 0 ] && report "$M_LEVEL" manifest "清单" "$M_TEXT" Manifest "$M_TEXT_EN"
 
 if [ "$TSV" = 0 ]; then
     echo

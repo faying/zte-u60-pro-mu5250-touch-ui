@@ -5,6 +5,7 @@
  */
 #include "estimate.h"
 #include "json.h"
+#include "lang.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -12,9 +13,9 @@
 
 static void dur(long m, char *out, size_t cap)
 {
-    if (m < 60) snprintf(out, cap, "%ld 分钟", m);
-    else if (m % 60 == 0) snprintf(out, cap, "%ld 小时", m / 60);
-    else snprintf(out, cap, "%ld 小时 %ld 分", m / 60, m % 60);
+    if (m < 60) snprintf(out, cap, TR("%ld 分钟"), m);
+    else if (m % 60 == 0) snprintf(out, cap, TR("%ld 小时"), m / 60);
+    else snprintf(out, cap, TR("%ld 小时 %ld 分"), m / 60, m % 60);
 }
 
 void est_text(est_t e, int target_pct, char *out, size_t cap)
@@ -24,19 +25,19 @@ void est_text(est_t e, int target_pct, char *out, size_t cap)
     switch (e.kind) {
     case EST_CHARGING:
         dur(e.minutes, d, sizeof d);
-        if (target_pct >= 100) snprintf(out, cap, "约 %s充满", d);
-        else snprintf(out, cap, "约 %s充到 %d%%", d, target_pct);
+        if (target_pct >= 100) snprintf(out, cap, TR("约 %s充满"), d);
+        else snprintf(out, cap, TR("约 %s充到 %d%%"), d, target_pct);
         break;
     case EST_DISCHARGING:
         dur(e.minutes, d, sizeof d);
-        snprintf(out, cap, "约可用 %s", d);
+        snprintf(out, cap, TR("约可用 %s"), d);
         break;
     case EST_REACHED:
-        if (target_pct >= 100) snprintf(out, cap, "已充满");
-        else snprintf(out, cap, "已到上限 %d%%", target_pct);
+        if (target_pct >= 100) snprintf(out, cap, "%s", TR("已充满"));
+        else snprintf(out, cap, TR("已到上限 %d%%"), target_pct);
         break;
     case EST_PAUSED:
-        snprintf(out, cap, "已到上限，暂停充电");
+        snprintf(out, cap, "%s", TR("已到上限，暂停充电"));
         break;
     default:
         snprintf(out, cap, "—");

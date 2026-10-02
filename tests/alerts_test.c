@@ -63,6 +63,33 @@ int main(void)
         CHECK("no label (older agent): says what kind", !strcmp(a.label, "其他告警（x-new）") && !a.unread);
     }
 
+    {   /* English: label_en / detail_en from the agent; null or missing → the Chinese */
+        char ev[512];
+        alert_item_t a;
+        lang_set_en(1);
+        snprintf(ev, sizeof ev, "[{\"seq\":5,\"time\":null,\"uptime\":1,\"kind\":\"agent-crash\","
+                 "\"label\":\"管理后台意外退出\",\"label_en\":\"Admin backend (zte-agent) exited unexpectedly\","
+                 "\"text\":\"t\",\"unread\":true},"
+                 "{\"seq\":4,\"time\":null,\"uptime\":1,\"kind\":\"y\",\"label\":\"中文\",\"label_en\":\"\","
+                 "\"text\":\"u\",\"unread\":false}]");
+        parse_events(ev);
+        alerts_get(0, &a);
+        CHECK("en: label_en", !strcmp(a.label, "Admin backend (zte-agent) exited unexpectedly"));
+        alerts_get(1, &a);
+        CHECK("en: empty label_en → Chinese", !strcmp(a.label, "中文"));
+        snprintf(d, sizeof d, "{\"bad\":1,\"checked_at\":1,\"checks\":["
+                 "{\"detail\":\"没在运行\",\"detail_en\":\"Not running\",\"id\":\"screen\",\"label\":\"触屏界面\","
+                 "\"label_en\":\"Screen UI\",\"level\":\"bad\"},"
+                 "{\"detail\":\"空间不够\",\"detail_en\":null,\"id\":\"disk\",\"label\":\"/data 空间\","
+                 "\"label_en\":null,\"level\":\"warn\"}],\"crashlogs\":[]}");
+        parse_checks(d);
+        health_get(0, &h);
+        CHECK("en: health label_en/detail_en", !strcmp(h.label, "Screen UI") && !strcmp(h.detail, "Not running"));
+        health_get(1, &h);
+        CHECK("en: null *_en → Chinese", !strcmp(h.label, "/data 空间") && !strcmp(h.detail, "空间不够"));
+        lang_set_en(0);
+    }
+
     printf("\npassed %d, failed %d\n", pass, fail);
     return fail != 0;
 }

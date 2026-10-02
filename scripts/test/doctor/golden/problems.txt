@@ -1,3 +1,4 @@
+  ● 清单：还没有清单
   ■ 开机同步：zte_topsw_devui（有原厂服务没注册：屏幕卡 logo / 不拨号的根源）
   ■ ZTE 自动升级：没有完全关闭（dm_update_mode=1 TURNOFFPOLLING=1）；升级会覆盖 rc.local
   ● 开机链接：开机同步名单里的服务没有被屏蔽

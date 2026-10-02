@@ -28,9 +28,12 @@ typedef struct {
     char err[80];
 } ni_exit_t;
 
+/* name / country: in English mode the agent's operator_en / country_en
+ * (netinfo.c picks at parse time); country_iso is for comparing ("CN"). */
 typedef struct {
     char name[48];
     char country[24];
+    char country_iso[8];    /* "CN" / "JP"…；"" = 不知道或旧 agent */
     char mcc[4], mnc[4];
 } ni_oper_t;
 
@@ -38,6 +41,7 @@ typedef struct {
     char plmn[8];
     char name[48];
     char country[24];
+    char country_iso[8];
     char rat[8];            /* 原样传回 /api/modem/register */
     char status[4];         /* AT+COPS 惯例：1 可用 2 当前 3 禁止（未实测） */
 } ni_scan_op_t;
@@ -74,8 +78,8 @@ typedef struct {
     char name[32];
     int  wifi_off;          /* 这个情景会关 Wi-Fi（在家） */
     int  abroad;
-    char when[112];         /* 什么时候进入（agent 按配置写好的中文） */
-    char does[112];         /* 进入后改什么 */
+    char when[160];         /* 什么时候进入（agent 按配置写好的中文；英文模式是 list_en 的 when_en） */
+    char does[160];         /* 进入后改什么 */
 } ni_scene_t;
 
 typedef struct {
@@ -90,15 +94,16 @@ typedef struct {
 
     char guard_phase[16];   /* idle registering ok reverting reverted revert_failed */
     char guard_target[8];
-    char guard_reason[96];
+    char guard_reason[192]; /* 英文模式是 reason_en（agent 最长约 120 字符） */
+    char guard_reason_code[24]; /* manual_auto / register_failed …；旧 agent 没有 → "" */
 
     char scan_state[12];    /* idle scanning done error */
-    char scan_err[80];
+    char scan_err[128];
     int  nops;
     ni_scan_op_t ops[NI_MAX_OPS];
 
     char nbr_state[12];
-    char nbr_err[80];
+    char nbr_err[96];
     long nbr_at;
     int  ncells;
     ni_cell_t cells[NI_MAX_CELLS];

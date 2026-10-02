@@ -34,7 +34,7 @@ void agent_health(agent_health_t *out);
 typedef struct {
     int  available;      /* agent 有回应且引擎已配置 —— 否则卡片不出现 */
     int  enabled;        /* 引擎开着 */
-    char name[48];       /* 当前情景名（在家 / 外出 / 国外），刚开机还没判定时为空 */
+    char name[48];       /* 当前情景名（在家 / 外出 / 国外；英文模式是 agent 的 name_en），刚开机还没判定时为空 */
     int  wifi_off;       /* 当前情景把 AP 关了 */
     char pin[48];        /* 被手动固定到的情景 id，"" = 自动 */
     long last_switch;    /* 墙钟秒，0 = 从未切换 */

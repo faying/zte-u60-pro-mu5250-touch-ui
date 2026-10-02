@@ -4,7 +4,10 @@
 #   scripts/test/render/build.sh
 #   U60_DEVICE_FONTS=<dir with ZTEZhengYuan.ttf, Roboto.ttf> \
 #   U60_NUNITO_DIR=<dir with Nunito-600/700/800.ttf> \
-#   scripts/test/render/render.sh [--write-golden] [--png DIR] [--dump] [--cjk-fallback] [scene…]
+#   scripts/test/render/render.sh [--write-golden] [--png DIR] [--dump] [--cjk-fallback] [--lang zh|en|both] [scene…]
+#
+# --lang (default both): the screen in Chinese, in English (devui.conf
+# lang=en: goldens golden/<scene>-<theme>-en.txt, expect-en.txt), or both.
 #
 # --cjk-fallback: no device CJK font, only the bundled subset
 # ($U60_NUNITO_DIR/u60-cjk-fallback.ttf, scripts/fonts/build-cjk-fallback.sh).
@@ -21,6 +24,7 @@ BIN=scripts/test/render/render_test
 mode=--golden
 png=
 dump=
+langs="zh en"
 scenes=
 while [ $# -gt 0 ]; do
     case $1 in
@@ -28,6 +32,7 @@ while [ $# -gt 0 ]; do
         --png) png=$2; shift ;;
         --dump) dump=--dump ;;
         --cjk-fallback) mode=none ;;
+        --lang) case $2 in zh|en) langs=$2 ;; both) langs="zh en" ;; *) echo "--lang zh|en|both"; exit 2 ;; esac; shift ;;
         *) scenes="$scenes $1" ;;
     esac
     shift
@@ -41,6 +46,7 @@ cjk=/fonts/dev/ZTEZhengYuan.ttf
 if [ "$mode" = none ]; then
     [ -f "$U60_NUNITO_DIR/u60-cjk-fallback.ttf" ] || { echo "  FAIL no u60-cjk-fallback.ttf in U60_NUNITO_DIR (scripts/fonts/build-cjk-fallback.sh)"; exit 1; }
     cjk=/nonexistent/ZTEZhengYuan.ttf
+    langs=zh
 fi
 [ -n "$scenes" ] || scenes="good weak nosignal datad-down loading nosim abroad lowbat full-charging long-names empty nsa lte 3g nodata 5ga edge crowd today us jp nosvc bandlock datad-silent old-datad"
 pngmount=
@@ -50,19 +56,22 @@ exec docker run --rm --platform linux/arm64 -v "$ROOT":/src:rw $pngmount \
     -v "$U60_DEVICE_FONTS":/fonts/dev:ro -v "$U60_NUNITO_DIR":/fonts/nunito:ro \
     -e U60_DEVUI_CJK_FONT=$cjk -e U60_DEVUI_ROBOTO=/fonts/dev/Roboto.ttf \
     -e U60_DEVUI_FONT_DIR=/fonts/nunito -w /src busybox:latest sh -c '
-rc=0; mode=$1; png=$2; dump=$3; shift 3
-for s in "$@"; do for t in light dark; do
-    g=tests/render/golden/$s-$t.txt
+rc=0; mode=$1; png=$2; dump=$3; langs=$4; shift 4
+for lg in $langs; do for s in "$@"; do for t in light dark; do
+    sfx=; la=; ex=tests/render/expect.txt
+    [ $lg = en ] && { sfx=-en; la=--lang=en; ex=tests/render/expect-en.txt; }
+    g=tests/render/golden/$s-$t$sfx.txt
     p=; [ -n "$png" ] && p=--png=/png
     gs=$mode=$g; [ "$mode" = none ] && gs=
-    timeout 120 ./'"$BIN"' --scene=$s --theme=$t $gs --expect=tests/render/expect.txt $p $dump 2>/tmp/err.$s.$t
+    timeout 120 ./'"$BIN"' --scene=$s --theme=$t $la $gs --expect=$ex $p $dump 2>/tmp/err.$s.$t
     r=$?
     if [ "$mode" = none ] && ! grep -q "fonts cjk=bundled" /tmp/err.$s.$t; then rc=1; echo "  FAIL [$s/$t] bundled CJK font not used: $(grep "fonts cjk" /tmp/err.$s.$t)"; fi
-    [ $r -eq 0 ] || { rc=1; [ $r -ge 124 ] && echo "  FAIL [$s/$t] crashed or hung (exit $r)"; tail -5 /tmp/err.$s.$t; }
-done; done
+    if [ $lg = en ] && ! grep -q "text=nunito" /tmp/err.$s.$t; then rc=1; echo "  FAIL [$s/$t/en] body text not in Nunito: $(grep "fonts cjk" /tmp/err.$s.$t)"; fi
+    [ $r -eq 0 ] || { rc=1; [ $r -ge 124 ] && echo "  FAIL [$s/$t$sfx] crashed or hung (exit $r)"; tail -5 /tmp/err.$s.$t; }
+done; done; done
 # right after a theme switch (--tab=4): a real tap on the other appearance must switch
 for t in light dark; do
     timeout 60 ./'"$BIN"' --scene=good --theme=$t --launched-tab=4 2>/dev/null | grep -q "exec calls 1" \
         || { rc=1; echo "  FAIL [good/$t] tap after a --tab=4 start did not switch"; }
 done
-exit $rc' sh "$mode" "$png" "$dump" $scenes
+exit $rc' sh "$mode" "$png" "$dump" "$langs" $scenes

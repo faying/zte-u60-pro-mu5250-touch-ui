@@ -16,3 +16,4 @@ ok	sms	短信告警	已配置
 ok	crashes	崩溃记录	最近 24 小时没有
 ok	disk	/data 空间	剩 1171 MB
 ok	standby	待机	未校准（屏幕熄灭 30~60 分钟后执行 doctor.sh --calibrate-standby）
+ok	manifest	清单	还没有清单

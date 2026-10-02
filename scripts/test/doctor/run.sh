@@ -44,8 +44,41 @@ X
         DOC_DATE=$T/bin/date DOC_DF=$T/bin/df DOC_UID_WANT=$T/uid.want DOC_CLOCK_OK=$T/clock-ok DOC_WALL_LAST=$T/wall.last \
         DOC_FP=$T/fp DOC_FP_CHANGED=$T/fp-changed DOC_TS_TUNING=$T/tuning.env
 }
-run() { sh "$SCRIPTS/doctor.sh" --tsv >"$T/out"; RC=$?; }
+# Every run also checks --tsv2 against --tsv (docs/designs/ui-english.md R2):
+# first line "#tsv2", then exactly 6 columns, columns 1-4 equal to the --tsv
+# row byte for byte, the English columns 5-6 filled, printable ASCII, no
+# "Please", no closing full stop (docs/DESIGN.md §1 item 6); same exit code.
+run1() { sh "$SCRIPTS/doctor.sh" --tsv >"$T/out"; RC=$?; }
+run() { run1; tsv2_check; }
+tsv2_lint() { # tsv2_lint <--tsv output> <--tsv2 output>: prints what is wrong
+    [ "$(head -n 1 "$2")" = "#tsv2" ] || echo "first line is not #tsv2"
+    tail -n +2 "$2" | awk -F'\t' 'NF != 6 { print "not 6 columns: " $0 }'
+    tail -n +2 "$2" | cut -f1-4 | cmp -s - "$1" || echo "columns 1-4 differ from --tsv"
+    tail -n +2 "$2" | awk -F'\t' '$5 == "" || $6 == "" { print "English missing: " $2 }'
+    tail -n +2 "$2" | cut -f5,6 | tr -d ' -~\t\n' | grep -q . && echo "English columns not printable ASCII"
+    tail -n +2 "$2" | cut -f5,6 | grep -i -q please && echo "English says Please"
+    tail -n +2 "$2" | awk -F'\t' '$5 ~ /\.$/ || $6 ~ /\.$/ { print "closing full stop: " $2 }'
+}
+TSV2_N=0
+tsv2_check() {
+    TSV2_N=$((TSV2_N + 1))
+    sh "$SCRIPTS/doctor.sh" --tsv2 >"$T/out2"; RC2=$?
+    TSV2_BAD=$(tsv2_lint "$T/out" "$T/out2" | head -n 5)
+    check "--tsv2 #$TSV2_N agrees with --tsv, English clean" '[ -z "$TSV2_BAD" ] && [ "$RC2" = "$RC" ]'
+    [ -z "$TSV2_BAD" ] || echo "       $TSV2_BAD"
+}
 level() { awk -F'\t' -v id="$1" '$2 == id {print $1}' "$T/out"; }
+
+echo "the --tsv2 lint itself"
+T=$(mktemp -d)
+printf 'ok\ta\t甲\t乙\nok\tb\t甲\t乙\nok\tc\t甲\t乙\nok\td\t甲\t乙\n' >"$T/t1"
+printf 'old doctor\nok\ta\t甲\t乙\tA\t中文\nok\tb\t甲\t乙\tB\tDone.\nok\tc\t甲\t乙\tC\tPlease wait\nok\td\t甲\t乙\tD\n' >"$T/t2"
+L=$(tsv2_lint "$T/t1" "$T/t2")
+has_all() { for w in "first line is not #tsv2" "not 6 columns" "not printable ASCII" "says Please" "closing full stop: b"; do case "$L" in *"$w"*) ;; *) return 1 ;; esac; done; }
+check "it catches a missing marker, 5 columns, Chinese, Please, a full stop" has_all
+{ echo "#tsv2"; printf 'ok\ta\t甲\t乙\tA\tFine (x 1)\n'; } >"$T/t2"; printf 'ok\ta\t甲\t乙\n' >"$T/t1"
+check "and passes a clean one" '[ -z "$(tsv2_lint "$T/t1" "$T/t2")" ]'
+rm -rf "$T"
 
 echo "healthy device"
 setup; run
@@ -377,6 +410,15 @@ check "everything in place: every item PASS, exit 0" '[ $RC = 0 ] && ! grep -q "
 check "the link as the watcher sees it: an address and the default route" 'grep -q "^PASS ip -4 -o addr 看得到 rmnet_data0 的地址" $T/st && grep -q "^PASS 默认路由走 rmnet_data0" $T/st'
 check "it names the device tools u60-guard leans on" 'grep -q "^PASS dd iflag=skip_bytes" $T/st && grep -q "^PASS awk 的 mktime" $T/st && grep -q "^PASS flock -n" $T/st && grep -q "^PASS jsonfilter 多个 -e" $T/st && grep -q "^PASS wget -T 2" $T/st'
 check "the ledger is left as it was: no test file, nothing else written" '[ -z "$(ls -A $T/ledger)" ]'
+mv "$T/key.log" "$T/key.log.0"
+: >"$T/key.log"
+self
+check "this boot's reason code only in key.log.0 (rotated): PASS" '[ $RC = 0 ] && grep -q "^PASS key.log 的原因码（这次开机 1150）" $T/st'
+printf '2026-09-29 10:00:00 : reboot_reason_code=1185!!! \n' >"$T/key.log"
+self
+check "both files: the newest code (key.log) wins" 'grep -q "^PASS key.log 的原因码（这次开机 1185）" $T/st'
+rm -f "$T/key.log.0"
+printf '2026-09-28 10:00:00 : reboot_reason_code=1150!!! \n' >"$T/key.log"
 echo "10 1 0" >"$T/lt/w.pos" # a watcher that stays behind the test line
 self
 check "watcher running but not past the test line: FAIL" '[ $RC != 0 ] && grep -q "^FAIL 观察循环读过了测试行" $T/st'
@@ -391,11 +433,168 @@ check "no reason code, no capture file, no default route: each a FAIL, the rest 
 unset DOC_LEDGER_DIR DOC_CRASHCAP_DIR DOC_KEYLOG DOC_MSS_RECOVERY DOC_BOOT_ID_FILE DOC_JSONFILTER DOC_LEDGER_TMP DOC_SELFTEST_WAIT DOC_KMSG DOC_IP DOC_ROUTE
 rm -rf "$T"
 
+echo "the device manifest (docs/SHIP.md): first line, last --tsv row, --manifest"
+msetup() {
+    setup
+    export DOC_MANIFEST=$T/m.jsonl DOC_SHIP_TXN=$T/txn DOC_SHIP_HB=$T/hb.ship DOC_MD5_CACHE=$T/md5c/cache \
+        DOC_TS_DIR=$T/ts DOC_BOOT_ID_FILE=$T/bootid DOC_MD5SUM=$T/bin/md5log
+    echo bbbb-0000 >"$T/bootid"
+    printf '#!/bin/sh\necho "$1" >>%s/md5.calls\nexec md5sum "$@"\n' "$T" >"$T/bin/md5log"
+    chmod +x "$T/bin/md5log"
+    printf 'datad build A\n' >"$T/datad"
+    DM=$(md5sum "$T/datad" | cut -d' ' -f1)
+    RM=$(md5sum "$T/rc" | cut -d' ' -f1)
+}
+mship() { # mship <comp> <path> <md5> [format]
+    printf '{"v":1,"kind":"ship","comp":"%s","txn":"20260930-120000-%s","commit":"abc1234","format":1,"mac_time":1790000000,"boot_id":"x","uptime":5,"files":[{"path":"%s","md5":"%s","prev":"%s.prev-x"}],"state":[]}\n' "$1" "$1" "$2" "$3" "$2" >>"$T/m.jsonl"
+}
+mrec() { # mrec <name> <path> <md5>
+    printf '{"v":1,"kind":"record","name":"%s","path":"%s","md5":"%s","mac_time":1790000000,"boot_id":"x","uptime":5,"why":"t"}\n' "$1" "$2" "$3" >>"$T/m.jsonl"
+}
+mline() { awk -F'\t' '$2 == "manifest" {print $1 "|" $4}' "$T/out"; }
+txnf() { printf 'v=1\ntxn=20260930-120000-datad\ncomp=datad\nphase=%s\nreason=%s\nboot_id=%s\nt_phase=%s\nend=1\n' "$1" "$2" "${3:-bbbb-0000}" "${4:-900}" >"$T/txn"; }
+
+msetup; mship datad "$T/datad" "$DM"; mrec rc.local "$T/rc" "$RM"; run
+check "manifest matches: ok, counted" '[ "$(mline)" = "ok|一致（2 项）" ]'
+check "the manifest row is the last --tsv row" '[ "$(tail -n 1 $T/out | cut -f2)" = manifest ]'
+sh "$SCRIPTS/doctor.sh" >"$T/human"
+check "people see it first" '[ "$(head -n 1 $T/human)" = "  ● 清单：一致（2 项）" ]'
+printf 'datad build B\n' >"$T/datad"; run
+check "a changed file: warn, names it with both md5s" "[ \"\$(mline)\" = \"warn|不一致的是 datad（清单 $(echo $DM | cut -c1-8)，实际 \$(md5sum $T/datad | cut -c1-8)）\" ]"
+echo "# edited" >>"$T/rc"; run
+check "two changed: says how many" 'mline | grep -q "^warn|不一致的是 .* 等 2 项$"'
+sh "$SCRIPTS/doctor.sh" >"$T/human"
+check "people: the warn line first, and counted" 'head -n 1 $T/human | grep -q "^  ▲ 清单：不一致的是" && grep -q "需要注意" $T/human'
+rm -rf "$T"
+
+msetup; printf 'datad build B\n' >"$T/datad"; mship datad "$T/datad" "$DM"; mship datad "$T/datad" "$(md5sum $T/datad | cut -d' ' -f1)"; run
+check "the last line of a component wins" '[ "$(mline)" = "ok|一致（1 项）" ]'
+mrec tailscaled "$T/ts/tailscaled" -; run
+check "recorded as absent and still absent: consistent" '[ "$(mline)" = "ok|一致（2 项）" ]'
+mkdir -p "$T/ts"; echo bin >"$T/ts/tailscaled"; run
+check "recorded as absent, now there: differs" 'mline | grep -q "^warn|不一致的是 tailscaled（清单 -，实际 "'
+rm -rf "$T"
+
+msetup; echo 'garbage {' >"$T/m.jsonl"; run
+check "unreadable manifest: warn" 'mline | grep -q "^warn|清单读不懂"'
+rm -rf "$T"
+
+msetup; mship datad "$T/datad" "$DM"
+txnf manifest_pending x; run
+check "manifest owed: warn" 'mline | grep -q "^warn|清单待补：datad 已转正"'
+txnf failed '退回不完整'; run
+check "failed transaction: warn, needs a person" '[ "$(mline)" = "warn|上次上机停在半路，要人处理：datad（退回不完整）" ]'
+txnf check ''; run
+check "half-way, no executor: warn" 'mline | grep -q "^warn|上次上机停在半路：datad（检查中）"'
+mkdir -p "$T/proc/700"; printf 'sh\000/data/u60-guard/u60-ship.sh\000run\000' >"$T/proc/700/cmdline"; echo "995 700 20260930-120000-datad check" >"$T/hb.ship"; run
+check "half-way with a live executor: ok, shipping now" '[ "$(mline)" = "ok|正在上机：datad（检查中）" ]'
+txnf done '' bbbb-0000 900; run
+check "done 100 s ago, same boot: observing, 59 min left" '[ "$(mline)" = "ok|观察中（还剩 59 分钟）：datad 刚上机；一致（1 项）" ]'
+txnf done '' cccc-0000 900; run
+check "done in another boot: just consistent" '[ "$(mline)" = "ok|一致（1 项）" ]'
+txnf rolledback '开机时已退回（断电时在 check）'; run
+check "last ship rolled back: ok, said" '[ "$(mline)" = "ok|一致（1 项）；上次上机已退回：datad（开机时已退回（断电时在 check））" ]'
+rm -rf "$T"
+
+msetup; mship datad "$T/datad" "$DM"; mrec rc.local "$T/rc" "$RM"
+sh "$SCRIPTS/doctor.sh" --manifest >"$T/man"; RCM=$?
+check "--manifest: a row per entry" "[ \$RCM = 0 ] && grep -qx \"same	comp:datad	$T/datad	$DM	$DM\" $T/man && grep -qx \"same	record:rc.local	$T/rc	$RM	$RM\" $T/man"
+check "--manifest: files never recorded are listed as such" "grep -qx \"unrecorded	record:init.d/zte-agent	$T/initd/zte-agent	-	\$(md5sum $T/initd/zte-agent | cut -d' ' -f1)\" $T/man && grep -qx 'unrecorded	record:tuning.env	$T/tuning.env	-	-' $T/man"
+check "--manifest: the verdict last" '[ "$(tail -n 1 $T/man)" = "state	ok	一致（2 项）" ]'
+rm -rf "$T"
+
+# directories in the manifest (docs/SHIP.md 第二期): fingerprints, fresh for
+# --manifest, cached for the minute-by-minute --tsv
+msetup
+export DOC_DEVUI_DIR=$T/devui
+mkdir -p "$T/admin/_next/static" "$T/devui/fonts"
+printf 'page\n' >"$T/admin/index.html"
+printf 'js\n' >"$T/admin/_next/static/a b.js"
+printf 'font\n' >"$T/devui/fonts/x.ttf"
+AF=$(sh "$SCRIPTS/doctor.sh" --tree-fp "$T/admin")
+FF=$(sh "$SCRIPTS/doctor.sh" --tree-fp "$T/devui/fonts")
+printf '{"v":1,"kind":"ship","comp":"web","txn":"20260930-120000-web","commit":"abc1234","format":1,"mac_time":1790000000,"boot_id":"x","uptime":5,"files":[{"path":"%s","tree":"%s","prev":"%s.prev-20260930-120000-web"}],"state":[]}\n' "$T/admin" "$AF" "$T/admin" >>"$T/m.jsonl"
+printf '{"v":1,"kind":"record","name":"devui-fonts","path":"%s","tree":"%s","mac_time":1790000000,"boot_id":"x","uptime":5,"why":""}\n' "$T/devui/fonts" "$FF" >>"$T/m.jsonl"
+sh "$SCRIPTS/doctor.sh" --manifest >"$T/man"
+check "directories: --manifest rows by fingerprint" "grep -qx \"same	comp:web	$T/admin	$AF	$AF\" $T/man && grep -qx \"same	record:devui-fonts	$T/devui/fonts	$FF	$FF\" $T/man"
+check "directories: the logos never recorded, listed as such" "grep -qx 'unrecorded	record:devui-logos	$T/devui/operator-logos	-	-' $T/man"
+check "directories: consistent" '[ "$(tail -n 1 $T/man)" = "state	ok	一致（2 项）" ]'
+run
+check "directories: --tsv agrees, fingerprints cached" '[ "$(mline)" = "ok|一致（2 项）" ] && grep -q "^tree:$T/admin " $T/md5c/cache'
+sed "s|^\(tree:$T/admin [0-9a-f]*\) [0-9a-f]*\$|\1 ffffffffffffffffffffffffffffffff|" $T/md5c/cache >$T/c2 && mv $T/c2 $T/md5c/cache
+run
+check "directories: --tsv takes the cached value while nothing changed" 'mline | grep -q "^warn|不一致的是 admin（清单 ${AF%"${AF#????????}"}，实际 ffffffff）"'
+sh "$SCRIPTS/doctor.sh" --manifest >"$T/man"
+check "directories: --manifest computes afresh" '[ "$(tail -n 1 $T/man)" = "state	ok	一致（2 项）" ]'
+printf 'new js\n' >"$T/admin/_next/static/c.js"
+run
+check "directories: a new file → the cache key changes, differs" 'mline | grep -q "^warn|不一致的是 admin"'
+rm "$T/admin/_next/static/c.js"
+ln -s index.html "$T/admin/link"
+sh "$SCRIPTS/doctor.sh" --manifest >"$T/man"
+check "directories: a symlink inside → unreadable, warn" "grep -qx \"differs	comp:web	$T/admin	$AF	unreadable\" $T/man && tail -n 1 $T/man | grep -q '^state	warn	'"
+rm "$T/admin/link"
+rm -rf "$T/devui/fonts"
+sh "$SCRIPTS/doctor.sh" --manifest >"$T/man"
+check "directories: a recorded directory gone → -, warn" "grep -qx \"differs	record:devui-fonts	$T/devui/fonts	$FF	-\" $T/man"
+unset DOC_DEVUI_DIR
+rm -rf "$T"
+
+# md5 cache: a 28 MB binary is hashed once, then --tsv stays under 2 s
+msetup
+dd if=/dev/zero of="$T/big" bs=1048576 count=28 2>/dev/null
+mship agent "$T/big" "$(md5sum $T/big | cut -d' ' -f1)"; run
+check "28 MB: hashed on the first run" '[ "$(grep -c "$T/big" $T/md5.calls)" = 1 ] && [ "$(mline)" = "ok|一致（1 项）" ]'
+c0=$(tr -d . </proc/uptime | cut -d" " -f1); run1; c1=$(tr -d . </proc/uptime | cut -d" " -f1)
+check "28 MB: not hashed again, --tsv in ≤ 2 s ($(( (c1 - c0) * 10 )) ms)" '[ "$(grep -c "$T/big" $T/md5.calls)" = 1 ] && [ $((c1 - c0)) -le 200 ]'
+touch -d '2026-01-01 00:00' "$T/big"; run
+check "28 MB: a new mtime is hashed again" '[ "$(grep -c "$T/big" $T/md5.calls)" = 2 ]'
+rm -rf "$T"
+
+echo "the rarer rows in English (--tsv2)"
+en() { awk -F'\t' -v id="$1" '$2 == id { print $1 "|" $5 "|" $6 }' "$T/out2"; }
+setup
+touch "$T/marker"; echo vendor >"$T/uid.want"; rm -f "$T/hb"
+printf '#!/bin/sh\nexit 1\n' >"$T/bin/wget"
+printf '#!/bin/sh\necho "/dev/ubi0 4000000 3990000 10000 99%% /data"\n' >"$T/bin/df"
+printf 'v=1\ncomp=datad\nphase=failed\nreason=executor gone\nend=1\n' >"$T/txn"; export DOC_SHIP_TXN=$T/txn
+run
+check "takeover, stock UI asked for, no heartbeat, nothing reachable, disk full" '[ "$(en takeover)" = "warn|Wi-Fi watchdog|In control: scenarios paused; handed back after 10 min of stable admin backend" ] &&
+    [ "$(en screen)" = "ok|Screen UI|Stock UI on, as asked" ] && [ "$(en heartbeat)" = "bad|Admin heartbeat|No heartbeat file (admin backend not running?)" ] &&
+    [ "$(en agent-http)" = "bad|Web admin :9090|Not reachable" ] && [ "$(en datad-http)" = "bad|Data service :9460|Can'"'"'t read /state (the screen will have no data)" ] &&
+    [ "$(en disk)" = "bad|/data space|Only 9 MB left" ]'
+check "an ASCII ship reason is kept in English" '[ "$(en manifest)" = "warn|Manifest|Last deploy stopped midway, needs attention: datad (executor gone)" ]'
+rm -f "$T/uid.want"; echo 2 >"$T/uid/attempts"
+printf '#!/bin/sh\necho "/dev/ubi0 4000000 3950000 50000 99%% /data"\n' >"$T/bin/df"
+printf 'v=1\ncomp=datad\nphase=failed\nreason=执行器没起来\nend=1\n' >"$T/txn"
+run
+check "just started, disk low, a Chinese ship reason left out of English" '[ "$(en screen)" = "ok|Screen UI|Running (just started; confirmed after 10 min stable)" ] &&
+    [ "$(en disk)" = "warn|/data space|Only 48 MB left" ] && [ "$(en manifest)" = "warn|Manifest|Last deploy stopped midway, needs attention: datad" ]'
+: >"$T/bin/df"
+run
+check "disk unreadable" '[ "$(en disk)" = "warn|/data space|Unreadable" ]'
+unset DOC_SHIP_TXN; rm -rf "$T"
+
 echo "snapshots"
 GOLD=$SCRIPTS/test/doctor/golden
 snap() { # snap <name>
     sh "$SCRIPTS/doctor.sh" --tsv >"$T/$1.tsv" 2>&1
     sh "$SCRIPTS/doctor.sh" >"$T/$1.txt" 2>&1
+    sh "$SCRIPTS/doctor.sh" --tsv2 >"$T/$1.tsv2" 2>&1
+    TSV2_BAD=$(tsv2_lint "$T/$1.tsv" "$T/$1.tsv2" | head -n 5)
+    check "snapshot $1: --tsv2 agrees with --tsv, English clean" '[ -z "$TSV2_BAD" ]'
+    [ -z "$TSV2_BAD" ] || echo "       $TSV2_BAD"
+    # A real --tsv2 sample with warn and bad rows: zte-agent tests its parser on it.
+    if [ "$1" = problems ]; then
+        if [ -n "$DOCTOR_GOLDEN_UPDATE" ]; then
+            cp "$T/$1.tsv2" "$SCRIPTS/test/doctor/tsv2-sample.tsv" && ok "tsv2-sample.tsv written"
+        elif cmp -s "$T/$1.tsv2" "$SCRIPTS/test/doctor/tsv2-sample.tsv"; then
+            ok "snapshot $1.tsv2 = tsv2-sample.tsv"
+        else
+            bad "snapshot $1.tsv2 differs from tsv2-sample.tsv"
+            diff "$SCRIPTS/test/doctor/tsv2-sample.tsv" "$T/$1.tsv2" 2>&1 | head -20
+        fi
+    fi
     for ext in tsv txt; do
         if [ -n "$DOCTOR_GOLDEN_UPDATE" ]; then
             mkdir -p "$GOLD" && cp "$T/$1.$ext" "$GOLD/$1.$ext" && ok "golden $1.$ext written"

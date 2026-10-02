@@ -10,6 +10,7 @@
 #include "esim.h"
 #include "agent_client.h"
 #include "json.h"
+#include "lang.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -128,10 +129,11 @@ static void parse_profiles(char *arr)
         l = strlen(e->iccid);
         snprintf(tail, sizeof tail, "%s", e->iccid + (l > 4 ? l - 4 : 0));
         /* 有备注名时把原名也带上，不然认不出是哪张 */
-        snprintf(e->sub, sizeof e->sub, "%s%s%s%s\xE5\xB0\xBE\xE5\x8F\xB7 %s",   /* 尾号 */
-                 sp[0] ? sp : "", sp[0] ? " \xC2\xB7 " : "",
-                 nick[0] && pname[0] ? pname : "", nick[0] && pname[0] ? " \xC2\xB7 " : "",
-                 tail);
+        snprintf(e->sub, sizeof e->sub, "%s%s%s%s",
+                 sp[0] ? sp : "", sp[0] ? " · " : "",
+                 nick[0] && pname[0] ? pname : "", nick[0] && pname[0] ? " · " : "");
+        l = strlen(e->sub);
+        snprintf(e->sub + l, sizeof e->sub - l, TR("尾号 %s"), tail);
         n++;
     }
     s_count = n;
@@ -145,28 +147,28 @@ static int load_list(void)
     int code = es_api("GET", "/api/esim/profiles", NULL, &b);
 
     if (!code || !b) {
-        snprintf(s_err, sizeof s_err, "\xE8\xBF\x9E\xE4\xB8\x8D\xE4\xB8\x8A zte-agent");   /* 连不上 */
+        snprintf(s_err, sizeof s_err, "%s", TR("连不上 zte-agent"));
         return 0;
     }
     if (code == 401) {
-        snprintf(s_err, sizeof s_err, "zte-agent \xE7\x99\xBB\xE5\xBD\x95\xE5\xA4\xB1\xE8\xB4\xA5");   /* 登录失败 */
+        snprintf(s_err, sizeof s_err, "%s", TR("zte-agent 登录失败"));
         return 1;
     }
     /* 502 = lpac 读卡失败，多半插的是普通 SIM 卡 */
     if (code != 200 || !json_get(b, "data", data, sizeof data)) {
-        snprintf(s_err, sizeof s_err, "\xE6\x9C\xAA\xE8\xAF\xBB\xE5\x88\xB0 eSIM \xE5\x8D\xA1");   /* 未读到 eSIM 卡 */
+        snprintf(s_err, sizeof s_err, "%s", TR("未读到 eSIM 卡"));
         s_count = 0;
         return 1;
     }
     if (json_get(data, "installed", v, sizeof v) && !strcmp(v, "false")) {
-        snprintf(s_err, sizeof s_err, "\xE6\x9C\xAA\xE5\xAE\x89\xE8\xA3\x85 eSIM \xE7\xBB\x84\xE4\xBB\xB6");   /* 未安装 eSIM 组件 */
+        snprintf(s_err, sizeof s_err, "%s", TR("未安装 eSIM 组件"));
         s_count = 0;
         return 1;
     }
     if (json_get(data, "busy", v, sizeof v) && !strcmp(v, "true"))
         return 1;                       /* 有操作在跑，agent 不读卡；保留旧列表 */
     if (!json_get(data, "profiles", arr, sizeof arr)) {
-        snprintf(s_err, sizeof s_err, "\xE6\x9C\xAA\xE8\xAF\xBB\xE5\x88\xB0 eSIM \xE5\x8D\xA1");
+        snprintf(s_err, sizeof s_err, "%s", TR("未读到 eSIM 卡"));
         s_count = 0;
         return 1;
     }
@@ -204,23 +206,23 @@ static int poll_job(int *reload)
     if (s_my_job) {
         long secs = (now_ms() - s_t0) / 1000;
         if (id != s_my_job) {           /* agent 重启过，job 丢了 */
-            snprintf(s_msg, sizeof s_msg,
-                     "\xE5\x88\x87\xE6\x8D\xA2\xE7\xBB\x93\xE6\x9E\x9C\xE6\x9C\xAA\xE7\x9F\xA5\xEF\xBC\x8C"
-                     "\xE8\xAF\xB7\xE7\x9C\x8B\xE5\xBD\x93\xE5\x89\x8D\xE9\x85\x8D\xE7\xBD\xAE");   /* 切换结果未知，请看当前配置 */
+            snprintf(s_msg, sizeof s_msg, "%s",
+                     TR("切换结果未知，"
+                        "请看当前配置"));
         } else if (!strcmp(status, "done")) {
             if (!strcmp(reboot, "true"))
-                snprintf(s_msg, sizeof s_msg,
-                         "\xE5\xB7\xB2\xE5\x88\x87\xE6\x8D\xA2\xEF\xBC\x8C\xE8\xAE\xBE\xE5\xA4\x87"
-                         "\xE5\x8D\xB3\xE5\xB0\x86\xE9\x87\x8D\xE5\x90\xAF");   /* 已切换，设备即将重启 */
+                snprintf(s_msg, sizeof s_msg, "%s",
+                         TR("已切换，设备"
+                            "即将重启"));
             else
                 snprintf(s_msg, sizeof s_msg,
-                         "\xE5\xB7\xB2\xE5\x88\x87\xE6\x8D\xA2\xE5\x88\xB0 %s\xEF\xBC\x88%ld \xE7\xA7\x92\xEF\xBC\x89",
+                         TR("已切换到 %s（%ld 秒）"),
                          s_target_name, secs);   /* 已切换到 X（N 秒） */
         } else if (!strcmp(status, "error") && strstr(msg, "card is busy")) {
             /* agent 重试几次后卡仍回 catBusy（eSTK.me 卡偶发），它会拦 5 分钟 */
-            snprintf(s_msg, sizeof s_msg, "卡正忙，没切成，约 5 分钟后再试");
+            snprintf(s_msg, sizeof s_msg, "%s", TR("卡正忙，没切成，约 5 分钟后再试"));
         } else if (!strcmp(status, "error")) {
-            snprintf(s_msg, sizeof s_msg, "\xE5\x88\x87\xE6\x8D\xA2\xE5\xA4\xB1\xE8\xB4\xA5\xEF\xBC\x9A%s", msg);   /* 切换失败： */
+            snprintf(s_msg, sizeof s_msg, TR("切换失败：%s"), msg);
         } else {
             return 1;                   /* 还在跑 */
         }
@@ -284,9 +286,9 @@ int esim_poll(int active)
         ok = poll_job(&reload);
         if (s_my_job && t - s_t0 > ES_GIVEUP_MS) {
             s_my_job = 0;
-            snprintf(s_msg, sizeof s_msg,
-                     "\xE5\x88\x87\xE6\x8D\xA2\xE8\xB6\x85\xE6\x97\xB6\xEF\xBC\x8C"
-                     "\xE8\xAF\xB7\xE7\x9C\x8B\xE5\xBD\x93\xE5\x89\x8D\xE9\x85\x8D\xE7\xBD\xAE");   /* 切换超时，请看当前配置 */
+            snprintf(s_msg, sizeof s_msg, "%s",
+                     TR("切换超时，"
+                        "请看当前配置"));
             s_msg_ms = t;
             reload = 1;
         }
@@ -296,7 +298,7 @@ int esim_poll(int active)
          */
         if (ok && active && (entering || reload || s_offline)) ok = load_list();
         if (!ok) {
-            snprintf(s_err, sizeof s_err, "\xE8\xBF\x9E\xE4\xB8\x8D\xE4\xB8\x8A zte-agent");
+            snprintf(s_err, sizeof s_err, "%s", TR("连不上 zte-agent"));
             s_busy = 0;
         }
         s_offline = !ok;
@@ -355,20 +357,26 @@ const char *esim_state(void)
     char tmp[192];
 
     if (s_my_job)
-        snprintf(tmp, sizeof tmp, "\xE5\x88\x87\xE6\x8D\xA2\xE4\xB8\xAD \xC2\xB7 \xE5\xB7\xB2 %ld \xE7\xA7\x92",
+        snprintf(tmp, sizeof tmp, TR("切换中 · 已 %ld 秒"),
                  (now_ms() - s_t0) / 1000);   /* 切换中 · 已 N 秒 */
     else if (s_busy) {
-        const char *k = !strcmp(s_busy_kind, "switch")   ? "\xE5\x88\x87\xE6\x8D\xA2" :      /* 切换 */
-                        !strcmp(s_busy_kind, "download") ? "\xE4\xB8\x8B\xE8\xBD\xBD" :      /* 下载 */
-                        !strcmp(s_busy_kind, "delete")   ? "\xE5\x88\xA0\xE9\x99\xA4" :      /* 删除 */
-                                                           "\xE6\x93\x8D\xE4\xBD\x9C";       /* 操作 */
-        snprintf(tmp, sizeof tmp, "\xE7\xBD\x91\xE9\xA1\xB5\xE7\xAB\xAF\xE6\xAD\xA3\xE5\x9C\xA8%s", k);   /* 网页端正在 */
+        /* whole sentences, so the English can put the verb where it goes */
+        const char *k = !strcmp(s_busy_kind, "switch")   ? TR("网页端正在切换") :
+                        !strcmp(s_busy_kind, "download") ? TR("网页端正在下载") :
+                        !strcmp(s_busy_kind, "delete")   ? TR("网页端正在删除") :
+                                                           TR("网页端正在操作");
+        snprintf(tmp, sizeof tmp, "%s", k);
     }
     else if (s_err[0]) snprintf(tmp, sizeof tmp, "%s", s_err);
     else if (s_msg[0]) snprintf(tmp, sizeof tmp, "%s", s_msg);
-    else snprintf(tmp, sizeof tmp, "\xE5\xB0\xB1\xE7\xBB\xAA");   /* 就绪 */
+    else snprintf(tmp, sizeof tmp, "%s", TR("就绪"));
     es_esc(s_statebuf, sizeof s_statebuf, tmp);
     return s_statebuf;
+}
+
+int esim_ready(void)
+{
+    return !s_my_job && !s_busy && !s_err[0] && !s_msg[0];
 }
 
 const char *esim_list_html(void)
@@ -383,14 +391,14 @@ const char *esim_list_html(void)
         char nm[192];
         es_esc(nm, sizeof nm, s_target_name);
         o += snprintf(s_listhtml + o, sizeof s_listhtml - (size_t)o,
-                      "<div class='es-note'>\xE6\xAD\xA3\xE5\x9C\xA8\xE5\x88\x87\xE6\x8D\xA2\xE5\x88\xB0 %s\xEF\xBC\x8C"
-                      "\xE7\xBD\x91\xE7\xBB\x9C\xE4\xBC\x9A\xE4\xB8\xAD\xE6\x96\xAD\xE7\x89\x87\xE5\x88\xBB\xEF\xBC\x9B"
-                      "\xE4\xB8\x8D\xE6\x88\x90\xE5\x8A\x9F\xE4\xBC\x9A\xE8\x87\xAA\xE5\x8A\xA8\xE9\x87\x8D\xE5\x90\xAF"
-                      "\xE8\xAE\xBE\xE5\xA4\x87</div>", nm);   /* 正在切换到 X，网络会中断片刻；不成功会自动重启设备 */
+                      "<div class='es-note'>正在切换到 %s，"
+                      "网络会中断片刻；"
+                      "不成功会自动重启"
+                      "设备</div>", nm);   /* 正在切换到 X，网络会中断片刻；不成功会自动重启设备 */
     }
     if (!s_count) {
         snprintf(s_listhtml + o, sizeof s_listhtml - (size_t)o, "<div class='es-empty'>%s</div>",
-                 s_err[0] ? s_err : "\xE8\xAF\xBB\xE5\x8F\x96\xE4\xB8\xAD\xE2\x80\xA6");   /* 读取中… */
+                 s_err[0] ? s_err : "读取中…");
         return s_listhtml;
     }
     for (int i = 0; i < s_count && o < (int)sizeof s_listhtml - 800; i++) {
@@ -398,9 +406,9 @@ const char *esim_list_html(void)
         int going = s_my_job && !strcmp(s_target_iccid, e->iccid);
         int armed = armed_live && !strcmp(s_arm_iccid, e->iccid);
         const char *cls = going ? " go" : armed ? " armed" : e->enabled ? " cur" : "";
-        const char *tag = going   ? "\xE5\x88\x87\xE6\x8D\xA2\xE4\xB8\xAD\xE2\x80\xA6" :   /* 切换中… */
-                          armed   ? "\xE5\x86\x8D\xE7\x82\xB9\xE4\xB8\x80\xE6\xAC\xA1" :   /* 再点一次 */
-                          e->enabled ? "\xE4\xBD\xBF\xE7\x94\xA8\xE4\xB8\xAD" : "";         /* 使用中 */
+        const char *tag = going   ? "切换中…" :
+                          armed   ? "再点一次" :
+                          e->enabled ? "使用中" : "";
         char nm[192], sub[384];
 
         es_esc(nm, sizeof nm, e->name);
@@ -484,10 +492,10 @@ int esim_select(int index)
         if (w) wait = atoi(w + 5);
         if (wait > 0)
             snprintf(s_msg, sizeof s_msg,
-                     "卡刚报过忙，还要等 %d 秒再试", wait);
+                     TR("卡刚报过忙，还要等 %d 秒再试"), wait);
         else
-            snprintf(s_msg, sizeof s_msg,
-                     "卡刚报过忙，稍后再试");
+            snprintf(s_msg, sizeof s_msg, "%s",
+                     TR("卡刚报过忙，稍后再试"));
         s_msg_ms = now_ms();
         return ESIM_SEL_COOLDOWN;
     }

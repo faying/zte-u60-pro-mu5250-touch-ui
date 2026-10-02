@@ -8,6 +8,7 @@
  */
 #include "ui_kit.h"
 #include "ui_logic.h"
+#include "lang.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -129,11 +130,33 @@ lv_obj_t *uk_card(lv_obj_t *p, int x, int y, int w, int h)
 
 lv_obj_t *uk_sep(lv_obj_t *c, int y) { return uk_box(c, UK_PAD, y, pw(c) - UK_PAD, 1, T->sep, 0); }
 
+/* A right-aligned row value never runs into its row name: it gets what the
+ * name leaves (12 px gap) and ends in "…" past that (10-01: long Tailscale
+ * host names and English values ran over the name). Values that fit draw
+ * exactly as before. */
+static void value_fits_beside(lv_obj_t *v, lv_obj_t *key, int right)
+{
+    lv_point_t sz;
+    lv_text_get_size(&sz, lv_label_get_text(key), lv_obj_get_style_text_font(key, 0), 0, 0, LV_COORD_MAX,
+                     LV_TEXT_FLAG_NONE);
+    /* the x the key was placed at: lv_obj_get_x() is 0 until the first layout */
+    int max = right - (int)lv_obj_get_style_x(key, LV_PART_MAIN) - sz.x - 12;
+    if (max < 40) max = 40;
+    lv_obj_set_style_max_width(v, max, 0);
+    lv_label_set_long_mode(v, LV_LABEL_LONG_MODE_DOTS);
+    /* dots need a fixed height; callers may switch the value to a 13–15 px
+     * CJK font later, so take the taller line */
+    int32_t h = lv_font_get_line_height(lv_obj_get_style_text_font(v, 0)), h2 = lv_font_get_line_height(UF.cj15);
+    lv_obj_set_height(v, h > h2 ? h : h2);
+}
+
 lv_obj_t *uk_row(lv_obj_t *c, int y, const char *key, int first)
 {
     if (!first) uk_sep(c, y);
-    uk_label(c, UF.cj14, T->t2, UK_PAD, y + 11, key);
-    return uk_label_r(c, UF.n15, T->t1, pw(c) - UK_PAD, y + 10, "");
+    lv_obj_t *k = uk_label(c, UF.cj14, T->t2, UK_PAD, y + 11, key);
+    lv_obj_t *v = uk_label_r(c, UF.n15, T->t1, pw(c) - UK_PAD, y + 10, "");
+    value_fits_beside(v, k, pw(c) - UK_PAD);
+    return v;
 }
 
 lv_obj_t *uk_chevron(lv_obj_t *c, int y) { return uk_label_r(c, UF.cj15, T->t3, pw(c) - UK_PAD, y + 10, "›"); }
@@ -147,15 +170,18 @@ lv_obj_t *uk_row_nav(lv_obj_t *c, int y, const char *key, int first, lv_event_cb
     lv_obj_add_flag(hit, LV_OBJ_FLAG_CLICKABLE);
     if (cb) lv_obj_add_event_cb(hit, cb, LV_EVENT_CLICKED, user);
     if (!first) uk_sep(c, y);
-    uk_label(c, UF.cj14, T->t1, UK_PAD, y + 11, key);
+    lv_obj_t *k = uk_label(c, UF.cj14, T->t1, UK_PAD, y + 11, key);
     uk_chevron(c, y);
-    return uk_label_r(c, UF.cj13, T->t2, pw(c) - UK_PAD - 16, y + 12, "");
+    lv_obj_t *v = uk_label_r(c, UF.cj13, T->t2, pw(c) - UK_PAD - 16, y + 12, "");
+    value_fits_beside(v, k, pw(c) - UK_PAD - 16);
+    return v;
 }
 
 /* ------------------------------------------------------------ controls */
 void uk_seg(uk_seg_t *s, lv_obj_t *p, int x, int y, int w, const char *const *items, int n, lv_event_cb_t cb)
 {
     memset(s, 0, sizeof *s);
+    if (n > UK_SEG_MAX) n = UK_SEG_MAX;
     s->n = n;
     s->sel = -1;
     s->obj = uk_box(p, x, y, w, 30, T->track, 15);
@@ -168,7 +194,9 @@ void uk_seg(uk_seg_t *s, lv_obj_t *p, int x, int y, int w, const char *const *it
         uk_tappable(it, cb, (void *)(intptr_t)i);
         lv_obj_set_ext_click_area(it, 7);
         s->item[i] = it;
-        s->lbl[i] = uk_label(it, UF.cj13, T->t2, 0, 0, items[i]);
+        /* items are often a static N_() table: shown here. TR of text that is
+         * already English finds no row and returns it unchanged. */
+        s->lbl[i] = uk_label(it, UF.cj13, T->t2, 0, 0, TR(items[i]));
         lv_obj_center(s->lbl[i]);
     }
 }
@@ -585,7 +613,7 @@ void uk_sheet(uk_sheet_t *s, int panel_h, lv_event_cb_t cancel_cb)
     s->panel = glass(s->scrim, 8, UK_H - 8 - 46 - 8 - panel_h, UK_W - 16, panel_h, UK_R_SHEET);
     lv_obj_add_flag(s->panel, LV_OBJ_FLAG_CLICKABLE);   /* taps between items don't reach the scrim */
     s->cancel = glass(s->scrim, 8, UK_H - 8 - 46, UK_W - 16, 46, UK_R_SHEET);
-    s->cancel_l = uk_label(s->cancel, UF.cj17b, T->accT, 0, 0, "取消");
+    s->cancel_l = uk_label(s->cancel, UF.cj17b, T->accT, 0, 0, TR("取消"));
     lv_obj_center(s->cancel_l);
     uk_tappable(s->cancel, cancel_cb, NULL);
     uk_show(s->scrim, 0);

@@ -8,6 +8,7 @@
 #include "speedtest.h"
 #include "agent_client.h"
 #include "json.h"
+#include "lang.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -110,14 +111,14 @@ speedtest_phase_t speedtest_phase(void) { return s_phase; }
 const char *speedtest_phase_label(void)
 {
     switch (s_phase) {
-    case ST_LATENCY:   return "\xE6\xB5\x8B\xE5\xBB\xB6\xE8\xBF\x9F\xE4\xB8\xAD\xE2\x80\xA6";       /* 测延迟中… */
-    case ST_DOWNLOAD:  return "\xE4\xB8\x8B\xE8\xBD\xBD\xE4\xB8\xAD\xE2\x80\xA6";                     /* 下载中… */
-    case ST_UPLOAD:    return "\xE4\xB8\x8A\xE4\xBC\xA0\xE4\xB8\xAD\xE2\x80\xA6";                     /* 上传中… */
-    case ST_COMPLETE:  return "\xE5\xAE\x8C\xE6\x88\x90";                                            /* 完成 */
-    case ST_CANCELLED: return "\xE5\xB7\xB2\xE5\x8F\x96\xE6\xB6\x88";                                 /* 已取消 */
-    case ST_ERROR:     return "\xE5\x87\xBA\xE9\x94\x99";                                            /* 出错 */
+    case ST_LATENCY:   return TR("测延迟中…");
+    case ST_DOWNLOAD:  return TR("下载中…");
+    case ST_UPLOAD:    return TR("上传中…");
+    case ST_COMPLETE:  return TR("完成");
+    case ST_CANCELLED: return TR("已取消");
+    case ST_ERROR:     return TR("出错");
     case ST_IDLE:
-    default:           return "\xE7\xA9\xBA\xE9\x97\xB2";                                            /* 空闲 */
+    default:           return TR("空闲");
     }
 }
 

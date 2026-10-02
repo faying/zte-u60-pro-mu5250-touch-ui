@@ -88,21 +88,21 @@ static int net_busy(const netinfo_t *n)
  * 被拒就把原因写回这张卡片 */
 static void net_send(void (*fn)(void))
 {
-    net_flash(&s_ms_flash, T->t2, 2500, "已发送，等设备回应…");
+    net_flash(&s_ms_flash, T->t2, 2500, "%s", TR("已发送，等设备回应…"));
     net_paint(1);
     lv_refr_now(NULL);
     fn();
     const char *err = netinfo_action_error();
-    if (err[0]) net_flash(&s_ms_flash, T->badT, 8000, "没执行：%s", err);
+    if (err[0]) net_flash(&s_ms_flash, T->badT, 8000, TR("没执行：%s"), err);
     else netinfo_hurry(15);
     net_paint(1);
 }
 
 static const char *net_busy_what(const netinfo_t *n)
 {
-    return !strcmp(n->scan_state, "scanning") ? "正在搜索网络" :
-           !strcmp(n->guard_phase, "reverting") ? "正在恢复自动选网" :
-           !strcmp(n->guard_phase, "registering") ? "正在注册" : "正在忙";
+    return !strcmp(n->scan_state, "scanning") ? TR("正在搜索网络") :
+           !strcmp(n->guard_phase, "reverting") ? TR("正在恢复自动选网") :
+           !strcmp(n->guard_phase, "registering") ? TR("正在注册") : TR("正在忙");
 }
 
 static void net_scan_cb(lv_event_t *e)
@@ -110,7 +110,7 @@ static void net_scan_cb(lv_event_t *e)
     LV_UNUSED(e);
     const netinfo_t *n = netinfo_get();
     if (net_busy(n)) {
-        net_flash(&s_ms_flash, T->t2, 3000, "%s，等它做完再操作", net_busy_what(n));
+        net_flash(&s_ms_flash, T->t2, 3000, TR("%s，等它做完再操作"), net_busy_what(n));
         net_paint(1);
         return;
     }
@@ -125,13 +125,13 @@ static void net_auto_cb(lv_event_t *e)
     LV_UNUSED(e);
     const netinfo_t *n = netinfo_get();
     if (net_busy(n)) {
-        net_flash(&s_ms_flash, T->t2, 3000, "%s，等它做完再操作", net_busy_what(n));
+        net_flash(&s_ms_flash, T->t2, 3000, TR("%s，等它做完再操作"), net_busy_what(n));
         net_paint(1);
         return;
     }
     if (!strcmp(n->selection, "auto")) {
         net_clear_arms();
-        net_flash(&s_ms_flash, T->t2, 3000, "现在已经是自动选网，不用恢复");
+        net_flash(&s_ms_flash, T->t2, 3000, "%s", TR("现在已经是自动选网，不用恢复"));
         net_paint(1);
         return;
     }
@@ -149,7 +149,7 @@ static void net_op_cb(lv_event_t *e)
     int i = (int)(intptr_t)lv_event_get_user_data(e);
     const netinfo_t *n = netinfo_get();
     if (net_busy(n)) {
-        net_flash(&s_ms_flash, T->t2, 3000, "%s，等它做完再操作", net_busy_what(n));
+        net_flash(&s_ms_flash, T->t2, 3000, TR("%s，等它做完再操作"), net_busy_what(n));
         net_paint(1);
         return;
     }
@@ -158,7 +158,7 @@ static void net_op_cb(lv_event_t *e)
      * 已经手动在它上面就不用再注册 */
     if (!strcmp(n->ops[i].status, "2") && strcmp(n->selection, "auto")) {
         net_clear_arms();
-        net_flash(&s_ms_flash, T->t2, 3000, "现在就在 %s 上", n->ops[i].name[0] ? n->ops[i].name : n->ops[i].plmn);
+        net_flash(&s_ms_flash, T->t2, 3000, TR("现在就在 %s 上"), n->ops[i].name[0] ? n->ops[i].name : n->ops[i].plmn);
         net_paint(1);
         return;
     }
@@ -194,7 +194,7 @@ static void net_sc_cb(lv_event_t *e)
     if (i == NET_SCENE_ROWS - 1) return;
     if (i > n->nscenes) return;
     if (s_sc_pend >= 0) {
-        net_flash(&s_sc_flash, T->t2, 3000, "正在切换到「%s」，稍等", s_sc_pend_name);
+        net_flash(&s_sc_flash, T->t2, 3000, TR("正在切换到「%s」，稍等"), s_sc_pend_name);
         net_paint(1);
         return;
     }
@@ -202,10 +202,10 @@ static void net_sc_cb(lv_event_t *e)
     if (already) {
         net_clear_arms();
         if (i == 0)
-            net_flash(&s_sc_flash, T->t2, 4000, "现在已经是自动 · 按位置和 SIM 判断为「%s」",
-                      n->scene_current[0] ? net_scene_name(n, n->scene_current) : "判定中");
+            net_flash(&s_sc_flash, T->t2, 4000, TR("现在已经是自动 · 按位置和 SIM 判断为「%s」"),
+                      n->scene_current[0] ? net_scene_name(n, n->scene_current) : TR("判定中"));
         else
-            net_flash(&s_sc_flash, T->t2, 4000, "已经固定在「%s」。要恢复自动判断，点「自动」",
+            net_flash(&s_sc_flash, T->t2, 4000, TR("已经固定在「%s」。要恢复自动判断，点「自动」"),
                       net_scene_name(n, n->scene_pin));
         net_paint(1);
         return;
@@ -215,7 +215,7 @@ static void net_sc_cb(lv_event_t *e)
         s_sc_pend = i;
         s_sc_pend_at = lv_tick_get();
         snprintf(s_sc_pend_id, sizeof s_sc_pend_id, "%s", i ? n->scenes[i - 1].id : "");
-        snprintf(s_sc_pend_name, sizeof s_sc_pend_name, "%s", i ? net_scene_name(n, n->scenes[i - 1].id) : "自动");
+        snprintf(s_sc_pend_name, sizeof s_sc_pend_name, "%s", i ? net_scene_name(n, n->scenes[i - 1].id) : TR("自动"));
         s_sc_pend_wifi_off = i ? n->scenes[i - 1].wifi_off : 0;
         s_sc_flash.until = 0;
         net_paint(1);
@@ -224,7 +224,7 @@ static void net_sc_cb(lv_event_t *e)
         const char *err = netinfo_action_error();
         if (err[0]) {
             s_sc_pend = -1;
-            net_flash(&s_sc_flash, T->badT, 8000, "没切成：%s", err);
+            net_flash(&s_sc_flash, T->badT, 8000, TR("没切成：%s"), err);
         } else {
             scenario_kick();
             netinfo_hurry(SC_PEND_MS / 1000);
@@ -246,8 +246,8 @@ static void net_reflow(int err_h, int scene_rows, int exits, int ops, int cells)
  * 不同的页上，net_reflow 按页各自排。 */
 static void build_sub_net(lv_obj_t *t)
 {
-    static const char *const k_sec[6] = { "选择", "出口 IP", "运营商", "手动选网", "邻小区", "已连接设备流量" };
-    static const char *const k_op_cap[4] = { "原始运营商", "注册运营商", "漫游", "选网" };
+    static const char *const k_sec[6] = { N_("选择"), N_("出口 IP"), N_("运营商"), N_("手动选网"), N_("邻小区"), N_("已连接设备流量") };
+    static const char *const k_op_cap[4] = { N_("原始运营商"), N_("注册运营商"), N_("漫游"), N_("选网") };
     lv_obj_t *c, *host[6];
 
     t = s_net_scroll = s_nh_scroll[NH_OPER] = uk_scroll(t, 0, UI_SUB_VIEW, 1400);
@@ -255,7 +255,7 @@ static void build_sub_net(lv_obj_t *t)
     s_nh_base[NH_SCENE] = s_nh_base[NH_OPER] = 4;
     for (int i = 0; i < 6; i++) host[i] = s_nh_scroll[k_net_host[i]];
     s_net_err = uk_label_w(t, UF.cj13, T->badT, UK_MARGIN + 6, 4, UK_CARD_W - 12, 1, "");
-    for (int i = 0; i < 6; i++) s_net_sec[i] = uk_section(host[i], 0, k_sec[i]);
+    for (int i = 0; i < 6; i++) s_net_sec[i] = uk_section(host[i], 0, TR(k_sec[i]));
 
     c = s_net_card[0] = uk_card(host[0], UK_MARGIN, 0, UK_CARD_W, UK_ROW_H + NET_SC_NOTE_H);
     for (int i = 0; i < NET_SCENE_ROWS; i++) {
@@ -290,7 +290,7 @@ static void build_sub_net(lv_obj_t *t)
 
     c = s_net_card[2] = uk_card(host[2], UK_MARGIN, 0, UK_CARD_W, 4 * UK_ROW_H);
     for (int i = 0; i < 4; i++) {
-        s_net_op[i] = uk_row(c, i * UK_ROW_H, k_op_cap[i], i == 0);
+        s_net_op[i] = uk_row(c, i * UK_ROW_H, TR(k_op_cap[i]), i == 0);
         lv_obj_set_style_text_font(s_net_op[i], UF.cj14, 0);
     }
 
@@ -309,15 +309,15 @@ static void build_sub_net(lv_obj_t *t)
     s_net_btns = uk_box(c, 0, NET_STAT_H, UK_CARD_W, NET_BTN_H, T->card, 0);
     lv_obj_set_style_bg_opa(s_net_btns, LV_OPA_TRANSP, 0);
     uk_sep(s_net_btns, 0);
-    s_net_scan_btn = uk_button(s_net_btns, UK_PAD, 10, (UK_CARD_W - 2 * UK_PAD - 8) / 2, 32, "搜索网络",
+    s_net_scan_btn = uk_button(s_net_btns, UK_PAD, 10, (UK_CARD_W - 2 * UK_PAD - 8) / 2, 32, TR("搜索网络"),
                                UK_BTN_PLAIN, net_scan_cb, NULL, &s_net_scan_lbl);
     s_net_auto_btn = uk_button(s_net_btns, UK_PAD + (UK_CARD_W - 2 * UK_PAD - 8) / 2 + 8, 10,
-                               (UK_CARD_W - 2 * UK_PAD - 8) / 2, 32, "恢复自动",
+                               (UK_CARD_W - 2 * UK_PAD - 8) / 2, 32, TR("恢复自动"),
                                UK_BTN_PLAIN, net_auto_cb, NULL, &s_net_auto_lbl);
 
     c = s_net_card[4] = uk_card(host[4], UK_MARGIN, 0, UK_CARD_W, NET_NBR_HDR);
     s_net_nbr_state = uk_label_w(c, UF.cj13, T->t2, UK_PAD, 12, UK_CARD_W - 2 * UK_PAD - 80, 0, "");
-    s_net_nbr_btn = uk_button(c, UK_CARD_W - UK_PAD - 72, 6, 72, 28, "扫描", UK_BTN_PLAIN, net_nbr_cb, NULL, &s_net_nbr_lbl);
+    s_net_nbr_btn = uk_button(c, UK_CARD_W - UK_PAD - 72, 6, 72, 28, TR("扫描"), UK_BTN_PLAIN, net_nbr_cb, NULL, &s_net_nbr_lbl);
     for (int i = 0; i < NI_MAX_CELLS; i++) {
         lv_obj_t *r = s_net_nbr_row[i] = uk_box(c, 0, NET_NBR_HDR + i * NET_NBR_H, UK_CARD_W, NET_NBR_H, T->card, 0);
         lv_obj_set_style_bg_opa(r, LV_OPA_TRANSP, 0);
@@ -329,7 +329,7 @@ static void build_sub_net(lv_obj_t *t)
 
     /* 每台 Wi-Fi 设备：名字、连上以来的总流量、此刻的速率和信号 */
     c = s_net_card[5] = uk_card(host[5], UK_MARGIN, 0, UK_CARD_W, NET_NOTE_H);
-    s_net_cl_state = uk_label_w(c, UF.cj13, T->t3, UK_PAD, 11, UK_CARD_W - 2 * UK_PAD, 1, "读取中…");
+    s_net_cl_state = uk_label_w(c, UF.cj13, T->t3, UK_PAD, 11, UK_CARD_W - 2 * UK_PAD, 1, TR("读取中…"));
     for (int i = 0; i < NI_MAX_CLIENTS; i++) {
         lv_obj_t *r = s_net_cl_row[i] = uk_box(c, 0, i * NET_CL_H, UK_CARD_W, NET_CL_H, T->card, 0);
         lv_obj_set_style_bg_opa(r, LV_OPA_TRANSP, 0);
@@ -407,13 +407,19 @@ static const char *net_rat_name(const char *rat)
     return rat;
 }
 
-/* "中国联通 46001"；国外的带上国家："SoftBank（日本）44020" */
+/* "中国联通 46001"；国外的带上国家："SoftBank（日本）44020"。国内看 agent 的
+ * country_iso（英文模式下 country 是 China）；旧 agent 没有它，还比中文名 */
+static int net_oper_home_country(const ni_oper_t *o)
+{
+    return o->country_iso[0] ? !strcmp(o->country_iso, "CN") : !strcmp(o->country, "中国");
+}
+
 static void net_oper_text(char *out, size_t n, const ni_oper_t *o)
 {
-    const char *name = o->name[0] ? o->name : "未知";
+    const char *name = o->name[0] ? o->name : TR("未知");
     if (!o->mcc[0] && !o->name[0]) { snprintf(out, n, "—"); return; }
-    if (o->country[0] && strcmp(o->country, "中国"))
-        snprintf(out, n, "%s（%s）%s%s", name, o->country, o->mcc, o->mnc);
+    if (o->country[0] && !net_oper_home_country(o))
+        snprintf(out, n, TR("%s（%s）%s%s"), name, o->country, o->mcc, o->mnc);
     else
         snprintf(out, n, "%s %s%s", name, o->mcc, o->mnc);
 }
@@ -423,8 +429,8 @@ static void net_exit_sub(char *out, size_t n, const ni_exit_t *e, const char *ex
 {
     /* 原始错误（"ipapi.co: io: unexpected end of file"）只是最后一家的失败；
      * 几家都失败多半是刚换网/节点不通，半分钟后会再查。 */
-    if (!e->ip[0] && e->err[0]) { snprintf(out, n, "暂时查不到，稍后自动重试"); return; }
+    if (!e->ip[0] && e->err[0]) { snprintf(out, n, "%s", TR("暂时查不到，稍后自动重试")); return; }
     snprintf(out, n, "%s%s%s%s", e->geo, e->geo[0] && extra[0] ? " · " : "", extra,
-             e->err[0] ? " · 刷新失败" : "");
+             e->err[0] ? TR(" · 刷新失败") : "");
 }
 

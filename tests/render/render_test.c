@@ -21,6 +21,7 @@
  * SPDX-License-Identifier: MIT
  */
 #include "src/misc/lv_text_private.h"   /* lv_text_encoded_next */
+#include "src/misc/lv_area_private.h"   /* lv_area_intersect */
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -55,6 +56,7 @@ static time_t rt_time(time_t *t) { if (t) *t = (time_t)rt_now; return (time_t)rt
 #define time(t)          rt_time(t)
 #define DEVUI_CONF_FILE  rt_conf_path
 
+#define UI_LANG_HOLD_MS 0   /* the switching frame is shot, not waited for */
 #include "../../src/ui.c"
 
 #undef system
@@ -95,12 +97,13 @@ static void settle(uint32_t ms)
 /* ---- results ---- */
 static int s_pass, s_fail;
 static const char *s_scene_name, *s_theme;
+static int s_lang_en;                   /* --lang=en: devui.conf lang=en (L2) */
 static void ok(const char *fmt, ...)  { (void)fmt; s_pass++; }
 static void bad(const char *fmt, ...)
 {
     va_list ap;
     va_start(ap, fmt);
-    printf("  FAIL [%s/%s] ", s_scene_name, s_theme);
+    printf("  FAIL [%s/%s%s] ", s_scene_name, s_theme, s_lang_en ? "/en" : "");
     vprintf(fmt, ap);
     putchar('\n');
     va_end(ap);
@@ -132,7 +135,7 @@ static void save_png(const char *name)
         rgb[i * 3 + 1] = (uint8_t)((g << 2) | (g >> 4));
         rgb[i * 3 + 2] = (uint8_t)((b << 3) | (b >> 2));
     }
-    snprintf(path, sizeof path, "%s/%s-%s-%s.png", s_png_dir, s_scene_name, s_theme, name);
+    snprintf(path, sizeof path, "%s/%s-%s%s-%s.png", s_png_dir, s_scene_name, s_theme, s_lang_en ? "-en" : "", name);
     stbi_write_png(path, UI_W, UI_H, 3, rgb, UI_W * 3);
 }
 
@@ -183,6 +186,152 @@ static void collect(lv_obj_t *o)
     for (uint32_t i = 0; i < lv_obj_get_child_count(o); i++) collect(lv_obj_get_child(o, (int32_t)i));
 }
 
+/* ---- geometry (10-01 L2, eng review R11): English is longer, and what goes
+ * wrong is text running out of its box or into its neighbour. For every
+ * visible label: its box stays inside the screen and every ancestor
+ * horizontally (pages scroll vertically, so only x); no two visible siblings
+ * that hold text overlap; a DOT/CLIP label whose text is wider than its box is
+ * counted as truncated (info: some are meant to shorten, e.g. node names). */
+static int s_dump;                      /* --dump: texts (and truncated labels) to stdout */
+#define MAX_GEO 32
+static char s_geo[MAX_GEO][200];
+static int s_ngeo, s_ntrunc;
+
+static void geo_bad(const char *fmt, ...)
+{
+    if (s_ngeo >= MAX_GEO) return;
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(s_geo[s_ngeo], sizeof s_geo[s_ngeo], fmt, ap);
+    va_end(ap);
+    for (int i = 0; i < s_ngeo; i++) if (!strcmp(s_geo[i], s_geo[s_ngeo])) return;
+    s_ngeo++;
+}
+
+/* Sibling overlap is checked between labels only: panels, cards and the
+ * status bar legitimately stack (a subpage slides over a tab). */
+static int is_text_label(lv_obj_t *o)
+{
+    if (!o || lv_obj_has_flag(o, LV_OBJ_FLAG_HIDDEN) || !lv_obj_check_type(o, &lv_label_class)) return 0;
+    if (lv_obj_get_style_opa(o, LV_PART_MAIN) == LV_OPA_TRANSP || lv_obj_get_style_text_opa(o, LV_PART_MAIN) == LV_OPA_TRANSP) return 0;
+    const char *t = lv_label_get_text(o);
+    return t && *t;
+}
+
+/* Where a label's text actually is: boxes are often wider than their text
+ * (a full-width row label, right-aligned values), and only text on text is
+ * a collision. */
+static void ink_box(lv_obj_t *l, lv_area_t *r)
+{
+    lv_area_t c;
+    lv_obj_get_content_coords(l, &c);
+    const lv_font_t *f = lv_obj_get_style_text_font(l, LV_PART_MAIN);
+    lv_point_t sz;
+    int32_t w = lv_area_get_width(&c);
+    lv_text_get_size(&sz, lv_label_get_text(l), f, lv_obj_get_style_text_letter_space(l, LV_PART_MAIN),
+                     lv_obj_get_style_text_line_space(l, LV_PART_MAIN),
+                     lv_label_get_long_mode(l) == LV_LABEL_LONG_MODE_WRAP ? w : LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+    int32_t tw = sz.x < w ? sz.x : w, th = sz.y < lv_area_get_height(&c) ? sz.y : lv_area_get_height(&c);
+    lv_text_align_t a = lv_obj_get_style_text_align(l, LV_PART_MAIN);
+    if (a == LV_TEXT_ALIGN_AUTO) a = LV_TEXT_ALIGN_LEFT;
+    r->x1 = a == LV_TEXT_ALIGN_RIGHT ? c.x2 - tw + 1 : a == LV_TEXT_ALIGN_CENTER ? c.x1 + (w - tw) / 2 : c.x1;
+    r->x2 = r->x1 + tw - 1;
+    r->y1 = c.y1;
+    r->y2 = c.y1 + th - 1;
+}
+
+static int geo_on_screen(const lv_area_t *a) { return a->y2 >= 0 && a->y1 < UI_H && a->x2 >= 0 && a->x1 < UI_W; }
+
+static void geo_label(lv_obj_t *l)
+{
+    lv_area_t a;
+    lv_obj_get_coords(l, &a);
+    const char *t = lv_label_get_text(l);
+    if (a.x1 < 0 || a.x2 >= UI_W) geo_bad("\"%.60s\" runs off the screen (x %d..%d)", t, (int)a.x1, (int)a.x2);
+    for (lv_obj_t *p = lv_obj_get_parent(l); p; p = lv_obj_get_parent(p)) {
+        if (lv_obj_get_scroll_dir(p) & LV_DIR_HOR && lv_obj_has_flag(p, LV_OBJ_FLAG_SCROLLABLE) &&
+            lv_obj_get_scroll_right(p) + lv_obj_get_scroll_left(p) > 0) break;   /* the tileview */
+        lv_area_t pa;
+        lv_obj_get_coords(p, &pa);
+        if (a.x1 < pa.x1 || a.x2 > pa.x2) {
+            geo_bad("\"%.60s\" (x %d..%d) sticks out of its container (x %d..%d)", t, (int)a.x1, (int)a.x2,
+                    (int)pa.x1, (int)pa.x2);
+            break;
+        }
+    }
+    lv_label_long_mode_t m = lv_label_get_long_mode(l);
+    if (m == LV_LABEL_LONG_MODE_DOTS || m == LV_LABEL_LONG_MODE_CLIP) {
+        const lv_font_t *f = lv_obj_get_style_text_font(l, LV_PART_MAIN);
+        lv_point_t sz;
+        lv_text_get_size(&sz, t, f, lv_obj_get_style_text_letter_space(l, LV_PART_MAIN),
+                         lv_obj_get_style_text_line_space(l, LV_PART_MAIN), LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+        if (sz.x > lv_obj_get_content_width(l) + 1) {
+            s_ntrunc++;
+            if (s_dump) printf("TRUNC\t%s\t%d>%d\n", t, (int)sz.x, (int)lv_obj_get_content_width(l));
+        }
+    }
+}
+
+/* A visible, coloured non-label sibling smaller than its parent: a control
+ * or a pill, not the card or panel behind everything. */
+static int is_block(lv_obj_t *d, lv_obj_t *parent)
+{
+    if (!d || lv_obj_has_flag(d, LV_OBJ_FLAG_HIDDEN) || lv_obj_check_type(d, &lv_label_class)) return 0;
+    if (lv_obj_get_style_opa(d, LV_PART_MAIN) == LV_OPA_TRANSP) return 0;
+    if (lv_obj_get_style_bg_opa(d, LV_PART_MAIN) < LV_OPA_20 && !lv_obj_check_type(d, &lv_switch_class) &&
+        !lv_obj_check_type(d, &lv_slider_class))
+        return 0;
+    return lv_obj_get_width(d) < lv_obj_get_width(parent) - 8 && lv_obj_get_height(d) < lv_obj_get_height(parent) - 8;
+}
+
+static void geo_walk(lv_obj_t *o)
+{
+    if (!o || lv_obj_has_flag(o, LV_OBJ_FLAG_HIDDEN)) return;
+    if (lv_obj_check_type(o, &lv_label_class)) {
+        const char *t = lv_label_get_text(o);
+        lv_area_t a;
+        lv_obj_get_coords(o, &a);
+        if (t && *t && geo_on_screen(&a)) geo_label(o);
+    }
+    uint32_t n = lv_obj_get_child_count(o);
+    for (uint32_t i = 0; i < n; i++) {
+        lv_obj_t *c = lv_obj_get_child(o, (int32_t)i);
+        if (!is_text_label(c)) continue;
+        lv_area_t a, b, x;
+        ink_box(c, &a);
+        if (!geo_on_screen(&a)) continue;
+        for (uint32_t j = i + 1; j < n; j++) {
+            lv_obj_t *d = lv_obj_get_child(o, (int32_t)j);
+            if (!is_text_label(d)) continue;
+            ink_box(d, &b);
+            /* line boxes of stacked rows touch by a few px of leading; text
+             * running into text overlaps for most of a line */
+            int32_t hmin = lv_area_get_height(&a) < lv_area_get_height(&b) ? lv_area_get_height(&a) : lv_area_get_height(&b);
+            if (lv_area_intersect(&x, &a, &b) && lv_area_get_width(&x) > 1 && lv_area_get_height(&x) * 5 > hmin * 2)
+                geo_bad("\"%.40s\" overlaps \"%.40s\"", lv_label_get_text(c), lv_label_get_text(d));
+        }
+    }
+    /* text running into a control or a coloured block beside it (a segment,
+     * a switch, a pill): the language note under its segment, 10-02. A label
+     * with its own opaque backing sits on top on purpose (chart "collecting"). */
+    for (uint32_t i = 0; i < n; i++) {
+        lv_obj_t *c = lv_obj_get_child(o, (int32_t)i);
+        if (!is_text_label(c) || lv_obj_get_style_bg_opa(c, LV_PART_MAIN) >= LV_OPA_50) continue;
+        lv_area_t a, b, x;
+        ink_box(c, &a);
+        if (!geo_on_screen(&a)) continue;
+        for (uint32_t j = 0; j < n; j++) {
+            lv_obj_t *d = lv_obj_get_child(o, (int32_t)j);
+            if (!is_block(d, o)) continue;
+            lv_obj_get_coords(d, &b);
+            if (lv_area_intersect(&x, &a, &b) && lv_area_get_width(&x) > 1 && lv_area_get_height(&x) > 1)
+                geo_bad("\"%.40s\" runs into a %dx%d block", lv_label_get_text(c), (int)lv_area_get_width(&b),
+                        (int)lv_area_get_height(&b));
+        }
+    }
+    for (uint32_t i = 0; i < n; i++) geo_walk(lv_obj_get_child(o, (int32_t)i));
+}
+
 static void shot(const char *page, int k)
 {
     char name[64];
@@ -190,6 +339,8 @@ static void shot(const char *page, int k)
     lv_obj_invalidate(lv_screen_active());
     lv_obj_invalidate(lv_layer_top());
     lv_refr_now(s_disp);
+    geo_walk(lv_screen_active());
+    geo_walk(lv_layer_top());
     if (s_nshots < MAX_SHOTS) {
         snprintf(s_shots[s_nshots].name, sizeof s_shots[s_nshots].name, "%s", name);
         s_shots[s_nshots].h = fnv64(s_fb, sizeof s_fb);
@@ -281,7 +432,6 @@ static void check_expect(const char *page)
 }
 
 /* Dump every text on a page (--dump), to write expect.txt from. */
-static int s_dump;
 static void dump_texts(const char *page)
 {
     if (!s_dump) return;
@@ -307,7 +457,14 @@ static void check_missing(const char *page)
     s_nmissing = 0;
 }
 
-static void page_done(const char *page) { check_expect(page); check_missing(page); dump_texts(page); }
+static void check_geo(const char *page)
+{
+    for (int i = 0; i < s_ngeo; i++) bad("%s: %s", page, s_geo[i]);
+    if (!s_ngeo) ok("");
+    s_ngeo = 0;
+}
+
+static void page_done(const char *page) { check_expect(page); check_missing(page); check_geo(page); dump_texts(page); }
 
 /* ---- navigation ---- */
 static void to_tab(int i)
@@ -386,6 +543,7 @@ int main(int argc, char **argv)
         else if (!strncmp(argv[i], "--write-golden=", 15)) write_golden = argv[i] + 15;
         else if (!strncmp(argv[i], "--expect=", 9)) expect = argv[i] + 9;
         else if (!strcmp(argv[i], "--dump")) s_dump = 1;
+        else if (!strcmp(argv[i], "--lang=en")) s_lang_en = 1;
     }
     rt_scene = -1;
     for (int s = 0; s < RT_SCENES; s++) if (!strcmp(rt_scene_name(s), s_scene_name)) rt_scene = s;
@@ -395,7 +553,7 @@ int main(int argc, char **argv)
     snprintf(conf, sizeof conf, "/tmp/rt-devui-%d.conf", (int)getpid());
     rt_conf_path = conf;
     FILE *cf = fopen(conf, "w");
-    if (cf) { fprintf(cf, "appearance=%s\n", s_theme); fclose(cf); }
+    if (cf) { fprintf(cf, "appearance=%s\n%s", s_theme, s_lang_en ? "lang=en\n" : ""); fclose(cf); }
     if (expect) load_expect(expect);
 
     lv_init();
@@ -476,6 +634,14 @@ int main(int argc, char **argv)
     settle(100);
     shoot_page("lock-mode-armed", s_tiles[TAB_CELL]);
     page_done("lock-mode-armed");
+    /* 下发了、读回超时（不按第二下：直接当作 4G+3G 已下发，场景读回的是别的模式）：
+     * 两行说明「再试一次，不行就重启设备、开机后马上切」要放得下（2026-09-29） */
+    s_lk_mode_pending = -1;
+    s_lk_mode_want = 3;
+    s_lk_mode_sent = lv_tick_get();
+    settle(LK_MODE_WAIT_MS + 1100);
+    shoot_page("lock-mode-failed", s_tiles[TAB_CELL]);
+    page_done("lock-mode-failed");
 
     /* 情景：每一次点击都要当场看得见（2026-09-25） */
     to_sub(SUB_SCENE, -1);
@@ -604,6 +770,48 @@ int main(int argc, char **argv)
         s_autooff_ms = 0;
     }
 
+    /* 语言 (L2): busy → no exec for 语言 nor 外观, the row says why; a switch
+     * execs back to 系统; the harness's exec "fails", so the setting, the
+     * file and the segment go back, the frame goes and the row says so. */
+    if (!strcmp(s_theme, "light") && rt_scene == RT_GOOD) {
+        int other = !lang_is_en(), n0 = rt_exec_calls;
+        sub_close();
+        to_tab(TAB_SYS);
+        rt_busy = 1;
+        click(s_lang_btn[other]);
+        if (rt_exec_calls != n0) bad("busy: a language tap exec'd");
+        else if (s_cf_lang_en != lang_is_en()) bad("busy: the language setting changed");
+        else if (!strstr(lv_label_get_text(s_lang_note), "Busy")) bad("busy: the 语言 row did not say why");
+        else ok("");
+        click(s_ap_btn[1]);   /* 深色 */
+        if (rt_exec_calls != n0) bad("busy: an appearance tap exec'd");
+        else if (s_cf_appear != UI_APPEAR_LIGHT) bad("busy: appearance changed to %s", ui_appear_name(s_cf_appear));
+        else ok("");
+        rt_busy = 0;
+        click(s_lang_btn[other]);
+        FILE *cf = fopen(rt_conf_path, "r");
+        char conf[512] = "";
+        if (cf) { conf[fread(conf, 1, sizeof conf - 1, cf)] = 0; fclose(cf); }
+        if (rt_exec_calls != n0 + 1) bad("language: exec calls %d, want 1", rt_exec_calls - n0);
+        else if (rt_exec_last.tab != TAB_SYS) bad("language: exec tab %d, want %d", rt_exec_last.tab, TAB_SYS);
+        else if (s_cf_lang_en != lang_is_en()) bad("failed exec left lang=%d", s_cf_lang_en);
+        else if (!strstr(conf, lang_is_en() ? "lang=en\n" : "lang=zh\n")) bad("failed exec left devui.conf: %s", conf);
+        else if (s_lang_seg.sel != lang_is_en()) bad("failed exec left the segment on %d", s_lang_seg.sel);
+        else if (!s_lang_frame || !lv_obj_has_flag(s_lang_frame, LV_OBJ_FLAG_HIDDEN)) bad("failed exec left the switching frame up");
+        else if (!strstr(lv_label_get_text(s_lang_note), "Couldn't switch")) bad("failed exec: the 语言 row did not say so");
+        else ok("");
+        lv_obj_scroll_to_y(tab_scroller(TAB_SYS), 0, LV_ANIM_OFF);
+        settle(50);
+        shoot_page("system-lang-failed", s_tiles[TAB_SYS]);
+        page_done("system-lang-failed");
+        lang_frame_show(other);
+        settle(50);
+        shoot_page("lang-switching", s_lang_frame);
+        page_done("lang-switching");
+        lang_frame_hide();
+        lang_note_reset_cb(NULL);
+    }
+
     /* 左边缘右滑 = 返回（放在息屏测试后面：真按下会刷新「最近有操作」）；起点压在一行会断网的选项上，这一行不能被点中 */
     {
         int x, y;
@@ -673,6 +881,7 @@ int main(int argc, char **argv)
     }
 
     unlink(conf);
-    printf("[%s/%s] %d shots, passed %d, failed %d\n", s_scene_name, s_theme, s_nshots, s_pass, s_fail);
+    printf("[%s/%s%s] %d shots, passed %d, failed %d, truncated labels %d\n", s_scene_name, s_theme,
+           s_lang_en ? "/en" : "", s_nshots, s_pass, s_fail, s_ntrunc);
     return s_fail ? 1 : 0;
 }

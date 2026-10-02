@@ -11,7 +11,7 @@
 /* 一句几秒后消失的提示。点击的结果（「已经是…」「正忙」「没执行：…」）
  * 在 eSIM 页写在右上状态行（150 宽，约 12 个字），要短
  * 用它说出来，不静默忽略（2026-09-25）。 */
-typedef struct { char txt[140]; uint32_t col, until; } net_flash_t;
+typedef struct { char txt[256]; uint32_t col, until; } net_flash_t;
 
 static void net_flash(net_flash_t *f, uint32_t col, int ms, const char *fmt, ...)
 {
@@ -35,10 +35,10 @@ static void esim_row_cb(lv_event_t *e)
     int r = esim_select(idx);
     switch (r) {
     case ESIM_SEL_CURRENT:
-        net_flash(&s_es_flash, T->accT, 3000, "这张就是正在用的");
+        net_flash(&s_es_flash, T->accT, 3000, "%s", TR("这张就是正在用的"));
         break;
     case ESIM_SEL_BUSY:
-        net_flash(&s_es_flash, T->t2, 3000, "正在切换，等它做完");
+        net_flash(&s_es_flash, T->t2, 3000, "%s", TR("正在切换，等它做完"));
         break;
     case ESIM_SEL_COOLDOWN:
     case ESIM_SEL_FAIL:
@@ -56,25 +56,25 @@ static void esim_row_cb(lv_event_t *e)
 static void build_sub_esim(lv_obj_t *t)
 {
     t = uk_scroll(t, 0, UI_SUB_VIEW, 4 + 20 + UK_HERO_H + 10 + 20 + 3 * UK_ROW_H + 10 + 20 + ESIM_MAX_ROWS * ESIM_ROW_H + 16);
-    uk_section(t, 4, "当前配置");
+    uk_section(t, 4, TR("当前配置"));
     lv_obj_t *cur = uk_card(t, UK_MARGIN, 24, UK_CARD_W, UK_HERO_H);
     uk_hero(&s_es_hero, cur, UF.cj22b);
     uk_hero_tone(&s_es_hero, 4);
     s_es_cur = s_es_hero.big;
     s_es_state = s_es_hero.r2;
-    lv_label_set_text(s_es_hero.st, "使用中");
+    lv_label_set_text(s_es_hero.st, TR("使用中"));
 
     /* 卡信息：实体 SIM 和 eSIM 都列（2026-09-25：插普通 SIM 时这页原来只有「-」） */
     int y = 24 + UK_HERO_H + 10;
-    uk_section(t, y, "卡信息");
+    uk_section(t, y, TR("卡信息"));
     lv_obj_t *info = uk_card(t, UK_MARGIN, y + 20, UK_CARD_W, 3 * UK_ROW_H);
-    static const char *const k_info[3] = { "号码", "ICCID", "IMSI" };
-    for (int i = 0; i < 3; i++) s_es_info[i] = uk_row(info, i * UK_ROW_H, k_info[i], i == 0);
+    static const char *const k_info[3] = { N_("号码"), "ICCID", "IMSI" };
+    for (int i = 0; i < 3; i++) s_es_info[i] = uk_row(info, i * UK_ROW_H, TR(k_info[i]), i == 0);
     y += 20 + 3 * UK_ROW_H + 10;
-    s_es_list_sec = uk_section(t, y, "eSIM 配置");
+    s_es_list_sec = uk_section(t, y, TR("eSIM 配置"));
     s_es_list_card = uk_card(t, UK_MARGIN, y + 20, UK_CARD_W, ESIM_MAX_ROWS * ESIM_ROW_H);
     lv_obj_set_style_clip_corner(s_es_list_card, true, 0);
-    s_es_empty = uk_label_w(s_es_list_card, UF.cj14, T->t3, UK_PAD, 11, UK_CARD_W - 2 * UK_PAD, 0, "读取中…");
+    s_es_empty = uk_label_w(s_es_list_card, UF.cj14, T->t3, UK_PAD, 11, UK_CARD_W - 2 * UK_PAD, 0, TR("读取中…"));
     for (int i = 0; i < ESIM_MAX_ROWS; i++) {
         lv_obj_t *row = uk_box(s_es_list_card, 0, i * ESIM_ROW_H, UK_CARD_W, ESIM_ROW_H, T->card, 0);
         uk_tappable(row, esim_row_cb, (void *)(intptr_t)i);

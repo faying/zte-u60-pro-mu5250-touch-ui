@@ -16,3 +16,4 @@ ok	sms	短信告警	已配置
 ok	crashes	崩溃记录	最近 24 小时没有
 ok	disk	/data 空间	剩 1171 MB
 ok	standby	待机	有流量在用，不判待机（最近 15 分钟 10 行里 10 行有流量）
+ok	manifest	清单	还没有清单

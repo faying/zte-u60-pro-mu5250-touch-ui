@@ -24,7 +24,7 @@ OUT=$(cd "$OUT" && pwd)
 docker build --platform linux/amd64 -t "$IMAGE" -f "$ROOT/Dockerfile.build" "$ROOT"
 docker run --rm --platform linux/amd64 -v "$ROOT":/src:ro -v "$OUT":/out "$IMAGE" bash -c "
 set -e
-git config --global safe.directory '*'
+cd / && git config --global safe.directory '*'  # not in /src: a worktree's .git file points outside the container
 mkdir -p /b && cd /src
 tar --exclude='./out' --exclude='*.o' --exclude='./third_party/lvgl' --exclude='./.git' -cf - . | tar -C /b -xf -
 cd /b

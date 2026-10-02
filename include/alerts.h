@@ -14,7 +14,7 @@ typedef struct {
     long seq;
     long time;          /* 设备时钟秒（当地时间标成 UTC），0 = 当时时钟未校准 */
     long uptime;        /* 开机后秒数，time 为 0 时用它 */
-    char label[96];     /* 按类别写好的中文一句话 */
+    char label[128];    /* 按类别写好的一句话（agent 给的中文或 label_en；英文最长约 92 字节） */
     char text[128];     /* 事件原文（英文技术说明），小字显示 */
     int  unread;
 } alert_item_t;

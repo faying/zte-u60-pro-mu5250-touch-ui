@@ -64,7 +64,7 @@ int main(void)
         int ok = net_view_parse(k_views[i].json, &v);
         CHECK(ok && v.ca_n <= NV_CA_MAX && v.bars_tier >= -1 && v.bars_tier <= 2);
     }
-    CHECK(net_view_parse(view("nosvc"), &v) && v.nosvc);
+    CHECK(net_view_parse(view("nosvc"), &v) && v.nosvc && (v.state == NV_STATE_NOSVC || v.state == NV_STATE_SOS));
     CHECK(net_view_parse(view("nosim"), &v) && !v.sim_usable);
 
     /* broken or empty input: nothing claimed */
@@ -81,6 +81,51 @@ int main(void)
             o += (size_t)snprintf(big + o, sizeof big - o, "%s{\"kind\":\"lte\",\"band\":%d,\"active\":true}", i ? "," : "", i + 1);
         snprintf(big + o, sizeof big - o, "]}");
         CHECK(net_view_parse(big, &v) == 1 && v.ca_n == NV_CA_MAX && v.ca[4].band == 5 && v.ca[4].kind == 'B');
+    }
+
+    /* story.state as a code; an old datad without it, or a new code → unknown */
+    {
+        static const struct { const char *s; nv_state_t want; } st[] = {
+            { "ok", NV_STATE_OK }, { "nosim", NV_STATE_NOSIM }, { "airplane", NV_STATE_AIRPLANE },
+            { "sos", NV_STATE_SOS }, { "nosvc", NV_STATE_NOSVC }, { "nodata", NV_STATE_NODATA },
+            { "limit", NV_STATE_LIMIT }, { "weak", NV_STATE_WEAK }, { "noise", NV_STATE_NOISE },
+            { "crowd", NV_STATE_CROWD }, { "only2g", NV_STATE_ONLY2G }, { "only3g", NV_STATE_ONLY3G },
+            { "narrow", NV_STATE_NARROW }, { "", NV_STATE_UNKNOWN }, { "later", NV_STATE_UNKNOWN },
+        };
+        char js[160];
+        for (size_t i = 0; i < sizeof st / sizeof *st; i++) {
+            snprintf(js, sizeof js, "{\"story\":{\"headline\":\"x\",\"state\":\"%s\"}}", st[i].s);
+            CHECK(net_view_parse(js, &v) == 1 && v.state == st[i].want);
+        }
+        CHECK(net_view_parse("{\"story\":{\"headline\":\"x\"}}", &v) == 1 && v.state == NV_STATE_UNKNOWN);
+    }
+
+    /* English: every *_en sibling replaces its field; missing / empty → the Chinese */
+    {
+        static const char js[] =
+            "{\"story\":{\"tone\":\"warn\",\"cause\":\"weak\",\"headline\":\"慢：信号弱\",\"hint\":\"离基站远\","
+            "\"rat\":\"5G\",\"link\":\"单载波 · 带宽一般\",\"sig\":\"弱\",\"noise\":\"大\",\"load\":\"高\",\"limit\":\"无\","
+            "\"state\":\"weak\",\"headline_en\":\"Slow\",\"hint_en\":\"Weak signal; try near a window\","
+            "\"link_en\":\"Single carrier · Fair\",\"sig_en\":\"Weak\",\"noise_en\":\"high\",\"load_en\":\"\","
+            "\"limit_en\":\"none\"},"
+            "\"fine\":\"5G NSA · 4G 锚点\",\"fine_en\":\"5G NSA · 4G anchor\",\"name\":\"中国移动\",\"name_en\":\"China Mobile\","
+            "\"where\":\"本地\",\"where_en\":\"Local\",\"ca_val\":\"单载波\",\"ca_val_en\":\"Single carrier\","
+            "\"ca_sub\":\"↓ n78   ↑ n78\",\"mode_word\":\"自动\",\"mode_word_en\":\"Auto\"}";
+        CHECK(net_view_parse(js, &v) == 1 && v.state == NV_STATE_WEAK);
+        CHECK(!strcmp(v.story.headline, "慢：信号弱") && !strcmp(v.name, "中国移动") && !strcmp(v.story.load, "高"));
+        lang_set_en(1);
+        CHECK(net_view_parse(js, &v) == 1 && v.state == NV_STATE_WEAK && v.story.cause == UI_CAUSE_WEAK);
+        CHECK(!strcmp(v.story.headline, "Slow") && !strcmp(v.story.hint, "Weak signal; try near a window"));
+        CHECK(!strcmp(v.story.rat, "5G") && !strcmp(v.story.link, "Single carrier · Fair"));
+        CHECK(!strcmp(v.story.sig, "Weak") && !strcmp(v.story.noise, "high") && !strcmp(v.story.limit, "none"));
+        CHECK(!strcmp(v.story.load, "高"));                       /* empty _en → the Chinese */
+        CHECK(!strcmp(v.fine, "5G NSA · 4G anchor") && !strcmp(v.name, "China Mobile") && !strcmp(v.where, "Local"));
+        CHECK(!strcmp(v.ca_val, "Single carrier") && !strcmp(v.ca_sub, "↓ n78   ↑ n78") && !strcmp(v.mode_word, "Auto"));
+        /* an old datad (no *_en at all) still shows its Chinese */
+        CHECK(net_view_parse("{\"story\":{\"headline\":\"顺畅\"},\"name\":\"未注册\"}", &v) == 1 &&
+              !strcmp(v.story.headline, "顺畅") && !strcmp(v.name, "未注册"));
+        CHECK(net_view_parse(view("good"), &v) == 1 && !strcmp(v.story.headline, "All good") && v.state == NV_STATE_OK);
+        lang_set_en(0);
     }
 
     net_view_placeholder(&v, "读取中…", "");

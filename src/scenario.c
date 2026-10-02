@@ -10,6 +10,7 @@
 #include "scenario.h"
 #include "agent_client.h"
 #include "json.h"
+#include "lang.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -115,7 +116,11 @@ int scenario_poll(int active)
         s_configured = bool_field(sc, "configured");
         s_enabled = bool_field(sc, "enabled");
         s_wifi_off = bool_field(sc, "wifi_off");
-        str_field(sc, "name", s_name, sizeof s_name);
+        /* English: name_en, given for the factory scenarios (在家 / 外出 / 国外)
+         * the user has not renamed; otherwise the name as typed. Display only. */
+        if (lang_is_en()) str_field(sc, "name_en", s_name, sizeof s_name);
+        else s_name[0] = 0;
+        if (!s_name[0]) str_field(sc, "name", s_name, sizeof s_name);
         str_field(sc, "pin", s_pin, sizeof s_pin);
         s_last_switch = json_get_int(sc, "last_switch", 0);
         s_abroad = bool_field(sc, "abroad");

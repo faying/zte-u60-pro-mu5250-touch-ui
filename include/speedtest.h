@@ -25,7 +25,7 @@ typedef enum {
 } speedtest_phase_t;
 
 speedtest_phase_t speedtest_phase(void);
-const char *speedtest_phase_label(void);   /* 中文短语，可直接显示 */
+const char *speedtest_phase_label(void);   /* 短语，已按界面语言 TR，可直接显示 */
 int    speedtest_progress_pct(void);       /* 0-100 */
 double speedtest_live_mbps(void);          /* 下载/上传阶段的实时速率 */
 double speedtest_ping_ms(void);            /* < 0 = 还没测出 */

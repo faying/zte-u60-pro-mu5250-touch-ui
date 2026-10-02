@@ -25,6 +25,7 @@
 #include "ui_exec.h"
 #include "battery_est.h"
 #include "ui_kit.h"
+#include "lang.h"
 #include "lvgl.h"
 
 #include <fcntl.h>
@@ -162,7 +163,7 @@ static lv_obj_t *s_es_row[ESIM_MAX_ROWS], *s_es_row_name[ESIM_MAX_ROWS],
                 *s_es_row_sub[ESIM_MAX_ROWS], *s_es_row_tag[ESIM_MAX_ROWS];
 /* System page */
 static lv_obj_t *s_set_bright, *s_set_bright_v, *s_vendor_btn, *s_vendor_lbl;
-static uk_seg_t  s_off_seg, s_ap_seg;
+static uk_seg_t  s_off_seg, s_ap_seg, s_lang_seg;
 static uint32_t  s_vendor_arm;
 static lv_obj_t *s_set_ver, *s_set_imei, *s_set_usb, *s_set_fw, *s_set_health;
 static lv_obj_t *s_sy_bat, *s_sy_est, *s_sy_chg, *s_sy_cpu, *s_sy_mem, *s_sy_up;
@@ -192,7 +193,13 @@ typedef struct {
     uint32_t sent;            /* 已下发… since (0 = not waiting) */
 } band_group_t;
 static band_group_t s_bg[3];
-static lv_obj_t *s_lk_mode_btn[4], *s_lk_mode_lbl, *s_lk_reset_lbl, *s_lk_reset_btn, *s_lk_reset_card,
+/* 蜂窝页「网络模式」：取值和顺序照原厂网页（config.js AUTO_MODES：5G/4G/3G、5G NSA = LTE_AND_5G、
+ * 5G SA = Only_5G、4G/3G、4G Only）。5G SA 要在下标 2（按下时的国外提醒看它）。
+ * 名字和 datad 的制式文字一致（WCDMA_AND_LTE 是「4G + 3G」，这里放不下空格）。 */
+#define LK_MODES 5
+static const char *const k_lk_mode_v[LK_MODES] = { "WL_AND_5G", "LTE_AND_5G", "Only_5G", "WCDMA_AND_LTE", "Only_LTE" };
+static const char *const k_lk_mode_n[LK_MODES] = { N_("自动"), "5G NSA", "5G SA", "4G+3G", "4G" };   /* TR() where shown */
+static lv_obj_t *s_lk_mode_btn[LK_MODES], *s_lk_mode_lbl, *s_lk_reset_lbl, *s_lk_reset_btn, *s_lk_reset_card,
                 *s_lk_reset_sec, *s_lk_scroll;
 static uk_seg_t  s_lk_seg;
 static uint32_t  s_lk_mode_arm, s_lk_reset_arm;
@@ -200,6 +207,8 @@ static int       s_lk_mode_pending = -1;
 /* 网络模式已发出、等读回：目标项和发出的时间（-1 = 没有在等） */
 static int       s_lk_mode_want = -1;
 static uint32_t  s_lk_mode_sent;
+/* 最近一次读回的设备模式（下标，-1 = 不在这一排或从没读到）：datad 连不上时高亮留在它上面 */
+static int       s_lk_mode_real = -1;
 #define LK_MODE_WAIT_MS 20000
 /* SMS subpage: a toolbar (unread count + 全部已读), then one card per
  * message showing two lines; tapping a card opens SUB_SMS_DETAIL. */
@@ -334,6 +343,9 @@ static char s_cf_st_src[16] = "auto", s_cf_st_dir[16] = "both";
  * dark. The litehtml UI's own save drops these keys, which falls back to light. */
 static ui_appear_t s_cf_appear = UI_APPEAR_LIGHT;
 static char s_cf_dark_from[8] = "19:00", s_cf_dark_to[8] = "07:00";
+/* lang=en → English (include/lang.h); u60-guard reads the same line for the
+ * alert SMS. Chosen once per process, like the theme. */
+static int s_cf_lang_en = 0;
 
 static void load_devui_conf(void)
 {
@@ -359,6 +371,7 @@ static void load_devui_conf(void)
         }
         else if (sscanf(line, "appearance_dark_from=%7s", sval) == 1) snprintf(s_cf_dark_from, sizeof s_cf_dark_from, "%.7s", sval);
         else if (sscanf(line, "appearance_dark_to=%7s", sval) == 1)   snprintf(s_cf_dark_to, sizeof s_cf_dark_to, "%.7s", sval);
+        else if (!strncmp(line, "lang=", 5)) s_cf_lang_en = lang_parse(line + 5);
     }
     fclose(fp);
 }
@@ -369,10 +382,10 @@ static void save_devui_conf(void)
     if (!fp) return;
     fprintf(fp,
             "theme=%d\nspeed_bits=%d\nshow_batpct=%d\nautooff=%d\nrefresh_ms=%d\nsig_read=%d\nsig_parse=%d\nbright=%d\nst_src=%s\nst_dir=%s\nst_dur=%d\n"
-            "appearance=%s\nappearance_dark_from=%s\nappearance_dark_to=%s\n",
+            "appearance=%s\nappearance_dark_from=%s\nappearance_dark_to=%s\nlang=%s\n",
             s_cf_theme, s_cf_speed_bits, s_cf_show_batpct, s_cf_autooff_ms, s_cf_refresh_ms,
             s_cf_sig_read, s_cf_sig_parse, s_cf_bright, s_cf_st_src, s_cf_st_dir, s_cf_st_dur,
-            ui_appear_name(s_cf_appear), s_cf_dark_from, s_cf_dark_to);
+            ui_appear_name(s_cf_appear), s_cf_dark_from, s_cf_dark_to, s_cf_lang_en ? "en" : "zh");
     fclose(fp);
 }
 
@@ -388,6 +401,8 @@ static void topbar_speed_unit_cb(lv_event_t *e)
  * of this binary (ui_exec.c), which picks the theme before its first object.
  * Same pid and comm, so u60-uid sees no restart. */
 static void appearance_ui_sync(void);   /* the 外观 buttons, defined with the 系统 page */
+static void lang_ui_note(const char *msg, int warn);   /* the 语言 row's small line, ditto */
+static int ui_busy(void);
 
 /* Device-local minute of day (the clock is local time labelled UTC, so
  * localtime gives the right digits), or -1 while the clock is unsynced. */
@@ -440,6 +455,11 @@ static void appearance_set(ui_appear_t a)
     int old_theme = s_cf_theme;
     if (a == old) return;
     int dark = appear_resolve(a);
+    if (dark != s_dark && ui_busy()) {   /* the exec would cut a speed test or an eSIM switch short (L2 R12) */
+        appearance_ui_sync();
+        lang_ui_note(TR("测速或切卡进行中，完成后再换外观"), 1);
+        return;
+    }
     s_cf_appear = a;
     s_cf_theme = ui_legacy_theme_value(dark);
     save_devui_conf();
@@ -449,6 +469,69 @@ static void appearance_set(ui_appear_t a)
         save_devui_conf();
     }
     appearance_ui_sync();
+}
+
+/* 系统 → 语言 (L2, manager docs/designs/ui-english.md R1/R9/R10): the same
+ * exec as a theme switch, back on this tab and scroll position. First a full
+ * screen "switching" frame in both languages, held long enough to be seen —
+ * the exec drops the DRM fd and the panel goes dark until the new process
+ * draws. Busy (speed test, eSIM switch): no switch, say why. Exec failed:
+ * the setting goes back, the frame goes, the row says so. */
+#ifndef UI_LANG_HOLD_MS
+#define UI_LANG_HOLD_MS 400
+#endif
+static lv_obj_t *s_lang_frame;
+
+static void lang_frame_show(int to_en)
+{
+    if (!s_lang_frame) {
+        s_lang_frame = lv_obj_create(lv_layer_top());
+        lv_obj_remove_style_all(s_lang_frame);
+        lv_obj_set_size(s_lang_frame, UI_W, UI_H);
+        lv_obj_set_style_bg_color(s_lang_frame, lv_color_hex(T->bg), 0);
+        lv_obj_set_style_bg_opa(s_lang_frame, LV_OPA_COVER, 0);
+        lv_obj_add_flag(s_lang_frame, LV_OBJ_FLAG_CLICKABLE);   /* swallows taps while it is up */
+        for (int i = 0; i < 2; i++) {
+            lv_obj_t *l = lv_label_create(s_lang_frame);
+            lv_obj_set_style_text_font(l, UF.cj20b, 0);
+            lv_obj_set_style_text_color(l, lv_color_hex(T->t1), 0);
+            lv_obj_align(l, LV_ALIGN_CENTER, 0, i ? 16 : -16);
+        }
+    }
+    /* both languages whichever way: whoever reads one of them knows what is happening */
+    lv_label_set_text(lv_obj_get_child(s_lang_frame, 0), to_en ? "正在切换到 English…" : "正在切换到中文…");
+    lv_label_set_text(lv_obj_get_child(s_lang_frame, 1), to_en ? "Switching to English…" : "Switching to 中文…");
+    lv_obj_remove_flag(s_lang_frame, LV_OBJ_FLAG_HIDDEN);
+}
+
+static void lang_frame_hide(void)
+{
+    if (s_lang_frame) lv_obj_add_flag(s_lang_frame, LV_OBJ_FLAG_HIDDEN);
+}
+
+static void lang_set(int en)
+{
+    en = !!en;
+    if (en == s_cf_lang_en) return;
+    if (ui_busy()) {
+        uk_seg_set(&s_lang_seg, s_cf_lang_en);
+        lang_ui_note("测速或切卡中，稍后再切 · Busy, try later", 1);   /* one 12 px line */
+        return;
+    }
+    s_vendor_arm = 0;
+    uk_seg_set(&s_lang_seg, en);
+    s_cf_lang_en = en;
+    save_devui_conf();                   /* u60-guard's alert SMS follows from the next one */
+    lang_frame_show(en);
+    lv_refr_now(NULL);
+    if (UI_LANG_HOLD_MS > 0) usleep(UI_LANG_HOLD_MS * 1000);
+    if (theme_exec(0) != 0) {
+        s_cf_lang_en = !en;
+        save_devui_conf();
+        lang_frame_hide();
+        uk_seg_set(&s_lang_seg, s_cf_lang_en);
+        lang_ui_note("没切成 · Couldn't switch", 1);
+    }
 }
 
 /* Something a switch would cut off mid-way: a running speed test, a delay
@@ -573,7 +656,7 @@ static void utf8_prefix(char *out, size_t cap, const char *src)
 
 static void set_label_fmt(lv_obj_t *label, char *cache, size_t cache_sz, const char *fmt, ...)
 {
-    char buf[160];
+    char buf[256];
     va_list ap;
     va_start(ap, fmt);
     vsnprintf(buf, sizeof buf, fmt, ap);
@@ -674,11 +757,11 @@ static void sub_show(int id)
 {
     /* 标题 = 入口上的字。按下标写，插页不会错位。 */
     static const char *const k_sub_title[SUB_N] = {
-        [SUB_SMS] = "短信", [SUB_CELL] = "小区信息", [SUB_LOCK] = "锁频",
-        [SUB_SPEED] = "测速", [SUB_ESIM] = "SIM 与 eSIM",
-        [SUB_PERF] = "性能测试", [SUB_TS] = "Tailscale", [SUB_SMS_DETAIL] = "短信详情",
-        [SUB_ALERTS] = "健康与告警", [SUB_NET] = "运营商选择", [SUB_SCENE] = "情景", [SUB_APN] = "APN",
-        [SUB_ALERT_DETAIL] = "详情",
+        [SUB_SMS] = N_("短信"), [SUB_CELL] = N_("小区信息"), [SUB_LOCK] = N_("锁频"),
+        [SUB_SPEED] = N_("测速"), [SUB_ESIM] = N_("SIM 与 eSIM"),
+        [SUB_PERF] = N_("性能测试"), [SUB_TS] = "Tailscale", [SUB_SMS_DETAIL] = N_("短信详情"),
+        [SUB_ALERTS] = N_("健康与告警"), [SUB_NET] = N_("运营商选择"), [SUB_SCENE] = N_("情景"), [SUB_APN] = "APN",
+        [SUB_ALERT_DETAIL] = N_("详情"),
     };
     if (id < 0 || id >= SUB_N) return;
     for (int i = 0; i < SUB_N; i++)
@@ -686,7 +769,7 @@ static void sub_show(int id)
             if (i == id) lv_obj_remove_flag(s_sub_page[i], LV_OBJ_FLAG_HIDDEN);
             else         lv_obj_add_flag(s_sub_page[i], LV_OBJ_FLAG_HIDDEN);
         }
-    lv_label_set_text(s_sub_title, k_sub_title[id]);
+    lv_label_set_text(s_sub_title, TR(k_sub_title[id]));
     lv_obj_remove_flag(s_sub_layer, LV_OBJ_FLAG_HIDDEN);
     uk_anim_push(s_sub_layer);
     s_sub_cur = id;
@@ -775,7 +858,7 @@ static int sub_visible(int id)
  * capsule floats over the page (glass, rim, soft shadow; no real blur: it is
  * in every frame). It hides while a subpage or a sheet is open: subpages have
  * their own ‹ back button, top-left, and sheets cover the bottom. */
-static const char *k_tab_names[UI_TABS] = { "首页", "蜂窝", "Wi-Fi", "出口", "系统" };
+static const char *k_tab_names[UI_TABS] = { N_("首页"), N_("蜂窝"), "Wi-Fi", N_("出口"), N_("系统") };   /* Home / Cellular / Wi-Fi / Route / System */
 static lv_obj_t *s_tab_bar, *s_tab_pill[UI_TABS];
 
 static int any_sheet_open(void);
@@ -871,7 +954,7 @@ static void build_tabbar(void)
         lv_obj_set_style_border_width(s_tab_pill[i], 1, 0);
         lv_obj_set_style_border_color(s_tab_pill[i], lv_color_black(), 0);
         lv_obj_set_style_border_opa(s_tab_pill[i], T->rim_opa, 0);
-        s_tabs[i] = uk_label(cell, UF.cj13, T->t2, 0, 0, k_tab_names[i]);
+        s_tabs[i] = uk_label(cell, UF.cj13, T->t2, 0, 0, TR(k_tab_names[i]));
         lv_obj_center(s_tabs[i]);
     }
     update_tabs();
@@ -1028,6 +1111,7 @@ void ui_create(void)
     /* Settings and theme before the first object: the first frame is already
      * in the right colours, with no flash of the other theme. */
     load_devui_conf();
+    lang_set_en(s_cf_lang_en);          /* before the fonts and the first TR() */
     s_dark = appear_resolve(s_cf_appear);
     ui_theme_select(s_dark);
     if (s_cf_theme != ui_legacy_theme_value(s_dark)) {
@@ -1043,8 +1127,9 @@ void ui_create(void)
         s_wake_guard = 1;
         s_wake_idle_last = lv_tick_get();
     }
-    fprintf(stderr, "ui: appearance=%s dark=%d tab=%d screen_off=%d exec_n=%d\n",
-            ui_appear_name(s_cf_appear), s_dark, s_launch.tab, s_launch.screen_off, s_launch.hist.count);
+    fprintf(stderr, "ui: appearance=%s dark=%d lang=%s tab=%d screen_off=%d exec_n=%d\n",
+            ui_appear_name(s_cf_appear), s_dark, s_cf_lang_en ? "en" : "zh", s_launch.tab, s_launch.screen_off,
+            s_launch.hist.count);
 
     lv_obj_t *scr = lv_screen_active();
     lv_obj_set_style_bg_color(scr, lv_color_hex(T->bg), 0);

@@ -52,7 +52,7 @@ static void md_sw_cb(lv_event_t *e)
         s_md_arm = 0;
         s_md_pending = -1;
         s_md_hold = now ? now : 1;
-        md_note(on ? "已下发，正在拨号…" : "已下发，正在断开…", T->t2);
+        md_note(on ? TR("已下发，正在拨号…") : TR("已下发，正在断开…"), T->t2);
         return;
     }
     /* 第一下：开关先回原位，整行说清按第二下会怎样 */
@@ -60,8 +60,8 @@ static void md_sw_cb(lv_event_t *e)
     s_md_arm = now ? now : 1;
     s_md_pending = id;
     s_md_want = on;
-    md_note(id == MD_DATA ? (on ? "再按一次：打开移动数据" : "再按一次：关掉移动数据，所有设备断网")
-                          : (on ? "再按一次：打开数据漫游，按漫游计费" : "再按一次：关掉数据漫游，漫游时会断网"),
+    md_note(id == MD_DATA ? (on ? TR("再按一次：打开移动数据") : TR("再按一次：关掉移动数据，所有设备断网"))
+                          : (on ? TR("再按一次：打开数据漫游，按漫游计费") : TR("再按一次：关掉数据漫游，漫游时会断网")),
             T->warnT);
 }
 
@@ -73,27 +73,27 @@ static void md_refresh(void)
     if (s_md_pending >= 0 && now - s_md_arm >= 5000) {   /* 没按第二下：作罢 */
         s_md_pending = -1;
         s_md_arm = 0;
-        md_note("会断网或按漫游计费，切换要按两次确认", T->t3);
+        md_note(TR("会断网或按漫游计费，切换要按两次确认"), T->t3);
     }
     if (s_md_hold && now - s_md_hold >= 8000) {
         s_md_hold = 0;
-        md_note("会断网或按漫游计费，切换要按两次确认", T->t3);
+        md_note(TR("会断网或按漫游计费，切换要按两次确认"), T->t3);
     }
     int v[2] = { s_aux_data, s_aux_roam };
     for (int i = 0; i < 2; i++) {
         if (s_md_pending != i && !s_md_hold) sw_apply(s_md_sw[i], v[i] == 1);
-        set_label_fmt(s_md_st[i], c_st[i], sizeof c_st[i], "%s", v[i] < 0 ? "—" : v[i] ? "已开启" : "已关闭");
+        set_label_fmt(s_md_st[i], c_st[i], sizeof c_st[i], "%s", v[i] < 0 ? "—" : v[i] ? TR("已开启") : TR("已关闭"));
     }
 }
 
 static void build_cellular(lv_obj_t *t)
 {
     static const int ids1[] = { SUB_ESIM, SUB_APN };
-    static const char *const names1[] = { "SIM 与 eSIM", "APN" };
+    static const char *const names1[] = { N_("SIM 与 eSIM"), "APN" };
     static const int ids2[] = { SUB_NET, SUB_LOCK, SUB_CELL };
-    static const char *const names2[] = { "运营商选择", "锁频", "小区信息" };
+    static const char *const names2[] = { N_("运营商选择"), N_("锁频"), N_("小区信息") };
     static const int ids3[] = { SUB_SMS };
-    static const char *const names3[] = { "短信" };
+    static const char *const names3[] = { N_("短信") };
     t = s_cell_scroll = uk_scroll(t, 0, UI_VIEW_H, 1000);
     lv_obj_set_parent(s_ca_card, t);      /* 当前连接：每个载波（原首页载波明细） */
     lv_obj_set_pos(s_ca_card, UK_MARGIN, 4);
@@ -101,27 +101,26 @@ static void build_cellular(lv_obj_t *t)
     lv_obj_remove_style_all(t);
     lv_obj_remove_flag(t, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_width(t, UK_W);
-    int y = nav_card(t, 4, "SIM 卡", ids1, names1, 2);
+    int y = nav_card(t, 4, N_("SIM 卡"), ids1, names1, 2);
 
-    uk_section(t, y, "移动数据");
+    uk_section(t, y, TR("移动数据"));
     lv_obj_t *mc = uk_card(t, UK_MARGIN, y + 20, UK_CARD_W, 2 * UK_ROW_H + 30);
-    s_md_sw[MD_DATA] = toggle_row(mc, 0, "移动数据", 1, &s_md_st[MD_DATA], md_sw_cb, (void *)(intptr_t)MD_DATA);
-    s_md_sw[MD_ROAM] = toggle_row(mc, UK_ROW_H, "数据漫游", 0, &s_md_st[MD_ROAM], md_sw_cb, (void *)(intptr_t)MD_ROAM);
+    s_md_sw[MD_DATA] = toggle_row(mc, 0, TR("移动数据"), 1, &s_md_st[MD_DATA], md_sw_cb, (void *)(intptr_t)MD_DATA);
+    s_md_sw[MD_ROAM] = toggle_row(mc, UK_ROW_H, TR("数据漫游"), 0, &s_md_st[MD_ROAM], md_sw_cb, (void *)(intptr_t)MD_ROAM);
     s_md_note = uk_label_w(mc, UF.cj12, T->t3, UK_PAD, 2 * UK_ROW_H + 6, UK_CARD_W - 2 * UK_PAD, 0,
-                           "会断网或按漫游计费，切换要按两次确认");
+                           TR("会断网或按漫游计费，切换要按两次确认"));
     y += 20 + 2 * UK_ROW_H + 30 + 10;
 
-    uk_section(t, y, "网络模式");
-    lv_obj_t *md = uk_card(t, UK_MARGIN, y + 20, UK_CARD_W, 84);
-    /* 顺序和取值照原厂网页（config.js AUTO_MODES）：5G NSA = LTE_AND_5G */
-    static const char *const k_mode_lab[4] = { "自动", "5G NSA", "5G SA", "4G" };
-    uk_seg(&s_lk_seg, md, UK_PAD, 12, UK_CARD_W - 2 * UK_PAD, k_mode_lab, 4, lk_mode_cb);
-    for (int i = 0; i < 4; i++) s_lk_mode_btn[i] = s_lk_seg.item[i];
-    s_lk_mode_lbl = uk_label_w(md, UF.cj12, T->t3, UK_PAD, 54, UK_CARD_W - 2 * UK_PAD, 0, "切换会短暂断网，需要按两次确认");
-    y += 20 + 84 + 10;
+    uk_section(t, y, TR("网络模式"));
+    /* 高 100：没切成时的说明要两行（再试一次，不行就重启后马上切） */
+    lv_obj_t *md = uk_card(t, UK_MARGIN, y + 20, UK_CARD_W, 100);
+    uk_seg(&s_lk_seg, md, UK_PAD, 12, UK_CARD_W - 2 * UK_PAD, k_lk_mode_n, LK_MODES, lk_mode_cb);   /* uk_seg TRs the items */
+    for (int i = 0; i < LK_MODES; i++) s_lk_mode_btn[i] = s_lk_seg.item[i];
+    s_lk_mode_lbl = uk_label_w(md, UF.cj12, T->t3, UK_PAD, 54, UK_CARD_W - 2 * UK_PAD, 1, TR("切换会短暂断网，需要按两次确认"));
+    y += 20 + 100 + 10;
 
-    y = nav_card(t, y, "网络", ids2, names2, 3);
-    y = nav_card(t, y, "消息", ids3, names3, 1);
+    y = nav_card(t, y, N_("网络"), ids2, names2, 3);
+    y = nav_card(t, y, N_("消息"), ids3, names3, 1);
     lv_obj_set_height(t, y);
     cell_reflow();
 }
@@ -139,10 +138,10 @@ static void cell_reflow(void)
 static void build_exit(lv_obj_t *t)
 {
     static const int ids[] = { SUB_TS, SUB_SPEED };
-    static const char *const names[] = { "Tailscale", "测速" };
+    static const char *const names[] = { "Tailscale", N_("测速") };
     t = s_nh_scroll[NH_EXIT] = uk_scroll(t, 0, UI_VIEW_H, 1000);
     s_nh_base[NH_EXIT] = 4;   /* 出口 IP（build_sub_net）在最上面，› 行跟在后面（net_reflow） */
-    nav_card(t, 4, "连接与测速", ids, names, 2);
+    nav_card(t, 4, N_("连接与测速"), ids, names, 2);
     s_exit_nav_sec = s_nav_sec;
     s_exit_nav_card = s_nav_card;
 }
@@ -183,14 +182,14 @@ static const ni_client_t *wifi_station_for(const char *mac, const char *ip)
  * 信号说成话；Wi-Fi 几代和协商速率放不下，管理网页的已连设备页有 */
 static void ni_client_line(char *out, size_t n, const ni_client_t *cl)
 {
-    char ra[16], rb[16], band[16] = "", sig[24] = "";
+    char ra[16], rb[16], band[16] = "", sig[48] = "";
     if (cl->down_rate >= 0) fmt_rate_top(ra, sizeof ra, cl->down_rate, s_cf_speed_bits, 0); else snprintf(ra, sizeof ra, "-");
     if (cl->up_rate >= 0)   fmt_rate_top(rb, sizeof rb, cl->up_rate, s_cf_speed_bits, 0);   else snprintf(rb, sizeof rb, "-");
     if (cl->band[0]) snprintf(band, sizeof band, "%s · ", cl->band);
     if (wifi_sig_word(cl->signal_tier))
         snprintf(sig, sizeof sig, " · %s", wifi_sig_word(cl->signal_tier));
-    if (cl->down_rate < 0 && cl->up_rate < 0) snprintf(out, n, "%s速率稍后显示%s", band, sig);
-    else snprintf(out, n, "%s\xE2\x86\x93%s/s \xE2\x86\x91%s/s%s", band, ra, rb, sig);
+    if (cl->down_rate < 0 && cl->up_rate < 0) snprintf(out, n, TR("%s速率稍后显示%s"), band, sig);
+    else snprintf(out, n, "%s↓%s/s ↑%s/s%s", band, ra, rb, sig);
 }
 
 static void refresh_wifi(const devui_data_t *d)
@@ -206,16 +205,16 @@ static void refresh_wifi(const devui_data_t *d)
     set_label_fmt(s_w_ssid, c_ssid, sizeof c_ssid, "%s", d->wifi_ssid[0] ? d->wifi_ssid : "—");
     set_label_fmt(s_w_pass, c_pass, sizeof c_pass, "%s",
                   d->wifi_key[0] ? d->wifi_key
-                  : open          ? "\xE6\x97\xA0\xE5\xAF\x86\xE7\xA0\x81"                   /* 无密码 */
-                                  : "\xE5\xAF\x86\xE7\xA0\x81\xE6\x9C\xAA\xE5\x85\xAC\xE5\xBC\x80"); /* 密码未公开 */
+                  : open          ? TR("无密码")
+                                  : TR("密码未公开"));
     /* The encryption mode as the backend reports it, not a hand-rolled
      * "WPA"/"open" guess — psk2/sae/sae-mixed are meaningfully different
      * and this is the only place in the UI that can tell you which one. */
-    set_label_fmt(s_w_enc, c_enc, sizeof c_enc, "%s", open ? "\xE5\xBC\x80\xE6\x94\xBE" /* 开放 */
+    set_label_fmt(s_w_enc, c_enc, sizeof c_enc, "%s", open ? TR("开放")
                                                           : d->wifi_enc);
     set_label_fmt(s_w_state, c_state, sizeof c_state, "%s",
-                  d->wifi_enabled ? "\xE5\xB7\xB2\xE5\xBC\x80\xE5\x90\xAF"   /* 已开启 */
-                                  : "\xE5\xB7\xB2\xE5\x85\xB3\xE9\x97\xAD"); /* 已关闭 */
+                  d->wifi_enabled ? TR("已开启")
+                                  : TR("已关闭"));
     uk_text_color(s_w_state, d->wifi_enabled ? T->okT : T->t3);
 
     /* Client list — fixed slots, hidden/shown, never created per tick. */
@@ -224,9 +223,9 @@ static void refresh_wifi(const devui_data_t *d)
                 c_cli_mac[WIFI_MAX_CLI][24];
     int n = d->client_n > WIFI_MAX_CLI ? WIFI_MAX_CLI : d->client_n;
     if (d->client_n > WIFI_MAX_CLI)
-        set_label_fmt(s_w_cli_n, c_cli_n, sizeof c_cli_n, "%d/%d \xE5\x8F\xB0" /* 台 */, n, d->client_n);
+        set_label_fmt(s_w_cli_n, c_cli_n, sizeof c_cli_n, TR("%d/%d 台"), n, d->client_n);
     else
-        set_label_fmt(s_w_cli_n, c_cli_n, sizeof c_cli_n, "%d \xE5\x8F\xB0", d->client_n);
+        set_label_fmt(s_w_cli_n, c_cli_n, sizeof c_cli_n, TRN("%d 台", d->client_n), d->client_n);
     int cli_y = 0;
     for (int i = 0; i < WIFI_MAX_CLI; i++) {
         if (i >= n) { uk_show(s_w_cli[i], 0); continue; }
@@ -237,14 +236,14 @@ static void refresh_wifi(const devui_data_t *d)
         /* 这台是 Wi-Fi 设备：第二行换成「5 GHz · ↓… ↑… · 信号很好」，右下是总流量
          * （原情景·网络页的设备流量，2026-09-25 并到这里）；网线 / USB 设备照旧写 MAC */
         const ni_client_t *w = wifi_station_for(d->client[i].mac, d->client[i].ip);
-        static char c_tot[WIFI_MAX_CLI][40];
+        static char c_tot[WIFI_MAX_CLI][64];
         if (w) {
             char line[96], a[16], b[16];
             ni_client_line(line, sizeof line, w);
             set_label_fmt(s_w_cli_mac[i], c_cli_mac[i], sizeof c_cli_mac[i], "%s", line);
             fmt_bytes_total(a, sizeof a, (long)w->down);
             fmt_bytes_total(b, sizeof b, (long)w->up);
-            set_label_fmt(s_w_cli_tot[i], c_tot[i], sizeof c_tot[i], "连上以来 \xE2\x86\x93%s \xE2\x86\x91%s", a, b);
+            set_label_fmt(s_w_cli_tot[i], c_tot[i], sizeof c_tot[i], TR("连上以来 ↓%s ↑%s"), a, b);
         } else {
             set_label_fmt(s_w_cli_mac[i], c_cli_mac[i], sizeof c_cli_mac[i], "%s", d->client[i].mac);
             set_label_fmt(s_w_cli_tot[i], c_tot[i], sizeof c_tot[i], "%s", "");
@@ -268,12 +267,12 @@ static void refresh_wifi(const devui_data_t *d)
     /* DHCP — mirrors htmlmain.c's own summary formatting. */
     static char c_gw[28] = "", c_pool[48] = "", c_lease[24] = "";
     set_label_fmt(s_w_gw, c_gw, sizeof c_gw, "%s", d->dhcp_ip[0] ? d->dhcp_ip : "-");
-    set_label_fmt(s_w_pool, c_pool, sizeof c_pool, "%s \xC2\xB7 \xE5\x85\xB1 %s" /* · 共 */,
+    set_label_fmt(s_w_pool, c_pool, sizeof c_pool, TR("%s · 共 %s"),
                   d->dhcp_start[0] ? d->dhcp_start : "-", d->dhcp_limit[0] ? d->dhcp_limit : "-");
     long lt = atol(d->dhcp_leasetime);
-    if (lt >= 3600)     set_label_fmt(s_w_lease, c_lease, sizeof c_lease, "%ld \xE5\xB0\x8F\xE6\x97\xB6", lt / 3600);
-    else if (lt >= 60)  set_label_fmt(s_w_lease, c_lease, sizeof c_lease, "%ld \xE5\x88\x86\xE9\x92\x9F", lt / 60);
-    else if (lt > 0)    set_label_fmt(s_w_lease, c_lease, sizeof c_lease, "%ld \xE7\xA7\x92", lt);
+    if (lt >= 3600)     set_label_fmt(s_w_lease, c_lease, sizeof c_lease, TR("%ld 小时"), lt / 3600);
+    else if (lt >= 60)  set_label_fmt(s_w_lease, c_lease, sizeof c_lease, TR("%ld 分钟"), lt / 60);
+    else if (lt > 0)    set_label_fmt(s_w_lease, c_lease, sizeof c_lease, TR("%ld 秒"), lt);
     else                set_label_fmt(s_w_lease, c_lease, sizeof c_lease, "%s", "-");
 }
 

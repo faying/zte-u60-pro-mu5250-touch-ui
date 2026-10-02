@@ -34,14 +34,14 @@ static uint32_t s_pw_arm_ms;
 static int s_pw_arm = -1;          /* 0 = 关机 armed, 1 = 重启 armed */
 static int s_pw_going = -1;
 static uint32_t s_pw_go_ms;
-static const char *const k_pw_name[2] = { "关机", "重启" };
+static const char *const k_pw_name[2] = { N_("关机"), N_("重启") };
 
 int ui_powering_down(void) { return s_pw_going >= 0; }
 
 static void power_menu_disarm(void)
 {
     if (s_pw_arm < 0) return;
-    lv_label_set_text(s_pw_lbl[s_pw_arm], k_pw_name[s_pw_arm]);
+    lv_label_set_text(s_pw_lbl[s_pw_arm], TR(k_pw_name[s_pw_arm]));
     lv_obj_set_style_text_color(s_pw_lbl[s_pw_arm], lv_color_hex(s_pw_arm ? T->accT : T->badT), 0);
     s_pw_arm = -1;
 }
@@ -51,7 +51,7 @@ static void power_run(int which)
     s_pw_going = which;
     s_pw_go_ms = lv_tick_get();
     power_menu_set(0);
-    lv_label_set_text(s_pw_cover_lbl, which ? "正在重启…" : "正在关机…");
+    lv_label_set_text(s_pw_cover_lbl, which ? TR("正在重启…") : TR("正在关机…"));
     lv_obj_clear_flag(s_pw_cover, LV_OBJ_FLAG_HIDDEN);
     lv_obj_move_foreground(s_pw_cover);
     backlight_on();
@@ -73,7 +73,7 @@ static void act_power(lv_event_t *e)
     power_menu_disarm();
     s_pw_arm = which;
     s_pw_arm_ms = now;
-    lv_label_set_text(s_pw_lbl[which], which ? "再按一次重启" : "再按一次关机");
+    lv_label_set_text(s_pw_lbl[which], which ? TR("再按一次重启") : TR("再按一次关机"));
     lv_obj_set_style_text_color(s_pw_lbl[which], lv_color_hex(T->warnT), 0);
 }
 static void act_cancel(lv_event_t *e)   { LV_UNUSED(e); power_menu_disarm(); power_menu_set(0); }
@@ -86,7 +86,7 @@ static void power_menu_tick(uint32_t now)
     if (s_pw_going >= 0 && now - s_pw_go_ms >= 40000) {
         if (now - s_pw_go_ms < 41000) {   /* once: last resort */
             system(s_pw_going ? "reboot" : "poweroff");
-            lv_label_set_text(s_pw_cover_lbl, s_pw_going ? "重启没成功，再试一次…" : "关机没成功，再试一次…");
+            lv_label_set_text(s_pw_cover_lbl, s_pw_going ? TR("重启没成功，再试一次…") : TR("关机没成功，再试一次…"));
         } else if (now - s_pw_go_ms >= 80000) {
             lv_obj_add_flag(s_pw_cover, LV_OBJ_FLAG_HIDDEN);
             s_pw_going = -1;
@@ -98,10 +98,10 @@ static void build_power_menu(void)
 {
     uk_sheet(&s_pw_sheet, 120, act_cancel);
     s_power_menu = s_pw_sheet.scrim;
-    lv_obj_t *t = uk_label(s_pw_sheet.panel, UF.cj13, T->t3, 0, 0, "电源");
+    lv_obj_t *t = uk_label(s_pw_sheet.panel, UF.cj13, T->t3, 0, 0, TR("电源"));
     lv_obj_align(t, LV_ALIGN_TOP_MID, 0, 12);
-    s_pw_lbl[0] = uk_sheet_item(&s_pw_sheet, 38, "关机", T->badT, act_power, (void *)(intptr_t)0, NULL);
-    s_pw_lbl[1] = uk_sheet_item(&s_pw_sheet, 78, "重启", T->accT, act_power, (void *)(intptr_t)1, NULL);
+    s_pw_lbl[0] = uk_sheet_item(&s_pw_sheet, 38, TR("关机"), T->badT, act_power, (void *)(intptr_t)0, NULL);
+    s_pw_lbl[1] = uk_sheet_item(&s_pw_sheet, 78, TR("重启"), T->accT, act_power, (void *)(intptr_t)1, NULL);
 
     s_pw_cover = uk_box(lv_layer_top(), 0, 0, UK_W, UK_H, T->bg, 0);
     lv_obj_add_flag(s_pw_cover, LV_OBJ_FLAG_CLICKABLE);   /* swallow taps */

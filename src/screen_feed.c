@@ -39,6 +39,8 @@ static long long now_ms(void)
 
 static int fetch(void)
 {
+    /* still enough with every *_en field (2026-10-01): datad screen/tests.rs
+     * response_fits_the_old_screens_buffers checks the worst case against both */
     static char resp[16384], net[8192];
     char req[160];
     http_resp_t r;

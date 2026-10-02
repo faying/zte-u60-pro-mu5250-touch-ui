@@ -13,7 +13,7 @@ static void list_toolbar(lv_obj_t *t, lv_obj_t **count, lv_obj_t **btn, lv_event
 {
     *count = uk_label(t, UF.cj13, T->t2, UK_MARGIN + 6, 14, "");
     lv_obj_t *l;
-    *btn = uk_button(t, 0, 8, 0, 30, "全部已读", UK_BTN_PLAIN, cb, NULL, &l);
+    *btn = uk_button(t, 0, 8, 0, 30, TR("全部已读"), UK_BTN_PLAIN, cb, NULL, &l);
     lv_obj_set_style_text_font(l, UF.cj13, 0);
     lv_obj_align(*btn, LV_ALIGN_TOP_RIGHT, -UK_MARGIN, 8);
 }
@@ -24,7 +24,7 @@ static void build_sub_sms(lv_obj_t *t)
     s_sms_card = t;
     list_toolbar(t, &s_sms_count, &s_sms_allread_btn, sms_allread_cb);
     s_sms_empty = uk_label_w(t, UF.cj14, T->t3, UK_MARGIN + 6, SMS_TOOLBAR_H + 4, UK_CARD_W - 12, 1,
-                             "没有短信。新短信会显示在这里，点开可看全文。");
+                             TR("没有短信。新短信会显示在这里，点开可看全文。"));
     uk_show(s_sms_empty, 0);
     s_sms_list = uk_card(t, UK_MARGIN, SMS_TOOLBAR_H, UK_CARD_W, SMS_MAX_ROWS * SMS_ROW_H);
     lv_obj_set_style_clip_corner(s_sms_list, true, 0);
@@ -70,10 +70,10 @@ static void open_alerts_cb(lv_event_t *e)
  * 「点进去看不了详情，只能看到预览」）。内容在点的那一刻拷下来。 */
 static void alert_detail_open(const char *title, const char *meta, const char *body)
 {
-    static char c_t[96], c_m[64], c_b[320];
+    static char c_t[128], c_m[64], c_b[320];
     set_label_fmt(s_ald_title, c_t, sizeof c_t, "%s", title);
     set_label_fmt(s_ald_meta, c_m, sizeof c_m, "%s", meta);
-    set_label_fmt(s_ald_body, c_b, sizeof c_b, "%s", body[0] ? body : "（没有更多说明）");
+    set_label_fmt(s_ald_body, c_b, sizeof c_b, "%s", body[0] ? body : TR("（没有更多说明）"));
     lv_obj_scroll_to_y(s_ald_scroll, 0, LV_ANIM_OFF);
     sub_open_child(SUB_ALERT_DETAIL, SUB_ALERTS);
 }
@@ -84,14 +84,14 @@ static void hc_row_click_cb(lv_event_t *e)
     health_item_t h;
     if (idx >= health_count()) return;
     health_get(idx, &h);
-    alert_detail_open(h.label, h.bad ? "■ 体检：异常" : "▲ 体检：需要注意", h.detail);
+    alert_detail_open(h.label, h.bad ? TR("■ 体检：异常") : TR("▲ 体检：需要注意"), h.detail);
 }
 
 static void al_row_click_cb(lv_event_t *e)
 {
     int idx = (int)(intptr_t)lv_event_get_user_data(e);
     alert_item_t a;
-    char meta[64];
+    char meta[64], when[32];
     if (idx >= alerts_count()) return;
     alerts_get(idx, &a);
     if (a.time > 0) {
@@ -99,9 +99,11 @@ static void al_row_click_cb(lv_event_t *e)
         time_t tt = (time_t)a.time;
         struct tm tm;
         localtime_r(&tt, &tm);
-        strftime(meta, sizeof meta, "告警 · %Y-%m-%d %H:%M:%S", &tm);
+        /* the date alone, so the format string stays out of the TR() table */
+        strftime(when, sizeof when, lang_is_en() ? "%d %b %H:%M:%S" : "%Y-%m-%d %H:%M:%S", &tm);
+        snprintf(meta, sizeof meta, TR("告警 · %s"), when);
     } else {
-        snprintf(meta, sizeof meta, "告警 · 开机后 %ld 分钟", a.uptime / 60);
+        snprintf(meta, sizeof meta, TR("告警 · 开机后 %ld 分钟"), a.uptime / 60);
     }
     alert_detail_open(a.label, meta, a.text);
 }
@@ -110,9 +112,9 @@ static void build_sub_alerts(lv_obj_t *t)
 {
     t = s_al_scroll = uk_scroll(t, 0, UI_SUB_VIEW,
                                 HC_TOP + HEALTH_MAX * HC_ROW_H + 30 + SMS_TOOLBAR_H + ALERTS_MAX * AL_ROW_H + 16);
-    uk_section(t, 4, "体检");
+    uk_section(t, 4, TR("体检"));
     s_hc_card = uk_card(t, UK_MARGIN, HC_TOP, UK_CARD_W, UK_ROW_H);
-    s_hc_none = uk_label_w(s_hc_card, UF.cj14, T->t2, UK_PAD, 11, UK_CARD_W - 2 * UK_PAD, 0, "读取中…");
+    s_hc_none = uk_label_w(s_hc_card, UF.cj14, T->t2, UK_PAD, 11, UK_CARD_W - 2 * UK_PAD, 0, TR("读取中…"));
     for (int i = 0; i < HEALTH_MAX; i++) {
         lv_obj_t *c = uk_box(s_hc_card, 0, i * HC_ROW_H, UK_CARD_W, HC_ROW_H, T->card, 0);
         lv_obj_set_style_bg_opa(c, LV_OPA_TRANSP, 0);
@@ -203,12 +205,14 @@ static void build_sub_sms_detail(lv_obj_t *t)
     lv_obj_set_flex_flow(c, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_row(c, 6, 0);
     s_smsd_num = uk_label(c, UF.cj17b, T->t1, 0, 0, "");
+    lv_obj_set_width(s_smsd_num, lv_pct(100));               /* a long sender wraps, not off the card */
+    lv_label_set_long_mode(s_smsd_num, LV_LABEL_LONG_MODE_WRAP);
     s_smsd_date = uk_label(c, UF.n12, T->t3, 0, 0, "");
     s_smsd_body = uk_label(c, UF.cj15, T->t1, 0, 0, "");
     lv_obj_set_width(s_smsd_body, lv_pct(100));
     lv_obj_set_style_text_line_space(s_smsd_body, 6, 0);
     lv_label_set_long_mode(s_smsd_body, LV_LABEL_LONG_MODE_WRAP);
 
-    s_smsd_del_btn = uk_button(sc, 0, 0, UK_CARD_W, 40, "删除这条", UK_BTN_DANGER, smsd_delete_cb, NULL, &s_smsd_del_lbl);
+    s_smsd_del_btn = uk_button(sc, 0, 0, UK_CARD_W, 40, TR("删除这条"), UK_BTN_DANGER, smsd_delete_cb, NULL, &s_smsd_del_lbl);
 }
 

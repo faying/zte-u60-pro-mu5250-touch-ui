@@ -46,6 +46,7 @@ typedef enum {
 extern int  rt_scene;
 extern long rt_now;                   /* what time() returns (device-local labelled UTC) */
 extern int  rt_refreshes;             /* data_refresh() calls so far                     */
+extern int  rt_busy;                  /* speedtest_running(), for the busy-switch tests  */
 extern int  rt_exec_calls;            /* ui_exec_self() calls                            */
 extern ui_launch_t rt_exec_last;      /* what the last one asked for                     */
 extern int  rt_apn_calls;             /* netinfo_apn_use() calls                         */
