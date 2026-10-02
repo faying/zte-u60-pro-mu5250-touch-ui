@@ -61,7 +61,7 @@ static nv_state_t state(const char *obj)
 {
     static const char *const names[] = {
         "", "ok", "nosim", "airplane", "sos", "nosvc", "nodata",
-        "limit", "weak", "noise", "crowd", "only2g", "only3g", "narrow",
+        "limit", "weak", "noise", "crowd", "only2g", "only3g", "narrow", "stall",
     };
     char v[12];
     if (!json_get(obj, "state", v, sizeof v) || !v[0]) return NV_STATE_UNKNOWN;
@@ -135,6 +135,19 @@ int net_view_parse(const char *net, net_view_t *v)
     text(st, "load", s->load, sizeof s->load);
     text(st, "limit", s->limit, sizeof s->limit);
     return s->headline[0] != 0;
+}
+
+int nv_abnormal(nv_state_t st, ui_net_cause_t cause)
+{
+    switch (st) {
+    case NV_STATE_LIMIT: case NV_STATE_WEAK: case NV_STATE_NOISE: case NV_STATE_CROWD:
+    case NV_STATE_NARROW: case NV_STATE_NODATA: case NV_STATE_STALL:
+        return 1;
+    case NV_STATE_UNKNOWN:
+        return cause != UI_CAUSE_NONE;
+    default:
+        return 0;
+    }
 }
 
 void net_view_placeholder(net_view_t *v, const char *headline, const char *why)

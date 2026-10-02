@@ -386,16 +386,17 @@ void uk_hero(uk_hero_t *h, lv_obj_t *card, const lv_font_t *big_font)
 
 void uk_hero_tone(uk_hero_t *h, int tone)
 {
-    static const int n = 5;
-    uint32_t wash[5] = { T->wash, T->washW, T->washB, T->track, T->accS };
-    uint32_t text[5] = { T->okT, T->warnT, T->badT, T->t3, T->accT };
-    uint32_t dot[5]  = { T->green, T->orange, T->red, T->t3, T->blue };
+    static const int n = 8;
+    uint32_t wash[8] = { T->wash, T->washW, T->washB, T->track, T->accS, T->fillGreen, T->fillOrange, T->fillRed };
+    uint32_t text[8] = { T->okT, T->warnT, T->badT, T->t3, T->accT, T->onFill, T->onFill, T->onFill };
+    uint32_t dot[8]  = { T->green, T->orange, T->red, T->t3, T->blue, 0xffffff, 0xffffff, 0xffffff };
     if (tone < 0 || tone >= n) tone = 3;
     uk_bg(h->wash, wash[tone]);
     uk_bg(h->wash2, wash[tone]);
     uk_bg(h->dot, dot[tone]);
     uk_text_color(h->st, text[tone]);
-    uk_text_color(h->big, tone == 3 ? T->t3 : T->t1);
+    /* filled: white text (design doc §1); r1/r2/rtop are the caller's */
+    uk_text_color(h->big, tone == 3 ? T->t3 : tone >= 5 ? 0xffffff : T->t1);
 }
 
 void uk_hero_layout(uk_hero_t *h)

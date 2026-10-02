@@ -86,8 +86,13 @@ static void md_refresh(void)
     }
 }
 
+static lv_obj_t *s_cell_speed_sub, *s_cell_diag_sub;   /* 蜂窝标签上「测速 ›」「网络诊断 ›」右边的字 */
+
 static void build_cellular(lv_obj_t *t)
 {
+    /* 排查（slow-diagnosis §12.4）：载波明细下面一组三行；测速和出口标签那一行开同一页 */
+    static const int idsd[] = { SUB_DIAG, SUB_SPEED, SUB_PLACE };
+    static const char *const namesd[] = { N_("网络诊断"), N_("测速"), N_("摆放模式") };
     static const int ids1[] = { SUB_ESIM, SUB_APN };
     static const char *const names1[] = { N_("SIM 与 eSIM"), "APN" };
     static const int ids2[] = { SUB_NET, SUB_LOCK, SUB_CELL };
@@ -101,7 +106,10 @@ static void build_cellular(lv_obj_t *t)
     lv_obj_remove_style_all(t);
     lv_obj_remove_flag(t, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_width(t, UK_W);
-    int y = nav_card(t, 4, N_("SIM 卡"), ids1, names1, 2);
+    int y = nav_card(t, 4, N_("排查"), idsd, namesd, 3);
+    s_cell_speed_sub = s_tile_sub[SUB_SPEED];     /* 出口标签的那一行建在后面，会占用 s_tile_sub */
+    s_cell_diag_sub = s_tile_sub[SUB_DIAG];
+    y = nav_card(t, y, N_("SIM 卡"), ids1, names1, 2);
 
     uk_section(t, y, TR("移动数据"));
     lv_obj_t *mc = uk_card(t, UK_MARGIN, y + 20, UK_CARD_W, 2 * UK_ROW_H + 30);

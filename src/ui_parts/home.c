@@ -119,7 +119,14 @@ static void build_home(lv_obj_t *t)
     uk_hero(&s_cc_hero, c, UF.cj24b);
     uk_show(s_cc_hero.unit, 0);
     lv_obj_set_x(s_cc_hero.big, UK_PAD);   /* 左右边距一致（右边是 UK_PAD） */
-    s_cc_hint = uk_label_w(c, UF.cj13, T->t2, UK_PAD, UK_HERO_H + 10, UK_CARD_W - 2 * UK_PAD, 1, "");
+    /* 提示行：结论异常时整行可点，右端「查原因 ›」开网络诊断（大字本身不可点） */
+    s_cc_hint_box = uk_box(c, 0, UK_HERO_H, UK_CARD_W, UK_ROW_H, T->card, 0);
+    lv_obj_set_style_bg_opa(s_cc_hint_box, LV_OPA_TRANSP, 0);
+    s_cc_hint = uk_label_w(s_cc_hint_box, UF.cj13, T->t2, UK_PAD, 8, UK_CARD_W - 2 * UK_PAD, 1, "");
+    s_cc_diag = uk_label(s_cc_hint_box, UF.cj13, T->accT, 0, 8, TR("查原因 ›"));
+    uk_tappable(s_cc_hint_box, tile_click_cb, (void *)(intptr_t)SUB_DIAG);
+    uk_show(s_cc_diag, 0);
+    uk_show(s_cc_hint_box, 0);
     /* 顶行（运营商 · 制式 · 本地/漫游）名字可能很长：限宽，末尾「…」 */
     lv_obj_set_size(s_cc_hero.st, UK_CARD_W - 26 - UK_PAD, 18);
     lv_label_set_long_mode(s_cc_hero.st, LV_LABEL_LONG_MODE_DOTS);
@@ -333,7 +340,9 @@ static char s_aux_pool[48];
 #define AUX_HOLD_MS 30000
 static uint32_t s_hold_dps, s_hold_data, s_hold_roam;   /* lv_tick of the local flip, 0 = none */
 
-static void aux_hold(uint32_t *hold) { *hold = lv_tick_get() | 1; }
+/* nonzero without ever being ahead of now (tick | 1 could be, and then
+ * now - hold wraps and the hold is dropped at once) */
+static void aux_hold(uint32_t *hold) { uint32_t t = lv_tick_get(); *hold = t ? t : 1; }
 
 /* Take datad's value unless a local flip is still being held. */
 static void aux_take(int *cur, uint32_t *hold, int from_datad, uint32_t now)

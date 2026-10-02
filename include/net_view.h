@@ -26,7 +26,8 @@ typedef enum {
     NV_STATE_UNKNOWN = 0,
     NV_STATE_OK, NV_STATE_NOSIM, NV_STATE_AIRPLANE, NV_STATE_SOS, NV_STATE_NOSVC,
     NV_STATE_NODATA, NV_STATE_LIMIT, NV_STATE_WEAK, NV_STATE_NOISE, NV_STATE_CROWD,
-    NV_STATE_ONLY2G, NV_STATE_ONLY3G, NV_STATE_NARROW
+    NV_STATE_ONLY2G, NV_STATE_ONLY3G, NV_STATE_NARROW,
+    NV_STATE_STALL         /* connected, packets go out, nothing comes back (datad 10-02) */
 } nv_state_t;
 
 typedef struct {
@@ -67,6 +68,11 @@ typedef struct {
  * ca_val ca_sub mode_word) is read from that sibling, the Chinese one when it
  * is missing or empty; the struct holds one language either way. */
 int net_view_parse(const char *net_json, net_view_t *v);
+
+/* The verdict is one 网络诊断 can say more about (slow-diagnosis §12.2): slow
+ * (limit weak noise crowd narrow), nodata, stall; with a datad that sends no
+ * code, any slow cause. Not nosim / airplane / sos / nosvc / only2g / only3g. */
+int nv_abnormal(nv_state_t state, ui_net_cause_t cause);
 
 /* A view that only says datad has not given one (yet): the card shows
  * `headline` in the neutral tone and `why` on its top line, nothing else. */

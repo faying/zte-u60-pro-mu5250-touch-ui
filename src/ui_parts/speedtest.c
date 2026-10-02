@@ -11,11 +11,20 @@
  * 2026-09-22: rebuilt on top of zte-agent's own speed test engine (see
  * speedtest.h/.c) instead of the old, never-installed better-speedtest
  * plugin — this used to be a permanent "not installed" placeholder. */
+static uint32_t s_st_refused_at;   /* the last start was refused: say why on the card for a while */
 static void speedtest_btn_cb(lv_event_t *e)
 {
     LV_UNUSED(e);
-    if (speedtest_running()) speedtest_stop();
-    else                     speedtest_start();
+    if (speedtest_running()) { speedtest_stop(); return; }
+    lv_label_set_text(s_st_btn_lbl, TR("已发送…"));   /* the request is synchronous: answer first */
+    lv_refr_now(NULL);
+    if (speedtest_start()) { s_st_refused_at = 0; return; }
+    s_st_refused_at = tick_nz();
+    lv_label_set_text(s_st_btn_lbl, TR("开始测速"));
+    lv_label_set_text(s_st_offline, speedtest_start_error());
+    uk_text_color(s_st_offline, T->warnT);
+    lv_obj_set_pos(s_st_offline, UK_PAD, 206);
+    lv_obj_remove_flag(s_st_offline, LV_OBJ_FLAG_HIDDEN);
 }
 
 static void speedtest_srv_cb(lv_event_t *e)

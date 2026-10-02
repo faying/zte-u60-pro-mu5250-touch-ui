@@ -48,7 +48,7 @@ if [ "$mode" = none ]; then
     cjk=/nonexistent/ZTEZhengYuan.ttf
     langs=zh
 fi
-[ -n "$scenes" ] || scenes="good weak nosignal datad-down loading nosim abroad lowbat full-charging long-names empty nsa lte 3g nodata 5ga edge crowd today us jp nosvc bandlock datad-silent old-datad"
+[ -n "$scenes" ] || scenes="good weak nosignal datad-down loading nosim abroad lowbat full-charging long-names empty nsa lte 3g nodata 5ga edge crowd today us jp nosvc bandlock datad-silent old-datad stall mf-backup mf-alldown diagnose-running diagnose-result placement"
 pngmount=
 [ -n "$png" ] && { mkdir -p "$png"; pngmount="-v $(cd "$png" && pwd):/png"; }
 

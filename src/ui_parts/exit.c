@@ -100,3 +100,4 @@ static void build_sub_cell(lv_obj_t *t)
     lv_obj_scroll_to_y(t, 0, LV_ANIM_OFF);
 }
 
+

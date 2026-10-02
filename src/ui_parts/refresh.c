@@ -161,6 +161,8 @@ static void refresh_cb(lv_timer_t *t)
         banner_set(TR("后台数据服务不可用"));
         home_signal_down();
         lk_mode_sync(-1, 0);    /* 点过的网络模式也要有下文：确认窗口到时、等读回超时 */
+        if (sub_visible(SUB_PLACE)) place_paint(&d, 0);
+        diag_refresh();
         return;
     }
     /* Answered before, silent now: keep the last numbers but dimmed and say
@@ -179,6 +181,9 @@ static void refresh_cb(lv_timer_t *t)
         else
             net_view_placeholder(&nv, TR("读取中…"), "");
     }
+    s_net_roam = nv.roam;
+    if (sub_visible(SUB_PLACE)) place_paint(&d, !datad_silent);
+    diag_refresh();
     if (datad_silent) {
         banner_set(TR("后台数据服务不可用"));
         home_signal_down();
@@ -258,6 +263,7 @@ static void refresh_cb(lv_timer_t *t)
         /* 大字换结论要先稳 15 秒（阈值附近别来回闪）；没服务、没卡这类马上显示。
          * 下面五行一直是实时的。 */
         static ui_net_story_t shown;
+        static nv_state_t shown_state;
         static ui_net_hold_t hold;
         {
             /* keyed on datad's verdict code: in English every 慢 reads "Slow",
@@ -269,6 +275,7 @@ static void refresh_cb(lv_timer_t *t)
             if (nv.story.tone >= UI_NET_BAD || shown.tone >= UI_NET_BAD) hold.have = 0;
             if (ui_net_hold(&hold, key, lv_tick_get())) {
                 shown.tone = nv.story.tone; shown.cause = nv.story.cause;
+                shown_state = nv.state;
                 memcpy(shown.headline, nv.story.headline, sizeof shown.headline);
                 memcpy(shown.hint, nv.story.hint, sizeof shown.hint);
             }
@@ -342,13 +349,46 @@ static void refresh_cb(lv_timer_t *t)
         home_logo_place();
 
         int y = UK_HERO_H;
-        uk_show(s_cc_hint, hint[0] != 0);
-        if (hint[0]) {
+        {
+            /* 结论异常（慢、没连上、连上了但不通）：提示行可点，右端「查原因 ›」。
+             * 提示在缩窄后两行放得下就并排，放不下「查原因 ›」另起一行（提示行不许第 3 行） */
+            int diag = nv_abnormal(shown_state, shown.cause);
             static char c_hint[128];
-            set_label_fmt(s_cc_hint, c_hint, sizeof c_hint, "%s", hint);
-            lv_obj_set_y(s_cc_hint, y + 8);
-            lv_obj_update_layout(s_cc_hint);
-            y += 8 + lv_obj_get_height(s_cc_hint) + 8;
+            static int c_diag = -1;
+            uk_show(s_cc_hint_box, hint[0] || diag);
+            uk_show(s_cc_diag, diag);
+            if (diag != c_diag) {
+                c_diag = diag;
+                if (diag) lv_obj_add_flag(s_cc_hint_box, LV_OBJ_FLAG_CLICKABLE);
+                else      lv_obj_remove_flag(s_cc_hint_box, LV_OBJ_FLAG_CLICKABLE);   /* no › = not tappable */
+            }
+            if (hint[0] || diag) {
+                const int full = UK_CARD_W - 2 * UK_PAD, lh = lv_font_get_line_height(UF.cj13);
+                int dw = 0, w = full, bh, hy = 8;
+                if (diag) { lv_obj_update_layout(s_cc_diag); dw = (int)lv_obj_get_width(s_cc_diag); }
+                if (diag && hint[0]) {
+                    /* beside the hint only when that costs it no extra line (no word
+                     * pushed alone onto a new line, never a 3rd line) */
+                    lv_point_t sn, sf;
+                    lv_text_get_size(&sn, hint, UF.cj13, 0, 0, full - dw - 10, LV_TEXT_FLAG_NONE);
+                    lv_text_get_size(&sf, hint, UF.cj13, 0, 0, full, LV_TEXT_FLAG_NONE);
+                    w = sn.y <= sf.y ? full - dw - 10 : full;
+                }
+                lv_obj_set_width(s_cc_hint, w);
+                set_label_fmt(s_cc_hint, c_hint, sizeof c_hint, "%s", hint);
+                uk_show(s_cc_hint, hint[0] != 0);
+                lv_obj_update_layout(s_cc_hint);
+                int th = hint[0] ? (int)lv_obj_get_height(s_cc_hint) : 0;
+                bh = 8 + (th ? th : lh) + 8;
+                if (diag) {
+                    if (!hint[0] || w < full) hy = 8 + (th > lh ? th - lh : 0);   /* beside the last line */
+                    else { hy = 8 + th + 2; bh = hy + lh + 8; }                  /* its own line under it */
+                    lv_obj_set_pos(s_cc_diag, UK_CARD_W - UK_PAD - dw, hy);
+                }
+                lv_obj_set_y(s_cc_hint_box, y);
+                lv_obj_set_height(s_cc_hint_box, bh);
+                y += bh;
+            }
         }
         /* 载波：基站配了几条、在用几条；小字是下行用哪几条、上行用哪条。
          * 配了没激活的 = RSRP 在 -140 底值的那几条；服务小区在 nrca 里会以
@@ -457,8 +497,8 @@ static void refresh_cb(lv_timer_t *t)
                       n->direct.isp[0] ? " · " : "", n->direct.isp);
         set_label_fmt(s_nh_geo, c_ngeo, sizeof c_ngeo, "%s", g);
         /* 首页出口：直连 · 国家 城市；完整归属地在出口标签。 */
-        static char c_hx[96], c_hx2[128];
-        char sg[96], sub[128] = "";
+        static char c_hx[96], c_hx2[256];
+        char sg[96], sub[256] = "";
         if (n->direct.ip[0])
             snprintf(g, sizeof g, TR("直连 · %s"), n->direct.geo[0] ? geo_short(n->direct.geo, sg, sizeof sg) : n->direct.ip);
         else
@@ -756,11 +796,16 @@ static void refresh_cb(lv_timer_t *t)
                 lv_obj_update_layout(s_st_live);
                 lv_obj_set_x(s_st_unit, UK_PAD + lv_obj_get_width(s_st_live) + 4);
 
-                if (ph == ST_ERROR && speedtest_error()[0]) {
+                if (s_st_refused_at && lv_tick_get() - s_st_refused_at < 6000 && !running) {
+                    /* refused at the start (speedtest_btn_cb wrote why): leave it up a while */
+                } else if (ph == ST_ERROR && speedtest_error()[0]) {
+                    s_st_refused_at = 0;
                     lv_obj_remove_flag(s_st_offline, LV_OBJ_FLAG_HIDDEN);
                     lv_obj_set_pos(s_st_offline, UK_PAD, 206);
+                    uk_text_color(s_st_offline, T->badT);
                     lv_label_set_text(s_st_offline, speedtest_error());
                 } else {
+                    s_st_refused_at = 0;
                     lv_obj_add_flag(s_st_offline, LV_OBJ_FLAG_HIDDEN);
                 }
             }
@@ -1129,6 +1174,7 @@ static void refresh_cb(lv_timer_t *t)
         else
             set_label_fmt(s_tile_sub[SUB_SPEED], c_t4, sizeof c_t4, "%s",
                           TR("点击测速"));
+        if (s_cell_speed_sub) lbl_set(s_cell_speed_sub, c_t4);   /* 蜂窝标签上同一行 */
     }
 
     /* ---- WiFi subpage ---- */

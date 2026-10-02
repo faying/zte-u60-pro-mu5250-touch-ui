@@ -41,6 +41,8 @@ int    speedtest_running(void);
 int    speedtest_agent_reachable(void);
 
 int speedtest_start(void);   /* 1 = 已发起（agent 立刻在后台线程跑，不等结果） */
+/* 0 之后：agent 为什么不让测（如深查进行中的 409「正在诊断，约 N 秒后再试」），已按界面语言取好 */
+const char *speedtest_start_error(void);
 int speedtest_stop(void);    /* 1 = 已发起停止 */
 
 /*

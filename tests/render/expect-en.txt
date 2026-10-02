@@ -367,3 +367,52 @@ bandlock	home	All good
 # 语言 row (L2)
 good	system-lang-failed	Couldn't switch
 good	lang-switching	Switching to
+# Diagnose, Placement, Diagnose › on home, stall (manager docs/designs/slow-diagnosis.md §12, 10-02)
+*	cellular	Troubleshoot
+*	cellular	Diagnose
+*	cellular	Placement
+stall	home	No traffic
+stall	home	Signal and data are up, but nothing
+weak,crowd,nodata,stall,today	home	Diagnose ›
+stall	diagnose-start	Checking…
+stall	diagnose-start	About 10 s; sends a few probe packets
+stall	diagnose-start	Waiting
+diagnose-running	diagnose	About 10 s; sends a few probe packets
+diagnose-running	diagnose	Testing…
+diagnose-running	diagnose	Waiting
+diagnose-running	diagnose	● OK
+diagnose-running	diagnose	● OK · No cap · QCI 9
+diagnose-running	diagnose	Cellular link
+diagnose-running	diagnose	Cell load
+diagnose-running	diagnose-busy	Checking; one moment
+diagnose-result	diagnose	Cellular link unstable
+diagnose-result	diagnose	Try again in a few minutes, or move · +1 more
+diagnose-result	diagnose	● Can't check
+diagnose-result	diagnose	No devices on Wi-Fi
+diagnose-result	diagnose	QoS unavailable
+diagnose-result	diagnose	▲ Suspect
+diagnose-result	diagnose	latency 3.0× usual
+diagnose-result	diagnose	Speed
+diagnose-result	diagnose	Direct ↓ 86 Mbps
+diagnose-result	diagnose	Add speed test · ~5 s, ≤30 MB
+diagnose-result	diagnose	· right?
+diagnose-result	diagnose	Wrong
+diagnose-result	diagnose-thanks	· noted, thanks
+diagnose-result	diagnose-roam-armed	Uses roaming data; tap again
+diagnose-result	diagnose-speed	Testing…
+diagnose-result	diagnose-speed	Testing speed…
+diagnose-result	diagnose-again	Checking…
+placement	placement	5G SINR · higher is better
+placement	placement	14.5
+placement	placement	● Good signal · RSRP -92
+placement	placement	Best so far
+placement	placement	18.0 · 
+placement	placement	Compared
+placement	placement	▲ 3.5 dB below best
+placement	placement	n78 · PCI 603
+placement	placement	Start over
+placement	placement	Resets on a new cell; the screen stays on here
+diagnose-running	diagnose	Checking… 3/5
+diagnose-result	diagnose-error	Agent not responding
+diagnose-result	diagnose-error	Retry
+diagnose-result	diagnose-error	Cellular link

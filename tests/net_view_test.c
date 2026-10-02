@@ -90,7 +90,7 @@ int main(void)
             { "sos", NV_STATE_SOS }, { "nosvc", NV_STATE_NOSVC }, { "nodata", NV_STATE_NODATA },
             { "limit", NV_STATE_LIMIT }, { "weak", NV_STATE_WEAK }, { "noise", NV_STATE_NOISE },
             { "crowd", NV_STATE_CROWD }, { "only2g", NV_STATE_ONLY2G }, { "only3g", NV_STATE_ONLY3G },
-            { "narrow", NV_STATE_NARROW }, { "", NV_STATE_UNKNOWN }, { "later", NV_STATE_UNKNOWN },
+            { "narrow", NV_STATE_NARROW }, { "stall", NV_STATE_STALL }, { "", NV_STATE_UNKNOWN }, { "later", NV_STATE_UNKNOWN },
         };
         char js[160];
         for (size_t i = 0; i < sizeof st / sizeof *st; i++) {
@@ -98,6 +98,54 @@ int main(void)
             CHECK(net_view_parse(js, &v) == 1 && v.state == st[i].want);
         }
         CHECK(net_view_parse("{\"story\":{\"headline\":\"x\"}}", &v) == 1 && v.state == NV_STATE_UNKNOWN);
+    }
+
+    /* stall (datad 4dd0d98, E2 D7②): its own code now, with datad's headline,
+     * hint and bad tone (bad also skips the 15 s hold in refresh.c) */
+    {
+        static const char js[] =
+            "{\"story\":{\"tone\":\"bad\",\"cause\":\"none\",\"headline\":\"连上了但不通\","
+            "\"hint\":\"有信号、已拨号，但 30 秒没收到任何数据\",\"rat\":\"5G\",\"state\":\"stall\","
+            "\"headline_en\":\"No traffic\",\"hint_en\":\"Signal and data are up, but nothing came back for 30 s\"}}";
+        lang_set_en(0);
+        CHECK(net_view_parse(js, &v) == 1 && v.state == NV_STATE_STALL);
+        CHECK(v.story.tone == UI_NET_BAD);
+        CHECK(strcmp(v.story.headline, "连上了但不通") == 0);
+        CHECK(strcmp(v.story.hint, "有信号、已拨号，但 30 秒没收到任何数据") == 0);
+        lang_set_en(1);
+        CHECK(net_view_parse(js, &v) == 1 && v.state == NV_STATE_STALL);
+        CHECK(strcmp(v.story.headline, "No traffic") == 0 && v.story.tone == UI_NET_BAD);
+        lang_set_en(0);
+        CHECK(net_view_parse(view("stall"), &v) == 1 && v.state == NV_STATE_STALL && v.story.tone == UI_NET_BAD);
+    }
+
+    /* a state this screen doesn't know yet (a later datad): the story datad
+     * sends is shown as is — its headline, hint and tone */
+    {
+        static const char js[] =
+            "{\"story\":{\"tone\":\"warn\",\"cause\":\"none\",\"headline\":\"以后的结论\","
+            "\"hint\":\"以后的提示\",\"rat\":\"5G\",\"state\":\"later\","
+            "\"headline_en\":\"Later\",\"hint_en\":\"A later hint\"}}";
+        lang_set_en(0);
+        CHECK(net_view_parse(js, &v) == 1 && v.state == NV_STATE_UNKNOWN);
+        CHECK(v.story.tone == UI_NET_WARN);
+        CHECK(strcmp(v.story.headline, "以后的结论") == 0 && strcmp(v.story.hint, "以后的提示") == 0);
+        lang_set_en(1);
+        CHECK(net_view_parse(js, &v) == 1 && strcmp(v.story.headline, "Later") == 0 && strcmp(v.story.hint, "A later hint") == 0);
+        lang_set_en(0);
+    }
+
+    /* which verdicts get 查原因 › on the home card */
+    {
+        static const nv_state_t yes[] = { NV_STATE_LIMIT, NV_STATE_WEAK, NV_STATE_NOISE, NV_STATE_CROWD,
+                                          NV_STATE_NARROW, NV_STATE_NODATA, NV_STATE_STALL };
+        static const nv_state_t no[] = { NV_STATE_OK, NV_STATE_NOSIM, NV_STATE_AIRPLANE, NV_STATE_SOS,
+                                         NV_STATE_NOSVC, NV_STATE_ONLY2G, NV_STATE_ONLY3G };
+        for (size_t i = 0; i < sizeof yes / sizeof *yes; i++) CHECK(nv_abnormal(yes[i], UI_CAUSE_NONE));
+        for (size_t i = 0; i < sizeof no / sizeof *no; i++) CHECK(!nv_abnormal(no[i], UI_CAUSE_WEAK));
+        CHECK(nv_abnormal(NV_STATE_UNKNOWN, UI_CAUSE_CROWD) && !nv_abnormal(NV_STATE_UNKNOWN, UI_CAUSE_NONE));
+        CHECK(net_view_parse(view("crowd"), &v) && nv_abnormal(v.state, v.story.cause));
+        CHECK(net_view_parse(view("good"), &v) && !nv_abnormal(v.state, v.story.cause));
     }
 
     /* English: every *_en sibling replaces its field; missing / empty → the Chinese */

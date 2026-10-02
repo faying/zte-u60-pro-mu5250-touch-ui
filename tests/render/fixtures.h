@@ -40,6 +40,12 @@ typedef enum {
     RT_BANDLOCK,       /* SA locked to n78, LTE to B3: chips still list every band      */
     RT_DATAD_SILENT,   /* datad answered, then went quiet: banner, dimmed home card      */
     RT_OLD_DATAD,      /* datad too old for /v2/screen: the home card says so            */
+    RT_STALL,          /* connected, sending, nothing back → 连上了但不通 (datad stall)    */
+    RT_MF_BACKUP,      /* manual-first notice: the hand-picked node is down, on the backup */
+    RT_MF_ALLDOWN,     /* manual-first notice: the node and its backup both down           */
+    RT_DIAG_RUNNING,   /* 网络诊断 open, 3 of the layers done                            */
+    RT_DIAG_RESULT,    /* 网络诊断 done: main cause, can't-tell rows, a speed row          */
+    RT_PLACEMENT,      /* 摆放模式: SINR best 18.0, now 14.5                              */
     RT_SCENES
 } rt_scene_t;
 
@@ -53,6 +59,9 @@ extern int  rt_apn_calls;             /* netinfo_apn_use() calls                
 extern char rt_apn_last[24];
 extern int  rt_system_calls;
 extern char rt_system_last[256];
+extern int  rt_place_t0;              /* rt_refreshes when 摆放模式 was opened (its SINR series) */
+extern int  rt_diag_err;              /* diagnose_agent_err(): the agent not answering */
+extern int  rt_diag_starts, rt_diag_speeds, rt_diag_feedback;   /* diagnose_* POSTs */
 
 const char *rt_scene_name(int scene);
 

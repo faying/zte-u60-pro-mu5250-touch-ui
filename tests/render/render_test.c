@@ -613,6 +613,101 @@ int main(int argc, char **argv)
         page_done(k_subs[i].name);
     }
 
+    /* 网络诊断 / 摆放模式 (slow-diagnosis §12): shot only in their own scenes */
+    if (rt_scene == RT_STALL) {
+        /* abnormal verdict: the hint row is tappable and opens 网络诊断, which starts a run */
+        to_tab(TAB_HOME);
+        if (!lv_obj_has_flag(s_cc_hint_box, LV_OBJ_FLAG_CLICKABLE)) bad("stall: the hint row is not tappable");
+        click(s_cc_hint_box);
+        settle(400);                                 /* the page slides in (150 ms) */
+        if (s_sub_cur != SUB_DIAG) bad("stall: 查原因 › did not open 网络诊断 (sub %d)", s_sub_cur);
+        else if (rt_diag_starts != 1) bad("stall: opening 网络诊断 with nothing to show did not start a run (%d)", rt_diag_starts);
+        else ok("");
+        shoot_page("diagnose-start", s_sub_page[SUB_DIAG]);
+        page_done("diagnose-start");
+        sub_close();
+    } else if (rt_scene == RT_GOOD) {
+        to_tab(TAB_HOME);
+        if (lv_obj_has_flag(s_cc_hint_box, LV_OBJ_FLAG_CLICKABLE)) bad("good: the hint row is tappable (no ›)");
+        else ok("");
+    }
+    if (rt_scene == RT_DIAG_RUNNING || rt_scene == RT_DIAG_RESULT) {
+        to_sub(SUB_DIAG, -1);
+        shoot_page("diagnose", s_sub_page[SUB_DIAG]);
+        page_done("diagnose");
+        if (rt_diag_starts) bad("opening 网络诊断 with a run to show started another");
+        /* 再查一次 sits on the subpage header (not in the page) */
+        if (lv_obj_has_flag(s_dg_hdr, LV_OBJ_FLAG_HIDDEN) || strcmp(lv_label_get_text(s_dg_hdr_lbl), TR("再查一次")))
+            bad("网络诊断: no 再查一次 on the title bar");
+        else ok("");
+        if (rt_scene == RT_DIAG_RUNNING) {
+            click(s_dg_hdr);                         /* 再查一次 while it runs: says so, starts nothing */
+            settle(100);
+            shoot_page("diagnose-busy", s_sub_page[SUB_DIAG]);
+            page_done("diagnose-busy");
+            if (rt_diag_starts) bad("a tap while running started another run");
+            else ok("");
+        } else {
+            click(s_dg_yes);                         /* 对: 已记下，谢谢 at once */
+            settle(100);
+            if (rt_diag_feedback != 1) bad("对: feedback calls %d", rt_diag_feedback);
+            else ok("");
+            shoot_page("diagnose-thanks", s_sub_page[SUB_DIAG]);
+            page_done("diagnose-thanks");
+            s_net_roam = 1;                          /* roaming: 加测速度 asks twice */
+            click(s_dg_btn);
+            settle(100);
+            if (rt_diag_speeds) bad("加测速度 ran on the first tap while roaming");
+            shoot_page("diagnose-roam-armed", s_sub_page[SUB_DIAG]);
+            page_done("diagnose-roam-armed");
+            click(s_dg_btn);
+            settle(1100);
+            if (rt_diag_speeds != 1) bad("加测速度 second tap: calls %d", rt_diag_speeds);
+            else ok("");
+            shoot_page("diagnose-speed", s_sub_page[SUB_DIAG]);
+            page_done("diagnose-speed");
+            s_net_roam = 0;
+            click(s_dg_hdr);                         /* 再查一次: 正在检查… */
+            settle(100);
+            if (rt_diag_starts != 1) bad("再查一次: start calls %d", rt_diag_starts);
+            else ok("");
+            shoot_page("diagnose-again", s_sub_page[SUB_DIAG]);
+            page_done("diagnose-again");
+            rt_diag_err = 1;                         /* the agent stops answering: red block + 重试, rows kept */
+            diag_paint();
+            settle(100);
+            if (!lv_obj_has_flag(s_dg_hdr, LV_OBJ_FLAG_HIDDEN)) bad("agent down: 再查一次 still on the title bar");
+            shoot_page("diagnose-error", s_sub_page[SUB_DIAG]);
+            page_done("diagnose-error");
+            rt_diag_err = 0;
+        }
+        sub_close();
+        if (!lv_obj_has_flag(s_dg_hdr, LV_OBJ_FLAG_HIDDEN)) bad("再查一次 still on the title bar after leaving 网络诊断");
+    }
+    if (rt_scene == RT_PLACEMENT) {
+        to_sub(SUB_DIAG, -1);                        /* weak signal: its row leads to 摆放模式 */
+        click(s_dg_row[1].act);
+        rt_place_t0 = rt_refreshes;
+        settle(8000);
+        if (s_sub_cur != SUB_PLACE) bad("the signal row's 摆放模式 › did not open it (sub %d)", s_sub_cur);
+        else ok("");
+        shoot_page("placement", s_sub_page[SUB_PLACE]);
+        page_done("placement");
+        /* no auto screen-off while it is up; back on when it is left */
+        s_autooff_ms = 30000;
+        settle(32000);
+        if (!backlight_is_on()) bad("the screen went off by itself on 摆放模式");
+        else ok("");
+        sub_back();
+        settle(32000);
+        if (backlight_is_on()) bad("auto screen-off did not come back after leaving 摆放模式");
+        else ok("");
+        s_autooff_ms = 0;
+        backlight_on();
+        s_auto_slept = 0;
+        sub_close();
+    }
+
     /* overlays */
     to_tab(TAB_HOME);
     power_menu_set(1);

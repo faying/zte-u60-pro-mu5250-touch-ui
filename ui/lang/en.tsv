@@ -426,3 +426,59 @@ zte-agent 登录失败	zte-agent login failed
 （没有更多说明）	(No more details)
 测速或切卡进行中，完成后再换外观	Busy; try again when it finishes
 
+# 网络诊断、摆放模式、首页「查原因 ›」（manager docs/designs/slow-diagnosis.md §12，10-02）
+%s SINR · 越大越好	%s SINR · higher is better
+%s 测 · 已记下，谢谢	Checked %s · noted, thanks
+%s 测 · 结论对吗？	Checked %s · right?
+▲ 比最好低 %s dB	▲ %s dB below best
+● 接近最好	● Near the best
+不对	Wrong
+信号	Signal
+信号良好	Good signal
+信号较差	Poor signal
+做完自动开始	Starts when it's done
+再查一次	Run again
+加测速度 · 约 5 秒、最多 30 MB	Add speed test · ~5 s, ≤30 MB
+另有 %d 处疑点	+%d more
+后台没回应	Agent not responding
+固定位置时用摆放模式 ›	Use Placement if staying put ›
+基站负载	Cell load
+对	Right
+对比	Compared
+已发送…	Sent…
+已发送，测速约 5 秒	Sent; about 5 s
+已清零，重新计	Reset; counting again
+换了小区会重新计；这页开着不息屏	Resets on a new cell; the screen stays on here
+换了小区，重新计	New cell; counting again
+排查	Troubleshoot
+摆放模式	Placement
+数字停在 %s	Last update %s
+查原因 ›	Diagnose ›
+正在查，稍等	Checking; one moment
+正在检查…	Checking…
+正在检查… %d/%d	Checking… %d/%d
+正在测，稍等	Testing; one moment
+正常	OK
+没有信号	No signal
+没记上：后台没回应，可再点一次	Not saved: agent not responding; tap again
+测不了	Can't check
+测试中…	Testing…
+测试中… %u 秒	Testing… %u s
+测速中…	Testing speed…
+疑点	Suspect
+登录管理后台失败，点下面重试	Admin login failed; tap Retry below
+等另一个操作做完…	Waiting…
+等待	Waiting
+管理后台没响应，点下面重试	Admin backend not responding; tap Retry below
+约 10 秒，会发少量探测包	About 10 s; sends a few probe packets
+网络诊断	Diagnose
+蜂窝链路	Cellular link
+诊断|差	Poor
+走漫游流量，再按一次	Uses roaming data; tap again
+这个制式没有 SINR	No SINR on this network
+这次最好	Best so far
+速度	Speed
+重新开始	Start over
+重试	Retry
+限速	Speed cap
+

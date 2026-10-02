@@ -105,7 +105,8 @@ void uk_tile_set(uk_tile_t *t, int on, int dim, int badge);
 typedef struct { lv_obj_t *wash, *wash2, *dot, *st, *rtop, *big, *unit, *r1, *r2; } uk_hero_t;
 /* big_font: UF.n32 for numbers, UF.cj22b/cj24b for words. */
 void uk_hero(uk_hero_t *h, lv_obj_t *card, const lv_font_t *big_font);
-/* tone: 0 good, 1 warn, 2 bad, 3 neutral (track, t3 text), 4 selected (accS) */
+/* tone: 0 good, 1 warn, 2 bad, 3 neutral (track, t3 text), 4 selected (accS);
+ * filled, white text: 5 good (fillGreen), 6 warn (fillOrange), 7 bad (fillRed) */
 void uk_hero_tone(uk_hero_t *h, int tone);
 /* Place the unit right after the big number (call after changing big). */
 void uk_hero_layout(uk_hero_t *h);

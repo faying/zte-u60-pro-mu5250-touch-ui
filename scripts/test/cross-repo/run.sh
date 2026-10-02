@@ -167,6 +167,17 @@ else
     skip "home headline table: $DESIGN or $SCREEN_T not here"
 fi
 
+# 4b. datad codes this screen doesn't know yet go through net_view.c's
+#     unknown-code path (datad's own headline, hint and tone), which
+#     tests/net_view_test.c must cover with that code (E2 D7②)
+if [ -n "${HT:-}" ] && [ -f "$REPO/src/net_view.c" ]; then
+    NVC=$(sed -n '/^static nv_state_t state/,/^}/p' "$REPO/src/net_view.c" | grep -o '"[a-z0-9]*"' | tr -d '"')
+    new=$(printf '%s\n' "$HT" | cut -f 1 | while read -r c; do [ -n "$c" ] && ! printf '%s\n' "$NVC" | grep -qx "$c" && echo "$c"; done)
+    miss=$(for c in $new; do grep -qF "\\\"state\\\":\\\"$c\\\"" "$REPO/tests/net_view_test.c" || echo "$c"; done)
+    [ -z "$miss" ] && ok "datad codes the screen doesn't know yet ($(echo ${new:-none})) are covered by net_view_test" ||
+        bad "datad codes unknown to net_view.c with no net_view_test case: $(echo $miss)"
+fi
+
 # 5. page names
 if [ -f "$GLOSS" ] && [ -f "$TSV" ]; then
     PG=$( { md_rows "$GLOSS" '## 1.' | cut -f 1,2; md_rows "$GLOSS" '## 2.' | cut -f 1,2; } |

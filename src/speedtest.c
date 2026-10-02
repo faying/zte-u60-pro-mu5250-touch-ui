@@ -31,6 +31,7 @@ static double s_ping_ms = -1, s_jitter_ms = -1;
 static double s_dl_mbps = -1, s_ul_mbps = -1;
 static char   s_server[96];
 static char   s_error[96];
+static char   s_start_err[160];   /* why the last start was refused, "" = it was not */
 
 static speedtest_server_t s_srv[ST_MAX_SERVERS];
 static int    s_srv_count;
@@ -130,6 +131,7 @@ double speedtest_download_mbps(void) { return s_dl_mbps; }
 double speedtest_upload_mbps(void)   { return s_ul_mbps; }
 const char *speedtest_server(void)   { return s_server; }
 const char *speedtest_error(void)    { return s_error; }
+const char *speedtest_start_error(void) { return s_start_err; }
 int    speedtest_running(void)       { return s_phase == ST_LATENCY || s_phase == ST_DOWNLOAD || s_phase == ST_UPLOAD; }
 int    speedtest_agent_reachable(void) { return s_online; }
 
@@ -143,6 +145,21 @@ int speedtest_start(void)
         snprintf(js, sizeof js, "{}");
     code = st_api("POST", "/api/speedtest/start", js, &body);
     if (code == 200) s_last_ms = 0;   /* 强制下次轮询立刻刷新 */
+    /* 被拒：照 agent 的原话（深查进行中是 409「正在诊断，约 N 秒后再试」，
+     * busy:"diagnose"），英文取 error_en */
+    s_start_err[0] = 0;
+    if (code != 200) {
+        char zh[160] = "", en[160] = "";
+        if (code && body) {
+            json_get(body, "error", zh, sizeof zh);
+            json_get(body, "error_en", en, sizeof en);
+            if (!strcmp(zh, "null")) zh[0] = 0;
+            if (!strcmp(en, "null")) en[0] = 0;
+        }
+        if (zh[0]) snprintf(s_start_err, sizeof s_start_err, "%s", pick(zh, en));
+        else if (code) snprintf(s_start_err, sizeof s_start_err, TR("被拒绝（HTTP %d）"), code);
+        else snprintf(s_start_err, sizeof s_start_err, "%s", TR("连不上管理后台"));
+    }
     return code == 200;
 }
 

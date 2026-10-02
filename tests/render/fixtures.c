@@ -10,6 +10,7 @@
 #include "alerts.h"
 #include "backlight.h"
 #include "data.h"
+#include "diagnose.h"
 #include "esim.h"
 #include "key_input.h"
 #include "netinfo.h"
@@ -31,12 +32,15 @@ int  rt_exec_calls;
 ui_launch_t rt_exec_last;
 int  rt_system_calls;
 char rt_system_last[256];
+int  rt_place_t0;
+int  rt_diag_starts, rt_diag_speeds, rt_diag_feedback, rt_diag_err;
 
 static const char *const k_names[RT_SCENES] = {
     "good", "weak", "nosignal", "datad-down", "loading", "nosim",
     "abroad", "lowbat", "full-charging", "long-names", "empty",
     "nsa", "lte", "3g", "nodata", "5ga", "edge", "crowd", "today", "us", "jp", "nosvc",
-    "bandlock", "datad-silent", "old-datad",
+    "bandlock", "datad-silent", "old-datad", "stall", "mf-backup", "mf-alldown",
+    "diagnose-running", "diagnose-result", "placement",
 };
 const char *rt_scene_name(int s) { return s >= 0 && s < RT_SCENES ? k_names[s] : "?"; }
 
@@ -260,6 +264,16 @@ static void fill_data(devui_data_t *d)
         d->nrca[0] = 0; d->lteca[0] = 0; d->nr_pci = 0; d->lte_rsrp = 0;
         cp(d->band, sizeof d->band, "GSM 900"); d->rssi = -81;
         break;
+    case RT_PLACEMENT: {
+        /* one reading a second since the page opened: three around 18, then around 14.5 */
+        static const char *const sinr[] = { "18.0", "18.4", "17.6", "14.5", "14.1", "14.9", "14.5" };
+        int k = rt_refreshes - rt_place_t0 - 1;   /* the first refresh after opening reads [0] */
+        if (k < 0) k = 0;
+        if (k > 6) k = 3 + (k - 3) % 4;
+        cp(d->nr_snr, sizeof d->nr_snr, sinr[k]);
+        d->nr_rsrp = -92;
+        break;
+    }
     case RT_FULL_CHARGING:
         d->bat_percent = 100; d->charging = 1; d->charger_connect = 1;
         d->chg_uv = 4674000; d->chg_ua = 1203000; d->bat_ua = 949242;
@@ -299,8 +313,9 @@ const net_view_t *screen_feed_net(void)
 {
     static net_view_t v;
     static int done = -1;
-    /* the two datad-trouble scenes have the good scene's data */
-    const char *name = IS(RT_DATAD_SILENT) ? "good" : rt_scene_name(rt_scene);
+    /* the two datad-trouble scenes and the notice / diagnosis / placement ones have the good scene's data */
+    const char *name = IS(RT_DATAD_SILENT) || IS(RT_MF_BACKUP) || IS(RT_MF_ALLDOWN) || IS(RT_DIAG_RUNNING) ||
+                       IS(RT_DIAG_RESULT) || IS(RT_PLACEMENT) ? "good" : rt_scene_name(rt_scene);
     if (IS(RT_OLD_DATAD)) return NULL;
     if (done != rt_scene) {
         done = rt_scene;
@@ -420,6 +435,7 @@ const char *speedtest_error(void) { return ""; }
 int speedtest_running(void) { return rt_busy; }
 int speedtest_agent_reachable(void) { return st_up(); }
 int speedtest_start(void) { return 1; }
+const char *speedtest_start_error(void) { return ""; }
 int speedtest_stop(void) { return 1; }
 int speedtest_servers_poll(int active) { (void)active; return 1; }
 int speedtest_servers_count(void) { return st_up() ? 3 : 0; }
@@ -688,3 +704,41 @@ const char *battery_est_text(void)
     est_text(e, target, t, sizeof t);
     return t;
 }
+
+/* ----------------------------------------------------------- diagnose */
+/* zte-agent's runs (diag_runs.h) through the parser the device uses. The
+ * 再查一次 / 加测速度 / 对 taps are counted and answered like the agent does. */
+#include "diag_runs.h"
+static diag_run_t s_dg;
+static int s_dg_scene = -1;
+static void dg_load(const char *js) { if (!diag_view_parse(js, &s_dg)) fprintf(stderr, "diag_runs.h: did not parse\n"); }
+static void dg_scene(void)
+{
+    if (s_dg_scene == rt_scene) return;
+    s_dg_scene = rt_scene;
+    memset(&s_dg, 0, sizeof s_dg);
+    s_dg.feedback = -1;
+    if (IS(RT_DIAG_RUNNING)) dg_load(k_diag_running);
+    else if (IS(RT_DIAG_RESULT)) dg_load(k_diag_result);
+    else if (IS(RT_PLACEMENT)) dg_load(k_diag_weak);
+    else s_dg.state = DG_IDLE;
+}
+int diagnose_poll(int active) { dg_scene(); return active; }
+void diagnose_kick(void) {}
+const diag_run_t *diagnose_run(void) { dg_scene(); return &s_dg; }
+int diagnose_idle(void) { dg_scene(); return s_dg.state == DG_IDLE || s_dg.state == DG_NONE; }
+int diagnose_agent_err(void) { return rt_diag_err; }
+int diagnose_start(void) { dg_scene(); rt_diag_starts++; dg_load(k_diag_running); return 1; }
+int diagnose_speed(void)
+{
+    rt_diag_speeds++;
+    s_dg.has_speed = 1;
+    snprintf(s_dg.speed.id, sizeof s_dg.speed.id, "speed");
+    s_dg.speed.level = DG_RUNNING;
+    s_dg.speed.detail[0] = 0;
+    s_dg.speed.counted = 1;
+    return 1;
+}
+int diagnose_feedback(int right) { rt_diag_feedback++; s_dg.feedback = right; return 1; }
+const char *diagnose_error(void) { return ""; }
+

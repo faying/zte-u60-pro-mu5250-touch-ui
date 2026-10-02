@@ -18,6 +18,7 @@
 #include "speedtest.h"
 #include "alerts.h"
 #include "netinfo.h"
+#include "diagnose.h"
 #include "ui_logic.h"
 #include "net_view.h"
 #include "screen_feed.h"
@@ -69,6 +70,8 @@ enum { SUB_SMS, SUB_CELL, SUB_LOCK, SUB_SPEED, SUB_ESIM, SUB_PERF,
        SUB_SCENE, SUB_APN,
        /* 健康与告警里点一行：体检项或告警的全文（列表里只放得下一行） */
        SUB_ALERT_DETAIL,
+       /* 网络诊断（首页提示行「查原因 ›」、蜂窝标签）和摆放模式（蜂窝标签、诊断的信号行） */
+       SUB_DIAG, SUB_PLACE,
        SUB_N };
 
 /* ---- shared widget handles ---- */
@@ -83,6 +86,8 @@ typedef struct {
 } home_ca_t;
 static home_ca_t s_ca[CA_SLOTS];
 static lv_obj_t *s_home_scroll, *s_cell_card, *s_cc_hint;
+/* the hint line as a row: tappable with 查原因 › while the verdict is abnormal (slow-diagnosis §12.2) */
+static lv_obj_t *s_cc_hint_box, *s_cc_diag;
 static uk_hero_t s_cc_hero;
 static lv_obj_t *s_cc_logo;            /* operator logo, top right of the hero */
 static const char *s_cc_logo_slug;     /* what s_cc_logo shows, NULL = hidden   */
@@ -654,6 +659,10 @@ static void utf8_prefix(char *out, size_t cap, const char *src)
     out[n] = 0;
 }
 
+/* A tick for "since when" fields where 0 means "not set". Not `tick | 1`:
+ * that can be one ahead of the tick, and now - since then wraps to huge. */
+static uint32_t tick_nz(void) { uint32_t t = lv_tick_get(); return t ? t : 1; }
+
 static void set_label_fmt(lv_obj_t *label, char *cache, size_t cache_sz, const char *fmt, ...)
 {
     char buf[256];
@@ -731,6 +740,9 @@ static void tab_go_cb(lv_event_t *e);       /* Home summary rows: jump to a tab 
 static void open_alerts_cb(lv_event_t *e);  /* status-bar alert dot, 系统 page's 健康 row */
 static void sc_card_cb(lv_event_t *e);      /* Home 情景 card: opens the 情景 page */
 static void tab_go(int idx);
+static void diag_on_open(void);             /* 网络诊断: show the last run or start one */
+static void diag_hdr_sync(void);            /* its 再查一次 on the title bar */
+static void place_on_open(void);            /* 摆放模式: the best starts over */
 static void bench_gate(void);
 static void update_tabs(void);
 
@@ -761,7 +773,7 @@ static void sub_show(int id)
         [SUB_SPEED] = N_("测速"), [SUB_ESIM] = N_("SIM 与 eSIM"),
         [SUB_PERF] = N_("性能测试"), [SUB_TS] = "Tailscale", [SUB_SMS_DETAIL] = N_("短信详情"),
         [SUB_ALERTS] = N_("健康与告警"), [SUB_NET] = N_("运营商选择"), [SUB_SCENE] = N_("情景"), [SUB_APN] = "APN",
-        [SUB_ALERT_DETAIL] = N_("详情"),
+        [SUB_ALERT_DETAIL] = N_("详情"), [SUB_DIAG] = N_("网络诊断"), [SUB_PLACE] = N_("摆放模式"),
     };
     if (id < 0 || id >= SUB_N) return;
     for (int i = 0; i < SUB_N; i++)
@@ -776,6 +788,9 @@ static void sub_show(int id)
     s_sub_parent = -1;
     bench_gate();
     update_tabs();
+    diag_hdr_sync();
+    if (id == SUB_DIAG) diag_on_open();
+    if (id == SUB_PLACE) place_on_open();
 }
 
 /* Open a subpage fresh: always from its top (2026-09-25: a page reopened
@@ -795,6 +810,7 @@ static void sub_close(void)
     s_sub_parent = -1;
     bench_gate();
     update_tabs();
+    diag_hdr_sync();
 }
 
 /* Open a page one level below a top-level subpage (短信详情, 告警详情 and
@@ -850,6 +866,7 @@ static int sub_visible(int id)
 #include "ui_parts/network.c"
 #include "ui_parts/apn.c"
 #include "ui_parts/cellular.c"
+#include "ui_parts/diagnose.c"
 #include "ui_parts/refresh.c"
 #include "ui_parts/power.c"
 
@@ -1213,6 +1230,8 @@ void ui_create(void)
     build_sub_alert_detail(s_sub_page[SUB_ALERT_DETAIL]);
     build_sub_apn(s_sub_page[SUB_APN]);
     build_sub_net(s_sub_page[SUB_NET]);   /* also fills SUB_SCENE and hangs cards on 小区信息 / 出口 / Wi-Fi */
+    build_sub_diag(s_sub_page[SUB_DIAG]);
+    build_sub_place(s_sub_page[SUB_PLACE]);
     sub_close();
 
     /* Seed the tileview's "active tile" pointer. lv_tileview_add_tile()
