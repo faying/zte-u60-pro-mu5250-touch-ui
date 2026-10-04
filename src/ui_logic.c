@@ -132,6 +132,13 @@ int ui_launch_argv(const ui_launch_t *l, char store[UI_LAUNCH_MAXARG][UI_LAUNCH_
 
 int ui_clock_sane(long wall_s) { return wall_s >= UI_CLOCK_SANE_AFTER; }
 
+int ui_autooff_snap(long ms)
+{
+    if (ms == 0) return 0;
+    if (ms > 0 && ms <= 30000) return 30000;
+    return 120000;
+}
+
 ui_auto_t ui_auto_decide(const ui_auto_in_t *in)
 {
     if (in->appear != UI_APPEAR_AUTO || in->suspended) return UI_AUTO_STAY;
@@ -335,12 +342,40 @@ void ui_dhcp_pool_text(const char *ip, const char *start, const char *limit, cha
     snprintf(out, n, "%.*s.%ld - %.*s.%ld", (int)(dot - ip), ip, st, (int)(dot - ip), ip, last);
 }
 
-int ui_control_should_fallback(const char *head, long n)
+ui_ctl_t ui_control_reply(const char *reply, long n)
 {
     const char *sp;
+    int code;
 
-    if (n == 0) return 1;
-    if (n < 0 || !head || strncmp(head, "HTTP/1.", 7)) return 0;
-    sp = strchr(head, ' ');
-    return sp && !strncmp(sp + 1, "503", 3);
+    if (n <= 0 || !reply || strncmp(reply, "HTTP/1.", 7)) return UI_CTL_NOREPLY;
+    sp = strchr(reply, ' ');
+    if (!sp || sp[1] < '1' || sp[1] > '5' || sp[2] < '0' || sp[2] > '9' || sp[3] < '0' || sp[3] > '9')
+        return UI_CTL_NOREPLY;
+    code = (sp[1] - '0') * 100 + (sp[2] - '0') * 10 + (sp[3] - '0');
+    if (code >= 200 && code < 300) return UI_CTL_OK;
+    if (code == 409) return UI_CTL_BUSY;
+    if (code == 503) return UI_CTL_FULL;
+    return UI_CTL_FAILED;
+}
+
+int ui_control_fallback_cmd(char *out, size_t n, const char *script, const char *action, const char *args)
+{
+    const char *p;
+
+    if (!out || n == 0) return 0;
+    out[0] = 0;
+    if (!script || !script[0] || !action || !action[0] || !args) return 0;
+    for (p = action; *p; p++)
+        if (!((*p >= 'a' && *p <= 'z') || *p == '.' || *p == '_')) return 0;
+    for (p = args; *p; p++) {
+        int ok = (*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') || (*p >= '0' && *p <= '9') ||
+                 strchr("_.,:=+-", *p) != NULL || (*p == ' ' && p[1] != ' ' && p != args);
+        if (!ok) return 0;
+    }
+    if (snprintf(out, n, "%s --by screen %s%s%s >/dev/null 2>&1 &", script, action,
+                 args[0] ? " " : "", args) >= (int)n) {
+        out[0] = 0;
+        return 0;
+    }
+    return 1;
 }

@@ -334,7 +334,7 @@ zte-agent 登录失败	zte-agent login failed
 电池与负载	Battery & load
 电池过热，拔掉充电器放到阴凉处	Battery hot; unplug the charger and move somewhere cool
 电源	Power
-电源直供电	Direct power
+停止充电	Stop charging
 电源键：短按 亮屏/息屏  长按 电源菜单\n回到这里：长按屏幕右下角 3 秒	Power key: tap for screen, hold for menu\nBack here: hold bottom-right corner 3 s
 电量低，尽快充电	Battery low; charge soon
 登录管理后台失败（密码不对？）	Admin login failed (wrong password?)
@@ -482,3 +482,45 @@ zte-agent 登录失败	zte-agent login failed
 重试	Retry
 限速	Speed cap
 
+
+# APN 自动候选可手选（2026-10-03）
+本卡在用	In use (this SIM)
+物联网	IoT
+本卡	This SIM
+只给这张卡改用「%s」：会断网几秒；换卡会自动回到「自动」	Use \"%s\" for this SIM only: a few seconds offline; another SIM goes back to Auto
+这张卡固定用「%s」，换卡会自动回到「自动」	This SIM stays on \"%s\"; another SIM goes back to Auto
+正在用物联网 APN「%s」，可能上不了网；点一条候选可以只给这张卡换掉（两下确认）	On IoT APN \"%s\", may not reach the internet; tap a candidate to replace it for this SIM (tap twice)
+这张卡有 %d 个候选 APN，点一条可以只给这张卡固定用它（两下确认）	This SIM has %d candidate APNs; tap one to use it for this SIM only (tap twice)
+在用 · 物联网	In use · IoT
+自动 APN	Automatic APN
+手动 APN	Manual APNs
+这张卡的候选（运营商库）	Candidates for this SIM (carrier list)
+数据服务没响应 · 暂时不能改设置	Data service not responding
+数据服务忙 · 没改，稍后再试	Data service busy · not changed
+没改成 · 数据服务回了错误	Not changed · data service error
+正在改别的设置，稍等	Another change in progress
+改动	Change
+详情 ›	Details ›
+没有进行中的改动	No change in progress
+重启设备	Restart device
+知道了	Got it
+当前设置未知	Current setting unknown
+停在 %s · 等设备响应	Stopped at %s · waiting for the device
+不再自动退回；还没确认通，没网要你自己改回去	No auto revert; unconfirmed, change it back yourself if no data
+马上改回「%s」，会重新注册，断网几十秒	Back to %s now; offline ~30 s while it re-registers
+再发一次改回「%s」	Send the change back to %s again
+重启设备，一两分钟没网	Restarts the device; offline 1–2 min
+自动退回没开：没通也会保持	Auto revert off: it stays even with no data
+基带崩过以后常见，重启后再切一次	Common after a modem crash; restart, then try again
+现在：%s · 上次确认：%s	Now %s · last good %s
+再试一次退回到%s	Retry revert to %s
+再按一次	Tap again
+改动记录	Change log
+上次改动	Last changed
+读不到改动记录 · 数据服务没响应	Can't read change log · data service not responding
+读不到改动记录 · 下面是上次读到的	Can't read change log · showing the last one read
+还没有改动 · 触屏、网页、情景、定时任务改的设置都会记在这里	No changes yet · settings changed from the screen, web, scenes and schedules show here
+只显示最近 %d 条	Latest %d only
+撤销	Undo
+# DD18：自动退回打开那天首页提示一次（write-op-layer.md 打开自动退回，10-04）
+自动退回已开：切模式没通会退回	Auto revert on: reverts a mode change that can't connect

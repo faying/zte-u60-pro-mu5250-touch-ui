@@ -40,7 +40,9 @@ static const char *const k_names[RT_SCENES] = {
     "abroad", "lowbat", "full-charging", "long-names", "empty",
     "nsa", "lte", "3g", "nodata", "5ga", "edge", "crowd", "today", "us", "jp", "nosvc",
     "bandlock", "datad-silent", "old-datad", "stall", "mf-backup", "mf-alldown",
-    "diagnose-running", "diagnose-result", "placement",
+    "diagnose-running", "diagnose-result", "placement", "op-busy", "op-datad-stuck",
+    "op-verifying", "op-rollback-off", "op-rolled-back", "op-rollback-failed", "op-not-applied",
+    "journal", "journal-empty", "op-notice",
 };
 const char *rt_scene_name(int s) { return s >= 0 && s < RT_SCENES ? k_names[s] : "?"; }
 
@@ -315,7 +317,8 @@ const net_view_t *screen_feed_net(void)
     static int done = -1;
     /* the two datad-trouble scenes and the notice / diagnosis / placement ones have the good scene's data */
     const char *name = IS(RT_DATAD_SILENT) || IS(RT_MF_BACKUP) || IS(RT_MF_ALLDOWN) || IS(RT_DIAG_RUNNING) ||
-                       IS(RT_DIAG_RESULT) || IS(RT_PLACEMENT) ? "good" : rt_scene_name(rt_scene);
+                       IS(RT_DIAG_RESULT) || IS(RT_PLACEMENT) || IS(RT_OP_BUSY) || IS(RT_OP_STUCK) ||
+                       rt_scene_is_op() || IS(RT_JOURNAL) || IS(RT_JOURNAL_EMPTY) || IS(RT_OP_NOTICE) ? "good" : rt_scene_name(rt_scene);
     if (IS(RT_OLD_DATAD)) return NULL;
     if (done != rt_scene) {
         done = rt_scene;
@@ -324,10 +327,189 @@ const net_view_t *screen_feed_net(void)
             if (!strcmp(k_views[i].scene, name) && !net_view_parse(k_views[i].json, &v))
                 fprintf(stderr, "views.h: %s did not parse\n", k_views[i].scene);
     }
+    /* E4: net.home as datad lays a transaction over the story (STATE_V2.md V2-38) */
+    if (rt_scene_is_op()) {
+        {
+            int en = lang_is_en();
+            if (IS(RT_OP_VERIFYING) || IS(RT_OP_ROLLBACK_OFF)) {
+                v.state = NV_STATE_CHANGING;
+                v.story.tone = UI_NET_NEUTRAL;
+                v.story.cause = UI_CAUSE_NONE;
+                cp(v.story.headline, sizeof v.story.headline, en ? "Checking" : "正在确认");
+                cp(v.story.hint, sizeof v.story.hint,
+                   IS(RT_OP_VERIFYING) ? (en ? "Back to Auto in 1:42 if no data" : "1:42 后没通就退回到自动")
+                                       : (en ? "0:48 left · auto revert off" : "还剩 0:48 · 自动退回没开"));
+            } else if (IS(RT_OP_ROLLBACK_FAILED)) {
+                v.state = NV_STATE_REVERT_FAIL;
+                v.story.tone = UI_NET_BAD;
+                v.story.cause = UI_CAUSE_NONE;
+                cp(v.story.headline, sizeof v.story.headline, en ? "Failed" : "退回也没通");
+                cp(v.story.hint, sizeof v.story.hint,
+                   en ? "Now 5G SA only · last good Auto · retry revert or restart"
+                      : "现在是只用 5G SA · 上次确认是自动 · 再试一次退回或重启设备");
+            } else {
+                cp(v.story.hint, sizeof v.story.hint,
+                   IS(RT_OP_ROLLED_BACK) ? (en ? "No data · back to Auto" : "没通 · 已退回自动")
+                                         : (en ? "Didn't apply · still Auto" : "没切成 · 还是自动"));
+            }
+        }
+    }
     return &v;
 }
 void data_set_pace(int panel_lit) { (void)panel_lit; }
-int  data_control(const char *a, const char *p, const char *fb) { (void)a; (void)p; (void)fb; return 1; }
+long screen_feed_exec_age(void) { return IS(RT_OP_STUCK) ? 25000 : 0; }
+int  screen_feed_stuck(void) { return IS(RT_OP_STUCK); }
+/* ---- 改动记录 (op.c op_log_fetch): datad's journal.list as journal_view.rs decorates it ---- */
+#include "http.h"
+int  rt_undo_calls;
+char rt_undo_last[48];
+int  data_control_undo(const char *a, const char *p) { (void)p; rt_undo_calls++; cp(rt_undo_last, sizeof rt_undo_last, a); return 1; }
+size_t http_build(char *req, size_t cap, const char *method, const char *path, const char *host,
+                  const char *json, const char *extra)
+{
+    (void)method; (void)path; (void)host; (void)json; (void)extra;
+    if (cap) req[0] = 0;
+    return 1;
+}
+int http_connect_tcp(const char *ipv4, int port, int ms) { (void)ipv4; (void)port; (void)ms; return 99; }
+#define JL_TXN(op, old, oz, oe, nw, nz, ne, res, rz, re, mark, t, ok, why_zh, why_en) \
+    "{\"op_id\":\"" op "\",\"action\":\"network.set_mode\",\"item\":\"network.mode\",\"source\":\"web\"," \
+    "\"undo\":false,\"old\":\"" old "\",\"new\":\"" nw "\",\"result\":\"" res "\",\"t\":\"" t "\"," \
+    "\"what_zh\":\"制式\",\"what_en\":\"Network mode\",\"change_zh\":\"" oz " → " nz "\"," \
+    "\"change_en\":\"" oe " → " ne "\",\"result_zh\":\"" rz "\",\"result_en\":\"" re "\",\"mark\":\"" mark "\"," \
+    "\"source_zh\":\"网页\",\"source_en\":\"Web\",\"hide\":false,\"undo_view\":{\"ok\":" ok "," \
+    "\"label_zh\":\"撤销\",\"label_en\":\"Undo\",\"why_zh\":" why_zh ",\"why_en\":" why_en "," \
+    "\"request\":{\"action\":\"network.set_mode\",\"undo\":true,\"params\":{\"mode\":\"" old "\"}}}}"
+static const char k_journal[] =
+    "{\"action\":\"journal.list\",\"ok\":true,\"result\":{\"owners\":{\"network.mode\":{\"source\":\"web\","
+    "\"user\":true,\"undo\":false,\"value\":\"WL_AND_5G\",\"op_id\":\"w2\",\"ts\":1,\"t\":\"2026-10-03 14:32:07\"}},"
+    "\"entries\":["
+    JL_TXN("w2", "Only_LTE", "只用 4G", "4G only", "WL_AND_5G", "自动", "Auto", "confirmed", "已切到自动", "Now Auto",
+           "ok", "2026-10-03 14:32:07", "true", "null", "null") ","
+    "{\"source\":\"screen\",\"action\":\"op.ack\",\"result\":\"ok\",\"hide\":true},"
+    "{\"action\":\"cellular.set\",\"source\":\"screen\",\"result\":\"ok\",\"t\":\"2026-10-03 13:05:44\","
+    "\"what_zh\":\"移动数据\",\"what_en\":\"Mobile data\",\"change_zh\":\"打开漫游\",\"change_en\":\"roaming on\","
+    "\"result_zh\":\"已改\",\"result_en\":\"Done\",\"mark\":\"ok\",\"source_zh\":\"触屏\",\"source_en\":\"Screen\","
+    "\"hide\":false,\"undo_view\":null},"
+    "{\"source\":\"scenario\",\"item\":\"wifi\",\"result\":\"skipped\",\"skip\":\"end\",\"count\":5,"
+    "\"t\":\"2026-10-03 12:40:00\",\"what_zh\":\"Wi-Fi\",\"what_en\":\"Wi-Fi\",\"change_zh\":\"\",\"change_en\":\"\","
+    "\"result_zh\":\"情景跳过 ×5（你手动改过）\",\"result_en\":\"Scene skipped ×5 (you changed it)\",\"mark\":\"warn\","
+    "\"source_zh\":\"情景\",\"source_en\":\"Scene\",\"hide\":false,\"undo_view\":null},"
+    JL_TXN("w1", "WL_AND_5G", "自动", "Auto", "Only_LTE", "只用 4G", "4G only", "rolled_back", "没通 · 已退回自动",
+           "No data · back to Auto", "warn", "2026-10-03 11:02:31", "false", "\"之后又改过\"", "\"Changed since\"") ","
+    "{\"source\":\"web\",\"action\":\"esim.switch\",\"result\":\"ok\",\"t\":\"2026-10-02 22:15:00\","
+    "\"what_zh\":\"eSIM\",\"what_en\":\"eSIM\",\"change_zh\":\"CMHK → Ubigi\",\"change_en\":\"CMHK → Ubigi\","
+    "\"result_zh\":\"已改\",\"result_en\":\"Done\",\"mark\":\"ok\",\"source_zh\":\"网页\",\"source_en\":\"Web\","
+    "\"hide\":false,\"undo_view\":null}"
+    "]}}";
+int http_exchange(int fd, const char *req, char *buf, size_t cap, int io_ms, http_resp_t *r)
+{
+    (void)fd; (void)req; (void)io_ms;
+    const char *body = IS(RT_JOURNAL) ? k_journal
+                     : "{\"action\":\"journal.list\",\"ok\":true,\"result\":{\"entries\":[],\"owners\":{}}}";
+    snprintf(buf, cap, "%s", body);
+    memset(r, 0, sizeof *r);
+    r->status = 200;
+    r->body = buf;
+    r->body_len = strlen(buf);
+    return 200;
+}
+
+int rt_scene_is_op(void) { return rt_scene >= RT_OP_VERIFYING && rt_scene <= RT_OP_NOT_APPLIED; }
+
+/* datad's /v2/screen "op" for the transaction scenes, in ops/ui.rs's shape
+ * (rust/src/ops/ui.rs view(), block()) */
+#define OP_STEPS_JSON(a, b, c) \
+    "\"steps\":[{\"done\":" a ",\"en\":\"Setting applied\",\"key\":\"applied\",\"zh\":\"设置已生效\"}," \
+    "{\"done\":" b ",\"en\":\"Registered\",\"key\":\"registered\",\"zh\":\"已注册\"}," \
+    "{\"done\":" c ",\"en\":\"Data\",\"key\":\"data\",\"zh\":\"数据\"}]"
+#define OP_COMMON(id, src_zh, src_en) \
+    "\"op_id\":\"" id "\",\"action\":\"network.set_mode\",\"item\":\"network.mode\"," \
+    "\"source_zh\":\"" src_zh "\",\"source_en\":\"" src_en "\",\"what_zh\":\"制式\",\"what_en\":\"Network mode\"," \
+    "\"old\":\"WL_AND_5G\",\"old_zh\":\"自动\",\"old_en\":\"Auto\"," \
+    "\"target\":\"Only_5G\",\"target_zh\":\"只用 5G SA\",\"target_en\":\"5G SA only\"," \
+    "\"rollback_to\":\"WL_AND_5G\",\"rollback_to_zh\":\"自动\",\"rollback_to_en\":\"Auto\"," \
+    "\"revert_label_zh\":\"退回自动\",\"revert_label_en\":\"Revert to Auto\"," \
+    "\"keep_label_zh\":\"保留只用 5G SA\",\"keep_label_en\":\"Keep 5G SA only\","
+#define OP_LIVE(next_zh, next_en, rem) \
+    "{" OP_COMMON("web-31", "网页", "Web") "\"phase\":\"verifying\",\"reason\":null,\"mark\":null,\"stay\":\"live\"," \
+    "\"say_zh\":\"正在确认\",\"say_en\":\"Checking\",\"next_zh\":\"" next_zh "\",\"next_en\":\"" next_en "\"," \
+    "\"note_zh\":null,\"note_en\":null,\"readback_zh\":\"只用 5G SA\",\"readback_en\":\"5G SA only\"," \
+    "\"can_revert\":true,\"can_keep\":true,\"remaining_ms\":" rem ",\"undo\":null," OP_STEPS_JSON("true", "false", "false") "}"
+#define OP_DONE(phase, reason, mark, stay, say_zh, say_en, rb_zh, rb_en, d) \
+    "{" OP_COMMON("web-30", "网页", "Web") "\"phase\":\"" phase "\",\"reason\":\"" reason "\",\"mark\":\"" mark "\"," \
+    "\"stay\":\"" stay "\",\"say_zh\":\"" say_zh "\",\"say_en\":\"" say_en "\",\"next_zh\":null,\"next_en\":null," \
+    "\"note_zh\":null,\"note_en\":null,\"readback_zh\":" rb_zh ",\"readback_en\":" rb_en "," \
+    "\"can_revert\":false,\"can_keep\":false,\"remaining_ms\":null,\"acked\":false,\"needs_ack\":true," \
+    "\"undo\":{\"ok\":false,\"label_zh\":\"撤销\",\"label_en\":\"Undo\"," \
+    "\"why_zh\":\"设置没变 · 不用撤销\",\"why_en\":\"Nothing to undo\",\"value\":\"WL_AND_5G\"}," d "}"
+
+static const char *op_json(void);
+/* datad sends a new remaining_ms on every fetch while a change is live; a
+ * counter that changes on each call does the same here, so the screen never
+ * sees it as stuck (停在 m:ss is for a datad that stopped answering). */
+const char *screen_feed_op(void)
+{
+    static char buf[8192];
+    static unsigned n;
+    const char *j = op_json();
+    if (!j[0] || j[strlen(j) - 1] != '}') return j;
+    snprintf(buf, sizeof buf, "%.*s,\"fetch\":%u}", (int)strlen(j) - 1, j, ++n);
+    return buf;
+}
+
+static const char *op_json(void)
+{
+    if (IS(RT_OP_VERIFYING))
+        return "{\"rollback_enabled\":true,\"active\":"
+               OP_LIVE("{t} 后没通就退回到自动", "Back to Auto in {t} if no data", "102000") ",\"last\":null}";
+    if (IS(RT_OP_ROLLBACK_OFF))
+        return "{\"rollback_enabled\":false,\"active\":"
+               OP_LIVE("还剩 {t} · 自动退回没开", "{t} left · auto revert off", "48000") ",\"last\":null}";
+    if (IS(RT_OP_ROLLED_BACK))
+        return "{\"rollback_enabled\":true,\"active\":null,\"last\":"
+               OP_DONE("rolled_back", "timeout", "warn", "sticky", "没通 · 已退回自动", "No data · back to Auto",
+                       "\"自动\"", "\"Auto\"", OP_STEPS_JSON("true", "true", "true")) "}";
+    if (IS(RT_OP_ROLLBACK_FAILED))
+        return "{\"rollback_enabled\":true,\"active\":null,\"last\":"
+               OP_DONE("rollback_failed", "rollback_timeout", "bad", "alert", "退回也没通", "Revert failed",
+                       "\"只用 5G SA\"", "\"5G SA only\"", OP_STEPS_JSON("false", "false", "false")) "}";
+    if (IS(RT_OP_NOT_APPLIED))
+        return "{\"rollback_enabled\":true,\"active\":null,\"last\":"
+               OP_DONE("not_applied", "ignored", "warn", "sticky", "没切成 · 还是自动", "Didn't apply · still Auto",
+                       "\"自动\"", "\"Auto\"", OP_STEPS_JSON("false", "true", "false")) "}";
+    if (IS(RT_OP_NOTICE))   /* DD18: stays on until datad hears op.notice_ack */
+        return "{\"rollback_enabled\":true,\"active\":null,\"last\":null,\"notice\":\"rollback_on\"}";
+    return "";
+}
+int  data_control_notice(data_notice_t *out, uint32_t max_age_ms)
+{
+    (void)max_age_ms;
+    if (!IS(RT_OP_BUSY)) return 0;
+    if (out) {
+        memset(out, 0, sizeof *out);
+        out->kind = UI_CTL_BUSY;
+        cp(out->say_zh, sizeof out->say_zh, "正在换制式（网页发起，32 秒），稍等");
+        cp(out->say_en, sizeof out->say_en, "Busy: network mode (Web)");
+        out->at = 1;
+    }
+    return 1;
+}
+int  rt_control_calls;
+char rt_control_last[48], rt_control_params[160];
+int  data_control(const char *a, const char *p, const char *fb)
+{
+    (void)fb;
+    rt_control_calls++;
+    cp(rt_control_last, sizeof rt_control_last, a ? a : "");
+    cp(rt_control_params, sizeof rt_control_params, p ? p : "");
+    return 1;
+}
+int  data_control_fb(const char *a, const char *p, const char *fa, const char *fb)
+{
+    (void)fa;
+    return data_control(a, p, fb);
+}
 int  data_backend_fd(void) { return -1; }
 int  data_backend_init(void) { return 0; }
 int  data_backend_poll(uint32_t now_ms) { (void)now_ms; return 0; }
@@ -591,7 +773,15 @@ const netinfo_t *netinfo_get(void)
     n->apns[0].pdp = 3; n->apns[0].selected = 1;
     cp(n->apns[1].id, 24, "manu2"); cp(n->apns[1].name, 40, "Company private APN with a long name");
     cp(n->apns[1].apn, 40, "corp.example.internal.apn"); n->apns[1].pdp = 1;
+    /* 2026-10-03: the auto candidates the device lists for this card (ctiot
+     * first, IoT; ctnet second). Shown under 自动 since there are two. */
+    n->apn_in_use.iot = 1;
+    n->ncands = 2;
+    n->cands[0] = n->apn_in_use; n->cands[0].selected = 1;
+    cp(n->cands[1].id, 24, "auto109600"); cp(n->cands[1].name, 40, "China Telecom 4G");
+    cp(n->cands[1].apn, 40, "ctnet"); n->cands[1].pdp = 3;
     if (IS(RT_ABROAD)) { n->apn_manual = 1; n->apn_in_use = n->apns[0]; n->apns[0].in_use = 1; }
+    if (IS(RT_ABROAD)) { cp(n->apn_picked, 24, "manu1"); n->cands[0].in_use = 0; }
     cp(n->guard_phase, sizeof n->guard_phase, "idle");
     cp(n->scan_state, sizeof n->scan_state, "idle");
     cp(n->nbr_state, sizeof n->nbr_state, "unsupported");

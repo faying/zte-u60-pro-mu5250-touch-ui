@@ -84,7 +84,14 @@ WRAPPER=${DT_WRAPPER:-start.test.sh}
 # What /etc/init.d/zwrt-datad's start_service runs (minus supervise.sh).
 # scripts/test/datad-trial checks these against scripts/zwrt-datad.init.
 LAUNCH_ARGS="-i 1000 --lan-bind 0.0.0.0 --lan-port 9461 --auth-token-file /data/plugins/zwrt-datad/auth.token"
-LAUNCH_ENV="DATAD_MODEM_REMOTE_STREAM=1 DATAD_MODEM_REMOTE_STALE_SEC=6 ZWRT_DATAD_OTA_DISABLE_AUTO=1"
+LAUNCH_ENV="DATAD_MODEM_REMOTE_STREAM=1 DATAD_MODEM_REMOTE_STALE_SEC=6 ZWRT_DATAD_OTA_DISABLE_AUTO=1 ZWRT_DATAD_UBUS=auto"
+# Auto revert (E4 D30): the init script turns it on while this file exists;
+# looked at when launching (the file may come later), not when sourced.
+ROLLBACK_FLAG=${DT_ROLLBACK_FLAG:-/data/u60-ops/rollback-on}
+launch_env() {
+    if [ -f "$ROLLBACK_FLAG" ]; then echo "$LAUNCH_ENV ZWRT_DATAD_ROLLBACK=1"
+    else echo "$LAUNCH_ENV ZWRT_DATAD_ROLLBACK=0"; fi
+}
 
 INTERVAL=${DT_INTERVAL:-10}
 STALE=${DT_STALE:-30}
@@ -141,7 +148,7 @@ UID_UP=10                                 # s: uid-restart waits this long per s
 # (= u60-guard.init). Must equal manager onboard/build-kit.sh's guard list
 # minus u60-ship.sh, datad-trial.sh, u60-recover.sh (those go up with every
 # ship / with install-recover); wifi-ab.sh is ours only (scripts/test/guard-files).
-GUARD_FILES="alert-lib.sh u60-guard.sh supervise.sh agent-auth.sh chaos.sh doctor.sh config-backup.sh power-sample.sh wan-sources.sh wifi-ab.sh zte-agent.init zwrt-datad.init u60-guard.init"
+GUARD_FILES="alert-lib.sh u60-guard.sh supervise.sh agent-auth.sh chaos.sh doctor.sh config-backup.sh power-sample.sh wan-sources.sh wifi-ab.sh u60-fallback.sh zte-agent.init zwrt-datad.init u60-guard.init"
 
 # u60-uid's own wording (src/uid.c logf_). Its file lines have no "u60-uid:"
 # prefix, so the pattern must not require one. "giving up:" with the colon:
@@ -367,7 +374,7 @@ refuse() { # refuse <verb> <problems>
 
 # The command launch runs, one line (the extra VAR=value go after LAUNCH_ENV).
 launch_cmd() {
-    echo "env $LAUNCH_ENV${*:+ $*} nohup $TEST_BIN $LAUNCH_ARGS"
+    echo "env $(launch_env)${*:+ $*} nohup $TEST_BIN $LAUNCH_ARGS"
 }
 
 # detach <outfile> <command…>: run the command in the background, out of this
@@ -437,7 +444,7 @@ launch_test_build() {
     echo "=== $($DATE '+%Y-%m-%d %H:%M:%S') $(launch_cmd "$@")" >>"$TEST_LOG"
     log "launch：$(launch_cmd "$@")"
     # shellcheck disable=SC2086
-    detach "$TEST_LOG" env $LAUNCH_ENV "$@" nohup "$TEST_BIN" $LAUNCH_ARGS
+    detach "$TEST_LOG" env $(launch_env) "$@" nohup "$TEST_BIN" $LAUNCH_ARGS
 
     _i=0
     _why="进程没出现"

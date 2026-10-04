@@ -130,14 +130,37 @@ int data_refresh_live(devui_data_t *d);
 int sms_mark_read(int index);
 
 /*
- * Device writes from the touch UI (T13): POST to datad's /control, same
- * non-blocking path as the SMS actions. `fallback_cmd` is the old direct
- * shell command (ending in " &"); it runs instead when datad cannot be
- * reached, and later when datad answers 503 busy or hangs up without an
- * answer. No answer within 5 s: nothing more happens (datad may still be
- * doing it). Returns 1 if the request went to datad, 0 if the fallback ran.
+ * Device writes from the touch UI: POST to datad's /control with
+ * "source":"screen" and an op_id, same non-blocking path as the SMS actions.
+ * The reply is read in the background (data_control_notice).
+ * `fallback_args` ("key=value …", "" for none; NULL = no emergency write) is
+ * for the emergency script /data/u60-guard/u60-fallback.sh: it runs only
+ * when datad cannot be reached at all — never on 503, 409 or no answer, as
+ * datad may still be doing it (E4 write-op-layer.md 前提 6, D18). The script
+ * checks again that datad is gone. Returns 1 if the request went to datad.
  */
-int data_control(const char *action, const char *params_json, const char *fallback_cmd);
+int data_control(const char *action, const char *params_json, const char *fallback_args);
+
+/* data_control whose emergency write is a different script action, where
+ * datad's action has no script counterpart (Wi-Fi: datad wifi.apply, the
+ * script's wifi.radio). */
+int data_control_fb(const char *action, const char *params_json, const char *fallback_action,
+                    const char *fallback_args);
+
+/* 撤销 from the change log (E4 DD10): the same write with "undo":true, as
+ * datad's journal.list undo_view.request says. No emergency write. */
+int data_control_undo(const char *action, const char *params_json);
+
+/* The last write datad turned down: kind UI_CTL_BUSY (say_* = datad's
+ * "正在换制式（触屏发起，32 秒），稍等"), UI_CTL_FULL or UI_CTL_FAILED.
+ * Returns 1 when there is one younger than max_age_ms. */
+typedef struct {
+    int kind;
+    char action[40];
+    char say_zh[160], say_en[160];
+    uint32_t at;
+} data_notice_t;
+int data_control_notice(data_notice_t *out, uint32_t max_age_ms);
         /* no-op if the row is already read */
 int sms_delete_arm(int index);       /* long-press: arms the row, doesn't delete yet */
 int sms_delete_armed(int index);     /* is this row currently armed? (for the UI to paint) */

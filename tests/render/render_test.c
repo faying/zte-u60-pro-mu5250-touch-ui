@@ -553,7 +553,9 @@ int main(int argc, char **argv)
     snprintf(conf, sizeof conf, "/tmp/rt-devui-%d.conf", (int)getpid());
     rt_conf_path = conf;
     FILE *cf = fopen(conf, "w");
-    if (cf) { fprintf(cf, "appearance=%s\n%s", s_theme, s_lang_en ? "lang=en\n" : ""); fclose(cf); }
+    /* autooff=0: the shots need a lit screen however long the scene runs
+     * (a fresh start takes devui.conf's screen-off time since 10-04) */
+    if (cf) { fprintf(cf, "appearance=%s\nautooff=0\n%s", s_theme, s_lang_en ? "lang=en\n" : ""); fclose(cf); }
     if (expect) load_expect(expect);
 
     lv_init();
@@ -575,6 +577,7 @@ int main(int argc, char **argv)
     ui_set_launch(launched_tab >= 0 ? 2 : 1, av);
     ui_create();
     if (s_dark != !strcmp(s_theme, "dark")) bad("appearance=%s but dark=%d", s_theme, s_dark);
+    if (launched_tab < 0 && s_autooff_ms != 0) bad("fresh start: devui.conf autooff=0 not applied (%u)", (unsigned)s_autooff_ms);
     settle(4000);
 
     /* Right after a theme exec the 系统 page is up (--tab=4): a real tap on
@@ -630,6 +633,137 @@ int main(int argc, char **argv)
         to_tab(TAB_HOME);
         if (lv_obj_has_flag(s_cc_hint_box, LV_OBJ_FLAG_CLICKABLE)) bad("good: the hint row is tappable (no ›)");
         else ok("");
+    }
+    /* E4 write transactions (write-op-layer.md DD3, DD12, DD13, DD16) */
+    if (rt_scene_is_op()) {
+        int live = rt_scene == RT_OP_VERIFYING || rt_scene == RT_OP_ROLLBACK_OFF;
+        /* the 事务行 on a tab other than Home, not on Home */
+        to_tab(TAB_CELL);
+        if (lv_obj_has_flag(s_opr, LV_OBJ_FLAG_HIDDEN)) bad("op: no 事务行 on 蜂窝");
+        else ok("");
+        to_tab(TAB_HOME);
+        settle(200);
+        if (!lv_obj_has_flag(s_opr, LV_OBJ_FLAG_HIDDEN)) bad("op: 事务行 on Home (the status block says it)");
+        else ok("");
+        if (live || rt_scene == RT_OP_ROLLBACK_FAILED) {
+            /* the status block shows it; 详情 › opens the 事务页 */
+            if (!lv_obj_has_flag(s_cc_hint_box, LV_OBJ_FLAG_CLICKABLE)) bad("op: the status block's hint is not tappable");
+            click(s_cc_hint_box);
+        } else {
+            to_tab(TAB_CELL);
+            click(s_opr);
+        }
+        settle(400);
+        if (s_sub_cur != SUB_OP) bad("op: the 事务页 did not open (sub %d)", s_sub_cur);
+        else ok("");
+        shoot_page("op", s_sub_page[SUB_OP]);
+        page_done("op");
+        int n = rt_control_calls;
+        if (live) {
+            click(s_opp_btn[0]);                     /* 退回自动: the first tap only arms */
+            settle(100);
+            if (rt_control_calls != n) bad("op: 退回 ran on the first tap");
+            else ok("");
+            shoot_page("op-armed", s_sub_page[SUB_OP]);
+            page_done("op-armed");
+            click(s_opp_btn[0]);
+            settle(100);
+            if (rt_control_calls != n + 1 || strcmp(rt_control_last, "op.revert") || !strstr(rt_control_params, "web-31"))
+                bad("op: the second tap did not send op.revert (%d %s %s)", rt_control_calls - n, rt_control_last, rt_control_params);
+            else ok("");
+        } else {
+            if (rt_scene == RT_OP_ROLLBACK_FAILED) {
+                int sys = rt_system_calls;
+                click(s_opp_btn[1]);                 /* 重启设备: the first tap only arms */
+                settle(100);
+                if (rt_control_calls != n || rt_system_calls != sys) bad("op: 重启设备 ran on the first tap");
+                else ok("");
+            }
+            click(s_opp_btn[2]);                     /* 知道了: one tap, shared with the web page */
+            settle(200);
+            if (rt_control_calls != n + 1 || strcmp(rt_control_last, "op.ack") || !strstr(rt_control_params, "web-30"))
+                bad("op: 知道了 did not send op.ack (%d %s)", rt_control_calls - n, rt_control_last);
+            else if (s_sub_cur == SUB_OP) bad("op: 知道了 left the 事务页 open");
+            else ok("");
+        }
+        sub_close();
+        settle(200);
+    }
+    /* DD18: 自动退回已打开 once on Home; 知道了 sends op.notice_ack and hides it at once */
+    if (rt_scene == RT_OP_NOTICE) {
+        to_tab(TAB_HOME);
+        settle(200);
+        if (lv_obj_has_flag(s_hn_box, LV_OBJ_FLAG_HIDDEN)) bad("notice: no 自动退回已打开 on Home");
+        else if (lv_obj_get_y(s_cell_card) < s_hn_h) bad("notice: the status card is under the notice");
+        else ok("");
+        int n = rt_control_calls;
+        lv_area_t a;                                 /* a real finger on 知道了 (hit area included) */
+        lv_obj_get_coords(s_hn_ack, &a);
+        tap_at((a.x1 + a.x2) / 2, (a.y1 + a.y2) / 2);
+        if (rt_control_calls != n + 1 || strcmp(rt_control_last, "op.notice_ack") || strcmp(rt_control_params, "{}"))
+            bad("notice: 知道了 did not send op.notice_ack (%d %s %s)", rt_control_calls - n, rt_control_last, rt_control_params);
+        else if (!lv_obj_has_flag(s_hn_box, LV_OBJ_FLAG_HIDDEN)) bad("notice: still shown after 知道了 (datad has not caught up yet)");
+        else if (lv_obj_get_y(s_cell_card) != 4) bad("notice: the status card did not move back up");
+        else ok("");
+    } else {
+        if (!lv_obj_has_flag(s_hn_box, LV_OBJ_FLAG_HIDDEN)) bad("notice: 自动退回已打开 shown without datad's notice");
+        else ok("");
+    }
+    /* E4 系统 › 改动记录 (DD5, DD10, DD11) */
+    if (rt_scene == RT_JOURNAL || rt_scene == RT_JOURNAL_EMPTY) {
+        to_sub(SUB_LOG, -1);
+        if (s_sub_cur != SUB_LOG) bad("journal: 系统 › 改动记录 did not open (sub %d)", s_sub_cur);
+        else ok("");
+        shoot_page("journal", s_sub_page[SUB_LOG]);
+        page_done("journal");
+        if (rt_scene == RT_JOURNAL) {
+            if (s_log_n != 5) bad("journal: %d rows, want 5 (the 知道了 line is hidden)", s_log_n);
+            else ok("");
+            click(s_log_row[0]);
+            settle(400);
+            if (s_sub_cur != SUB_LOG_DETAIL) bad("journal: a row did not open its detail");
+            shoot_page("journal-detail", s_sub_page[SUB_LOG_DETAIL]);
+            page_done("journal-detail");
+            click(s_logd_btn);                       /* 撤销: the first tap only arms */
+            settle(100);
+            if (rt_undo_calls) bad("journal: 撤销 ran on the first tap");
+            else ok("");
+            click(s_logd_btn);
+            settle(200);
+            if (rt_undo_calls != 1 || strcmp(rt_undo_last, "network.set_mode")) bad("journal: the second tap did not undo");
+            else ok("");
+            /* an older change of the same item: greyed, says why, no tap does anything */
+            to_sub(SUB_LOG, -1);
+            click(s_log_row[3]);
+            settle(400);
+            shoot_page("journal-detail-old", s_sub_page[SUB_LOG_DETAIL]);
+            page_done("journal-detail-old");
+            click(s_logd_btn);
+            settle(100);
+            click(s_logd_btn);
+            settle(100);
+            if (rt_undo_calls != 1) bad("journal: an old change could be undone");
+            else ok("");
+            /* T15: 蜂窝 › 网络模式 says who changed it last; a tap opens that row */
+            to_tab(TAB_CELL);
+            if (lv_obj_has_flag(s_md_own_row, LV_OBJ_FLAG_HIDDEN)) bad("journal: no 上次改动 under 网络模式");
+            else if (strcmp(lv_label_get_text(s_md_own_val), "10-03 14:32 · 网页") &&
+                     strcmp(lv_label_get_text(s_md_own_val), "10-03 14:32 · Web"))
+                bad("journal: 上次改动 says \"%s\"", lv_label_get_text(s_md_own_val));
+            else ok("");
+            shoot_page("journal-cell", s_tiles[TAB_CELL]);
+            page_done("journal-cell");
+            click(lv_obj_get_child(s_md_own_row, 0));
+            settle(400);
+            if (s_sub_cur != SUB_LOG_DETAIL || s_log_sel != 0) bad("journal: 上次改动 did not open its row (sub %d, row %d)", s_sub_cur, s_log_sel);
+            else ok("");
+            sub_back();
+            settle(200);
+            if (s_sub_cur != SUB_LOG) bad("journal: 返回 from that row did not land on 改动记录");
+            else ok("");
+        }
+        sub_close();
+        settle(200);
     }
     if (rt_scene == RT_DIAG_RUNNING || rt_scene == RT_DIAG_RESULT) {
         to_sub(SUB_DIAG, -1);
@@ -778,7 +912,8 @@ int main(int argc, char **argv)
         shoot_page("apn-already", s_sub_page[SUB_APN]);
         page_done("apn-already");
         s_apn_flash.until = 0;
-        int calls0 = rt_apn_calls, other = rt_scene == RT_ABROAD ? 0 : 1;
+        /* 不在国外：点第二条自动候选（ctnet，2026-10-03 起可以只给这张卡挑） */
+        int calls0 = rt_apn_calls, other = rt_scene == RT_ABROAD ? 0 : 2;
         click(s_apn_row[other]);
         settle(100);
         if (rt_apn_calls != calls0) bad("APN switched on the first tap");
@@ -787,7 +922,7 @@ int main(int argc, char **argv)
         settle(500);
         click(s_apn_row[other]);
         settle(100);
-        if (rt_apn_calls != calls0 + 1 || strcmp(rt_apn_last, other ? "manu1" : "auto"))
+        if (rt_apn_calls != calls0 + 1 || strcmp(rt_apn_last, other ? "auto109600" : "auto"))
             bad("APN second tap: calls %d id %s", rt_apn_calls - calls0, rt_apn_last);
         else ok("");
         shoot_page("apn-pending", s_sub_page[SUB_APN]);

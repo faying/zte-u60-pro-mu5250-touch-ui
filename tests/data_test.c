@@ -72,6 +72,26 @@ static pid_t fake_datad(int mode)
     return pid;
 }
 
+/* Accept and count without a word (datad up but not answering yet): every
+ * accept writes one byte to `tally` for the parent to count. hold=0 hangs up
+ * at once; hold=1 keeps the connection open and silent (each try then costs
+ * the client its I/O timeouts). */
+static pid_t closing_datad(int tally, int hold)
+{
+    int lfd = listen_port();
+    pid_t pid = fork();
+    if (pid == 0) {
+        for (;;) {
+            int c = accept(lfd, NULL, NULL);
+            if (c < 0) _exit(1);
+            (void)!write(tally, "x", 1);
+            if (!hold) close(c);
+        }
+    }
+    close(lfd);
+    return pid;
+}
+
 static void spin(int ms)
 {
     uint32_t end = mono_ms() + (uint32_t)ms;
@@ -83,6 +103,25 @@ static void spin(int ms)
 
 int main(void)
 {
+    {   /* 移动数据：enable 0 但数据连着（开机后默认）算开着；0 且断着才是关 */
+        struct { const char *cell; int want; } c[] = {
+            { "{\"enable\":0,\"connect_status\":\"ipv4_ipv6_connected\"}", 1 },
+            { "{\"enable\":0,\"connect_status\":\"connecting\"}", 1 },
+            { "{\"enable\":0,\"connect_status\":\"disconnected\"}", 0 },
+            { "{\"enable\":0,\"connect_status\":\"\"}", -1 },
+            { "{\"enable\":0}", -1 },
+            { "{\"enable\":1,\"connect_status\":\"disconnected\"}", 1 },
+        };
+        for (size_t i = 0; i < sizeof c / sizeof c[0]; i++) {
+            char buf[256];
+            devui_data_t dd;
+            memset(&dd, 0, sizeof dd);
+            snprintf(buf, sizeof buf, "{\"interfaces\":{\"cellular\":%s},\"ts\":1}", c[i].cell);
+            parse_snapshot(&dd, buf);
+            CHECK(dd.cell_data == c[i].want);
+        }
+    }
+
     devui_data_t d;
     pid_t pid;
 
@@ -92,6 +131,32 @@ int main(void)
     CHECK(data_refresh(&d) == 0);
     CHECK(data_backend_alive_wall() == 0);
     CHECK(!data_backend_silent());           /* never answered is not "silent" */
+
+    /* never answered, datad hangs up or holds silent: retries follow
+     * DEVUI_BACKEND_RETRY_MS (100 ms here), not every pass of a 1 ms loop.
+     * 500 ms ≈ 6 tries × 2 connects (/state, /events); per pass would be ~1000. */
+    for (int hold = 0; hold <= 1; hold++) {
+        int tally[2];
+        char buf[4096];
+        ssize_t n, got = 0;
+        uint32_t end;
+        CHECK(pipe(tally) == 0);
+        pid = closing_datad(tally[1], hold);
+        usleep(50000);
+        end = mono_ms() + 500;
+        while ((int32_t)(end - mono_ms()) > 0) {
+            (void)data_backend_poll(mono_ms());
+            usleep(1000);
+        }
+        kill(pid, SIGKILL);
+        waitpid(pid, NULL, 0);
+        close(tally[1]);
+        while ((n = read(tally[0], buf, sizeof buf)) > 0) got += n;
+        close(tally[0]);
+        printf("  connects in 500 ms with datad %s: %zd\n", hold ? "holding silent" : "hanging up", got);
+        CHECK(got >= 1 && got <= 20);
+        CHECK(data_refresh(&d) == 0);
+    }
 
     pid = fake_datad(1);
     usleep(50000);

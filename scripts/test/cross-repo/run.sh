@@ -118,6 +118,7 @@ TSV=$REPO/ui/lang/en.tsv
 INC=$REPO/src/lang_en.inc
 SCREEN_RS=$DATAD/rust/src/screen.rs
 SCREEN_T=$DATAD/rust/src/screen/tests.rs
+OPS_UI=$DATAD/rust/src/ops/ui.rs
 AGENT=$MANAGER/zte-agent/src
 WEB_EN=$MANAGER/web/src/lib/i18n/en.ts
 
@@ -147,6 +148,17 @@ if [ -f "$DESIGN" ] && [ -f "$SCREEN_T" ] && [ -f "$TSV" ]; then
           for (i = 1; i <= nc; i++) {
               zz = nz == nc ? z[i] : z[1]; if (i > 1 && p != "" && index(zz, p) != 1) zz = p zz
               print c[i] "\t" zz "\t" (ne == nc ? e[i] : e[1]) "\t" t } }')
+    # changing / revert_fail are laid over the story by a write (E4, screen.rs
+    # with_op()); their words come from ops/ui.rs, not from HEADLINES
+    OV='^(changing|revert_fail)	'
+    DO=$(printf '%s\n' "$DT" | grep -E "$OV")
+    DT=$(printf '%s\n' "$DT" | grep -vE "$OV")
+    miss=$(md_rows "$DESIGN" '**首页结论表**' | awk -F '\t' '$2 ~ /^(changing|revert_fail)$/ {
+            nz = split($3, z, " / "); ne = split($4, e, " / "); for (i = 1; i <= nz; i++) print z[i] "\t" (ne == nz ? e[i] : e[1]) }' |
+        while IFS='	' read -r z e; do
+            { grep -qF "\"$z\"" "$OPS_UI" || grep -qF "\"$z\"" "$SCREEN_RS"; } && grep -qF "\"$e\"" "$OPS_UI" || echo "($z, $e)"; done)
+    [ -n "$DO" ] && [ -z "$miss" ] && ok "write overlays (changing, revert_fail) are written as such in ops/ui.rs" ||
+        bad "write overlays not in ops/ui.rs: ${miss:-no changing/revert_fail rows in DESIGN.md §4}"
     HT=$(sed -n 's/^ *("\([a-z0-9]*\)", "\([^"]*\)", "\([^"]*\)", Tone::\([A-Za-z]*\)),$/\1	\2	\3	\4/p' "$SCREEN_T" |
         awk -F '\t' '{ print $1 "\t" $2 "\t" $3 "\t" tolower($4) }')
     [ "$(printf '%s\n' "$DT" | awk NF | wc -l)" -ge 13 ] && ok "DESIGN.md §4 headline table read ($(printf '%s\n' "$DT" | wc -l | tr -d ' ') codes)" ||
@@ -234,16 +246,29 @@ else
 fi
 
 # 7. *_en fields the screen reads
+# files whose *_en come from datad's write-transaction data, not zte-agent
+OPS_C='/(net_view|data|op_view)\.c$|/ui_parts/op\.c$'
 if [ -f "$REPO/src/net_view.c" ]; then
     FD=$(perl -ne 'print "$1_en\n" while /\btext\(\s*\w+\s*,\s*"(\w+)"/g' "$REPO/src/net_view.c" | sort -u)
     FA=$( { perl -ne 'print "$1_en\n" while /\bjson_text\(\s*\w+\s*,\s*"(\w+)"/g' "$REPO/src/alerts.c"
-        ls "$REPO"/src/*.c "$REPO"/src/ui_parts/*.c | grep -v '/net_view\.c$' | xargs perl -ne 'print "$1\n" while /"(\w+_en)"/g'; } | sort -u)
+        ls "$REPO"/src/*.c "$REPO"/src/ui_parts/*.c | grep -vE "$OPS_C" | xargs perl -ne 'print "$1\n" while /"(\w+_en)"/g'; } | sort -u)
+    # E4: write transactions and refused writes come from datad's /control and
+    # /v2/screen "op" (data-service rust/src/ops/ui.rs, STATE_V2.md §12)
+    FO=$(ls "$REPO"/src/*.c "$REPO"/src/ui_parts/*.c | grep -E "$OPS_C" | grep -v '/net_view\.c$' |
+         xargs perl -ne 'print "$1\n" while /"(\w+_en)"/g' | sort -u)
     [ -n "$FD" ] && [ -n "$FA" ] && ok "_en fields the screen reads: $(echo $FD $FA | wc -w | tr -d ' ')" || bad "found no _en fields in src/net_view.c or the agent parsers"
     if [ -f "$SCREEN_RS" ]; then
         miss=$(for f in $FD; do grep -q "^ *pub $f:" "$SCREEN_RS" || echo "$f"; done)
         [ -z "$miss" ] && ok "datad sends every _en net_view.c reads" || bad "net_view.c reads, datad screen.rs has no pub field: $(echo $miss)"
     else
         skip "datad _en fields: $SCREEN_RS not here"
+    fi
+    if [ -f "$DATAD/rust/src/ops/ui.rs" ]; then
+        miss=$(for f in $FO; do cat "$DATAD"/rust/src/ops/ui.rs "$DATAD"/rust/src/ops/engine.rs | grep -q "\"$f\"" || echo "$f"; done)
+        [ -z "$miss" ] && ok "datad sends every write-transaction _en the screen reads ($(echo $FO | wc -w | tr -d ' '))" ||
+            bad "the screen reads, datad ops/ui.rs never sends: $(echo $miss)"
+    else
+        skip "datad write-transaction _en fields: $DATAD/rust/src/ops/ui.rs not here"
     fi
     if [ -d "$AGENT" ]; then
         # each .rs up to its first #[cfg(test)]

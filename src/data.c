@@ -383,7 +383,19 @@ static int parse_snapshot(devui_data_t *d, const char *buf)
         }
         if (json_get(buf, "interfaces", sec, sizeof sec) &&
             json_get(sec, "cellular", sub, sizeof sub)) {
+            /* enable is the last value written: 0 after boot while the auto
+             * dial is connected (E4 T12, B31). 0 counts as off only when the
+             * call is down; same rule as datad's data_switch(). */
+            char st[48];
             long v = json_get_int(sub, "enable", -1);
+            if (v == 0 && json_get(sub, "connect_status", st, sizeof st)) {
+                if ((strstr(st, "connected") && !strstr(st, "disconnect")) || !strcmp(st, "connecting"))
+                    v = 1;
+                else if (!st[0])
+                    v = -1;
+            } else if (v == 0) {
+                v = -1;
+            }
             d->cell_data = (v == 0 || v == 1) ? (int)v : -1;
             v = json_get_int(sub, "roam_enable", -1);
             d->cell_roam = (v == 0 || v == 1) ? (int)v : -1;
@@ -851,7 +863,13 @@ int data_backend_poll(uint32_t now_ms)
     int changed = 0;
 
     backend_init_once();
-    if (!g_backend.current_valid && !g_backend.live_valid)
+    /* Never had a snapshot (boot before datad binds, or datad down since we
+     * started): retry on next_retry_ms like the reconnect below, not on every
+     * main-loop pass (8 ms while lit = ~125 connects/s, each one up to two I/O
+     * timeouts on this thread when datad accepts but does not answer). 0 = due;
+     * the signed difference survives the 32-bit ms wrap. */
+    if (!g_backend.current_valid && !g_backend.live_valid &&
+        (g_backend.next_retry_ms == 0 || (int32_t)(now_ms - g_backend.next_retry_ms) >= 0))
         (void)data_backend_init();
     if (g_backend.sse_fd >= 0) {
         changed |= drain_sse_stream();
@@ -950,15 +968,52 @@ int data_refresh_live(devui_data_t *d)
  */
 #define CONTROL_SLOTS     8
 #define CONTROL_LINGER_MS 5000
-#define CONTROL_FB_MAX    400
-/* fd1 = fd + 1, 0 = free. fb = the direct-ubus command to run if datad turns
- * the request away (see data_control), "" for none. */
-static struct { int fd1; uint32_t t; char action[40]; char fb[CONTROL_FB_MAX]; } s_ctl[CONTROL_SLOTS];
+#define CONTROL_REPLY_MAX 2048
+#ifndef DEVUI_FALLBACK_SCRIPT
+#define DEVUI_FALLBACK_SCRIPT "/data/u60-guard/u60-fallback.sh"
+#endif
+/* fd1 = fd + 1, 0 = free. reply = what came back so far; it is judged once
+ * datad closes (Connection: close) or the buffer is full. */
+static struct {
+    int fd1;
+    uint32_t t;
+    char action[40];
+    int len;
+    char reply[CONTROL_REPLY_MAX];
+} s_ctl[CONTROL_SLOTS];
 
-static void control_fallback(const char *action, const char *fb, const char *why)
+static data_notice_t s_notice;
+static unsigned s_op_seq;
+
+/* The write datad turned down: keep one line for the screen to show. 409
+ * carries datad's own sentence (doing.say_zh/_en); a refused write that
+ * still started a transaction ("op" in the reply, e.g. 502 from the vendor
+ * call) says nothing here — the transaction row shows how it ends. */
+static void control_judge(int i)
 {
-    fprintf(stderr, "ui: control %s: %s, running it directly\n", action, why);
-    if (fb && fb[0]) (void)system(fb);
+    const char *body;
+    char doing[1024];
+    ui_ctl_t k;
+
+    s_ctl[i].reply[s_ctl[i].len] = 0;
+    k = ui_control_reply(s_ctl[i].reply, s_ctl[i].len);
+    if (k == UI_CTL_OK) return;
+    if (k == UI_CTL_NOREPLY) {
+        fprintf(stderr, "ui: control %s: closed without an answer\n", s_ctl[i].action);
+        return;
+    }
+    body = strstr(s_ctl[i].reply, "\r\n\r\n");
+    body = body ? body + 4 : "";
+    if (k == UI_CTL_FAILED && strstr(body, "\"op\":{")) return;
+    memset(&s_notice, 0, sizeof s_notice);
+    s_notice.kind = k;
+    s_notice.at = mono_ms();
+    snprintf(s_notice.action, sizeof s_notice.action, "%s", s_ctl[i].action);
+    if (k == UI_CTL_BUSY && json_get(body, "doing", doing, sizeof doing)) {
+        json_get(doing, "say_zh", s_notice.say_zh, sizeof s_notice.say_zh);
+        json_get(doing, "say_en", s_notice.say_en, sizeof s_notice.say_en);
+    }
+    fprintf(stderr, "ui: control %s: datad said %.12s\n", s_ctl[i].action, s_ctl[i].reply);
 }
 
 static void control_reap(uint32_t now)
@@ -966,25 +1021,34 @@ static void control_reap(uint32_t now)
     for (int i = 0; i < CONTROL_SLOTS; i++) {
         int fd = s_ctl[i].fd1 - 1;
         if (fd < 0) continue;
-        if (wait_fd_ready(fd, 0, 0) > 0) {
-            char head[40];
-            ssize_t n = recv(fd, head, sizeof head - 1, MSG_DONTWAIT);
-            head[n > 0 ? n : 0] = 0;
-            if (s_ctl[i].fb[0] && ui_control_should_fallback(head, (long)n))
-                control_fallback(s_ctl[i].action, s_ctl[i].fb, n > 0 ? "datad busy" : "no reply");
-            close(fd);
-            s_ctl[i].fd1 = 0;
-        } else if (now - s_ctl[i].t >= CONTROL_LINGER_MS) {
-            /* No answer yet: datad may still be doing it, so no fallback
-             * (running it twice could re-register the modem twice). */
-            if (s_ctl[i].fb[0]) fprintf(stderr, "ui: control %s: no reply in %d ms\n", s_ctl[i].action, CONTROL_LINGER_MS);
-            close(fd);
-            s_ctl[i].fd1 = 0;
+        int done = 0;
+        while (wait_fd_ready(fd, 0, 0) > 0) {
+            ssize_t n = recv(fd, s_ctl[i].reply + s_ctl[i].len,
+                             CONTROL_REPLY_MAX - 1 - s_ctl[i].len, MSG_DONTWAIT);
+            if (n > 0) {
+                s_ctl[i].len += (int)n;
+                if (s_ctl[i].len >= CONTROL_REPLY_MAX - 1) { done = 1; break; }
+                continue;
+            }
+            if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) break;
+            done = 1;   /* closed (n == 0) or an error */
+            break;
         }
+        if (done) {
+            control_judge(i);
+        } else if (now - s_ctl[i].t >= CONTROL_LINGER_MS) {
+            /* No answer yet: datad may still be doing it. Nothing runs
+             * directly (running it twice could re-register the modem twice). */
+            fprintf(stderr, "ui: control %s: no reply in %d ms\n", s_ctl[i].action, CONTROL_LINGER_MS);
+        } else {
+            continue;
+        }
+        close(fd);
+        s_ctl[i].fd1 = 0;
     }
 }
 
-static void control_park(int fd, const char *action, const char *fb)
+static void control_park(int fd, const char *action)
 {
     int oldest = 0;
     for (int i = 0; i < CONTROL_SLOTS; i++) {
@@ -994,38 +1058,75 @@ static void control_park(int fd, const char *action, const char *fb)
     if (s_ctl[oldest].fd1) close(s_ctl[oldest].fd1 - 1);   /* all busy: the oldest has had its chance */
     s_ctl[oldest].fd1 = fd + 1;
     s_ctl[oldest].t = mono_ms();
+    s_ctl[oldest].len = 0;
     snprintf(s_ctl[oldest].action, sizeof s_ctl[oldest].action, "%s", action);
-    snprintf(s_ctl[oldest].fb, sizeof s_ctl[oldest].fb, "%s", fb ? fb : "");
 }
 
-/* Returns 1 if the request reached datad (parked), 0 if not. */
-static int control_send(const char *action, const char *params_json, const char *fb)
+/* Returns 1 if the request reached datad (parked), 0 if not. Every request
+ * says it comes from the screen (E4: source, op_id); datad records it so. */
+static int control_send_ex(const char *action, const char *params_json, int undo);
+static int control_send(const char *action, const char *params_json)
+{
+    return control_send_ex(action, params_json, 0);
+}
+
+static int control_send_ex(const char *action, const char *params_json, int undo)
 {
     /* Room for "mark all read": up to DEVUI_SMS_MAX ids in one request. */
-    char body[DEVUI_SMS_MAX * 12 + 96], req[DEVUI_SMS_MAX * 12 + 448];
+    char body[DEVUI_SMS_MAX * 12 + 160], req[DEVUI_SMS_MAX * 12 + 512];
     int fd = connect_tcp(DEVUI_BACKEND_HOST, DEVUI_BACKEND_PORT, 800);
     if (fd < 0) return 0;
-    snprintf(body, sizeof body, "{\"action\":\"%s\",\"params\":%s}", action, params_json);
+    snprintf(body, sizeof body,
+             "{\"action\":\"%s\",\"source\":\"screen\",\"op_id\":\"screen-%ld-%u\",%s\"params\":%s}",
+             action, (long)getpid(), ++s_op_seq, undo ? "\"undo\":true," : "", params_json);
     snprintf(req, sizeof req,
              "POST /control HTTP/1.1\r\nHost: %s:%d\r\n"
              "Content-Type: application/json\r\nContent-Length: %d\r\n"
              "Connection: close\r\n\r\n%s",
              DEVUI_BACKEND_HOST, DEVUI_BACKEND_PORT, (int)strlen(body), body);
-    if (send_all(fd, req, strlen(req), 800)) { control_park(fd, action, fb); return 1; }
+    if (send_all(fd, req, strlen(req), 800)) { control_park(fd, action); return 1; }
     close(fd);
     return 0;
 }
 
 static void sms_control_send(const char *action, const char *params_json)
 {
-    (void)control_send(action, params_json, NULL);
+    (void)control_send(action, params_json);
 }
 
-int data_control(const char *action, const char *params_json, const char *fallback_cmd)
+int data_control_fb(const char *action, const char *params_json, const char *fallback_action,
+                    const char *fallback_args)
 {
-    if (control_send(action, params_json, fallback_cmd)) return 1;
-    control_fallback(action, fallback_cmd, "datad unreachable");
+    char cmd[512];
+
+    if (control_send(action, params_json)) return 1;
+    if (!fallback_args) return 0;
+    /* datad not there: the emergency script, which checks again that datad
+     * is really gone and leaves the takeover marker (D18) before writing. */
+    if (ui_control_fallback_cmd(cmd, sizeof cmd, DEVUI_FALLBACK_SCRIPT, fallback_action, fallback_args)) {
+        fprintf(stderr, "ui: control %s: datad unreachable, emergency script %s\n", action, fallback_action);
+        (void)system(cmd);
+    } else {
+        fprintf(stderr, "ui: control %s: datad unreachable, bad emergency arguments\n", action);
+    }
     return 0;
+}
+
+int data_control(const char *action, const char *params_json, const char *fallback_args)
+{
+    return data_control_fb(action, params_json, action, fallback_args);
+}
+
+int data_control_undo(const char *action, const char *params_json)
+{
+    return control_send_ex(action, params_json, 1);
+}
+
+int data_control_notice(data_notice_t *out, uint32_t max_age_ms)
+{
+    if (!s_notice.at || mono_ms() - s_notice.at >= max_age_ms) return 0;
+    if (out) *out = s_notice;
+    return 1;
 }
 
 #define DEVUI_PACE_LIT_MS  1000   /* = start.sh's -i 1000 */

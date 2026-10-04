@@ -9,28 +9,54 @@
  */
 /* ---- APN（蜂窝 → APN，2026-09-25）----
  * 看得到数据连接正在拨哪条 APN；在「自动」和已存的手动 APN 之间切（两下确认，
- * 切换中直到读回来）。新建、修改要打字，在管理网页做。 */
-#define APN_ROWS    (1 + NI_MAX_APNS)
+ * 切换中直到读回来）。新建、修改要打字，在管理网页做。
+ * 2026-10-03：这张卡的自动候选有 2 条以上时，列在「自动」下面，可以只给这张卡
+ * 挑一条（agent 复制成手动 APN 并按 ICCID 记住，换卡自动回到「自动」）。
+ * 10-03 同日：分成两张卡，上面「自动 APN」（自动 + 缩进的「这张卡的候选」，候选不画
+ * 单选圈），下面「手动 APN」，免得候选和自己建的手动 APN 混在一起。
+ * 行号固定：0 = 自动，1..NI_MAX_CANDS = 候选，APN_MAN0.. = 手动列表。 */
+#define APN_MAN0    (1 + NI_MAX_CANDS)
+#define APN_ROWS    (APN_MAN0 + NI_MAX_APNS)
+#define APN_CAP_H   24                          /* 「这张卡的候选」小标题 */
+#define APN_INDENT  (UK_PAD + 26)               /* 候选行的文字和分隔线从这里起（对齐「自动」的文字） */
 #define APN_ROW_H   UK_ROW2_H
-#define APN_NOTE_H  44
 #define APN_PEND_MS 45000
 static lv_obj_t *s_apn_now, *s_apn_now_sub, *s_apn_sec, *s_apn_card, *s_apn_note, *s_apn_foot, *s_apn_scroll;
+static lv_obj_t *s_apn_sec2, *s_apn_card2, *s_apn_ccap;
 static lv_obj_t *s_apn_row[APN_ROWS], *s_apn_mark[APN_ROWS], *s_apn_name[APN_ROWS], *s_apn_sub[APN_ROWS], *s_apn_tag[APN_ROWS];
 static uint32_t  s_apn_arm;
 static int       s_apn_arm_idx = -1;
 static int       s_apn_pend = -1;             /* 0 = 自动，1.. = apns[i-1] */
 static uint32_t  s_apn_pend_at;
-static char      s_apn_pend_id[24], s_apn_pend_name[48];
+static char      s_apn_pend_id[24], s_apn_pend_name[48], s_apn_pend_apn[40];
+static int       s_apn_pend_cand;             /* 正在切的是候选：读回看 APN 名，不看 id（id 是复制出来的手动那条） */
 static net_flash_t s_apn_flash;
 
 static const char *apn_pdp(int pdp) { return pdp == 1 ? "IPv4" : pdp == 2 ? "IPv6" : pdp == 3 ? "IPv4v6" : ""; }
 
-/* 这一行是不是现在生效的选择（自动模式 = 第 0 行；手动 = 手动模式选中的那条） */
+/* 列出来的候选条数：只有 2 条以上才值得挑 */
+static int apn_nc(const netinfo_t *n) { return n->apn_known && n->ncands >= 2 ? n->ncands : 0; }
+
+/* 第 i 行是哪条 APN：NULL = 「自动」或不存在；*cand = 1 是候选 */
+static const ni_apn_t *apn_row_apn(const netinfo_t *n, int i, int *cand)
+{
+    *cand = 0;
+    if (i <= 0) return NULL;
+    if (i < APN_MAN0) { *cand = 1; return i <= apn_nc(n) ? &n->cands[i - 1] : NULL; }
+    return i - APN_MAN0 < n->napns ? &n->apns[i - APN_MAN0] : NULL;
+}
+
+/* 这一行是不是现在生效的选择（自动模式 = 第 0 行；手动 = 手动模式选中的那条；
+ * 候选：手动模式正拨着同名 APN，且是这张卡挑的） */
 static int apn_row_current(const netinfo_t *n, int i)
 {
+    int cand;
+    const ni_apn_t *a = apn_row_apn(n, i, &cand);
     if (!n->apn_known) return 0;
     if (i == 0) return !n->apn_manual;
-    return i <= n->napns && n->apn_manual && n->apns[i - 1].selected;
+    if (!a) return 0;
+    if (cand) return n->apn_manual && n->apn_picked[0] && !strcmp(n->apn_in_use.apn, a->apn);
+    return n->apn_manual && a->selected;
 }
 
 static void apn_paint(int changed);
@@ -39,6 +65,8 @@ static void apn_row_cb(lv_event_t *e)
 {
     int i = (int)(intptr_t)lv_event_get_user_data(e);
     const netinfo_t *n = netinfo_get();
+    int cand;
+    const ni_apn_t *a = apn_row_apn(n, i, &cand);
     if (!n->apn_known) {
         net_flash(&s_apn_flash, T->t2, 3000, "%s", TR("还没读到 APN，稍等"));
     } else if (s_apn_pend >= 0) {
@@ -46,15 +74,17 @@ static void apn_row_cb(lv_event_t *e)
     } else if (apn_row_current(n, i)) {
         s_apn_arm_idx = -1;
         if (i == 0) net_flash(&s_apn_flash, T->t2, 4000, "%s", TR("现在已经是自动选择"));
-        else        net_flash(&s_apn_flash, T->t2, 4000, TR("已经在用「%s」"), n->apns[i - 1].name);
-    } else if (i > n->napns) {
+        else        net_flash(&s_apn_flash, T->t2, 4000, TR("已经在用「%s」"), a ? a->name : "");
+    } else if (i > 0 && !a) {
         return;
     } else if (s_apn_arm_idx == i && net_confirm(s_apn_arm)) {
         s_apn_arm_idx = -1;
         s_apn_pend = i;
         s_apn_pend_at = lv_tick_get();
-        snprintf(s_apn_pend_id, sizeof s_apn_pend_id, "%s", i ? n->apns[i - 1].id : "auto");
-        snprintf(s_apn_pend_name, sizeof s_apn_pend_name, "%s", i ? n->apns[i - 1].name : TR("自动"));
+        snprintf(s_apn_pend_id, sizeof s_apn_pend_id, "%s", a ? a->id : "auto");
+        snprintf(s_apn_pend_name, sizeof s_apn_pend_name, "%s", a ? (a->name[0] ? a->name : a->apn) : TR("自动"));
+        snprintf(s_apn_pend_apn, sizeof s_apn_pend_apn, "%s", a ? a->apn : "");
+        s_apn_pend_cand = cand;
         s_apn_flash.until = 0;
         apn_paint(1);
         lv_refr_now(NULL);
@@ -82,21 +112,29 @@ static void build_sub_apn(lv_obj_t *t)
     s_apn_now = uk_label_w(c, UF.cj17b, T->t1, UK_PAD, 12, UK_CARD_W - 2 * UK_PAD, 0, TR("读取中…"));
     s_apn_now_sub = uk_label_w(c, UF.cj13, T->t2, UK_PAD, 42, UK_CARD_W - 2 * UK_PAD, 0, "");
     int y = 24 + UK_HERO_H + 10;
-    s_apn_sec = uk_section(t, y, TR("选择"));
-    c = s_apn_card = uk_card(t, UK_MARGIN, y + 20, UK_CARD_W, APN_ROW_H + APN_NOTE_H);
+    s_apn_sec = uk_section(t, y, TR("自动 APN"));
+    s_apn_card = uk_card(t, UK_MARGIN, y + 20, UK_CARD_W, APN_ROW_H);
+    s_apn_ccap = uk_label_w(s_apn_card, UF.cj12, T->t3, APN_INDENT, APN_ROW_H + 6, UK_CARD_W - APN_INDENT - UK_PAD, 0,
+                            TR("这张卡的候选（运营商库）"));
+    s_apn_sec2 = uk_section(t, y, TR("手动 APN"));
+    s_apn_card2 = uk_card(t, UK_MARGIN, y + 20, UK_CARD_W, APN_ROW_H);
     for (int i = 0; i < APN_ROWS; i++) {
-        lv_obj_t *r = s_apn_row[i] = uk_box(c, 0, i * APN_ROW_H, UK_CARD_W, APN_ROW_H, T->card, 0);
+        int cand = i > 0 && i < APN_MAN0;
+        lv_obj_t *c = i < APN_MAN0 ? s_apn_card : s_apn_card2;
+        lv_obj_t *r = s_apn_row[i] = uk_box(c, 0, 0, UK_CARD_W, APN_ROW_H, T->card, 0);
         lv_obj_set_style_bg_opa(r, LV_OPA_TRANSP, 0);
-        if (i) uk_sep(r, 0);
+        if (cand) uk_box(r, APN_INDENT, 0, UK_CARD_W - APN_INDENT, 1, T->sep, 0);
+        else if (i > APN_MAN0) uk_sep(r, 0);
         s_apn_mark[i] = uk_box(r, UK_PAD, (APN_ROW_H - 16) / 2, 16, 16, T->card, 8);
         lv_obj_set_style_border_width(s_apn_mark[i], 2, 0);
-        s_apn_name[i] = uk_label_w(r, UF.cj14, T->t1, UK_PAD + 26, 6, 170, 0, "");
-        s_apn_sub[i]  = uk_label_w(r, UF.cj12, T->t3, UK_PAD + 26, 27, 170, 0, "");
+        uk_show(s_apn_mark[i], !cand);
+        s_apn_name[i] = uk_label_w(r, UF.cj14, T->t1, APN_INDENT, 6, 170, 0, "");
+        s_apn_sub[i]  = uk_label_w(r, UF.cj12, T->t3, APN_INDENT, 27, 170, 0, "");
         s_apn_tag[i]  = uk_label_r(r, UF.cj13, T->t3, UK_CARD_W - UK_PAD, 16, "");
         uk_tappable(r, apn_row_cb, (void *)(intptr_t)i);
         uk_show(r, i == 0);
     }
-    s_apn_note = uk_label_w(c, UF.cj12, T->t3, UK_PAD, APN_ROW_H + 8, UK_CARD_W - 2 * UK_PAD, 1, "");
+    s_apn_note = uk_label_w(t, UF.cj12, T->t3, UK_MARGIN + 6, 0, UK_CARD_W - 12, 1, "");
     s_apn_foot = uk_label_w(t, UF.cj12, T->t3, UK_MARGIN + 6, 0, UK_CARD_W - 12, 1,
                             TR("新建或修改 APN 请用管理网页的「APN」页"));
     lv_obj_scroll_to_y(t, 0, LV_ANIM_OFF);
@@ -104,14 +142,15 @@ static void build_sub_apn(lv_obj_t *t)
 
 static void apn_paint(int changed)
 {
-    static char c_now[64], c_nsub[96], c_n[APN_ROWS][48], c_s[APN_ROWS][64], c_t[APN_ROWS][32], c_note[160], c_row[64];
+    static char c_now[64], c_nsub[96], c_n[APN_ROWS][48], c_s[APN_ROWS][64], c_t[APN_ROWS][32], c_note[256], c_row[64];
     static int painted = -2;
     const netinfo_t *n = netinfo_get();
     int arm = (s_apn_arm_idx >= 0 && net_armed(s_apn_arm)) ? s_apn_arm_idx : -1;
-    char buf[160];
+    char buf[256];
 
     if (s_apn_pend >= 0) {
         int done = s_apn_pend == 0 ? (n->apn_known && !n->apn_manual)
+                 : s_apn_pend_cand ? (n->apn_manual && !strcmp(n->apn_in_use.apn, s_apn_pend_apn))
                                    : (n->apn_manual && !strcmp(n->apn_in_use.id, s_apn_pend_id));
         if (done) {
             net_flash(&s_apn_flash, T->okT, 6000, TR("已切换：现在用「%s」"),
@@ -147,12 +186,14 @@ static void apn_paint(int changed)
     else snprintf(buf, sizeof buf, "%s", n->apn_manual ? TR("手动模式") : TR("自动模式"));
     set_label_fmt(s_apn_now_sub, c_nsub, sizeof c_nsub, "%s", buf);
 
-    int rows = 0;
+    int nc = apn_nc(n);
+    int y1 = 0, y2 = 0;   /* 两张卡里各自排到哪 */
     for (int i = 0; i < APN_ROWS; i++) {
-        int show = i == 0 || (n->apn_known && i <= n->napns);
+        int cand;
+        const ni_apn_t *a = apn_row_apn(n, i, &cand);
+        int show = i == 0 || (n->apn_known && a);
         uk_show(s_apn_row[i], show);
         if (!show) continue;
-        const ni_apn_t *a = i ? &n->apns[i - 1] : NULL;
         int sel = apn_row_current(n, i);
         const char *tag = "";
         uint32_t tag_col = T->t3;
@@ -163,7 +204,11 @@ static void apn_paint(int changed)
             set_label_fmt(s_apn_name[i], c_n[i], sizeof c_n[i], "%s", a->name[0] ? a->name : a->id);
             snprintf(buf, sizeof buf, "%s%s%s", a->apn, a->pdp ? " · " : "", apn_pdp(a->pdp));
             set_label_fmt(s_apn_sub[i], c_s[i], sizeof c_s[i], "%s", buf);
-            if (a->in_use) { tag = TR("在用"); tag_col = T->okT; }
+            if (a->in_use && a->iot) { tag = TR("在用 · 物联网"); tag_col = T->warnT; }
+            else if (a->in_use) { tag = TR("在用"); tag_col = T->okT; }
+            else if (cand && sel) { tag = TR("本卡在用"); tag_col = T->okT; }
+            else if (cand && a->iot) { tag = TR("物联网"); tag_col = T->warnT; }
+            else if (!cand && n->apn_picked[0] && !strcmp(a->id, n->apn_picked)) tag = TR("本卡");
         }
         if (i == 0 && sel && n->apn_in_use.id[0]) { tag = TR("在用"); tag_col = T->okT; }
         if (s_apn_pend == i) { tag = TR("切换中…"); tag_col = T->accT; }
@@ -171,10 +216,18 @@ static void apn_paint(int changed)
         uk_bg(s_apn_row[i], T->washW);
         lv_obj_set_style_bg_opa(s_apn_row[i], arm == i ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
         uk_bg(s_apn_mark[i], T->fillBlue);
-        lv_obj_set_style_bg_opa(s_apn_mark[i], sel ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
-        lv_obj_set_style_border_color(s_apn_mark[i], lv_color_hex(sel ? T->fillBlue : T->t3), 0);
-        lv_obj_set_y(s_apn_row[i], rows * APN_ROW_H);
-        rows++;
+        /* 候选只用标签说「本卡在用」：复制出的手动那条才是选中的，免得两个圆点同时实心 */
+        int dot = sel && !cand;
+        lv_obj_set_style_bg_opa(s_apn_mark[i], dot ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_color(s_apn_mark[i], lv_color_hex(dot ? T->fillBlue : T->t3), 0);
+        if (i < APN_MAN0) {
+            if (i == 1) y1 += APN_CAP_H;      /* 候选前的小标题 */
+            lv_obj_set_y(s_apn_row[i], y1);
+            y1 += APN_ROW_H;
+        } else {
+            lv_obj_set_y(s_apn_row[i], y2);
+            y2 += APN_ROW_H;
+        }
         set_label_fmt(s_apn_tag[i], c_t[i], sizeof c_t[i], "%s", tag);
         uk_text_color(s_apn_tag[i], tag_col);
     }
@@ -186,11 +239,23 @@ static void apn_paint(int changed)
         { snprintf(buf, sizeof buf, "%s", s_apn_flash.txt); col = s_apn_flash.col; }
     else if (arm == 0)
         { snprintf(buf, sizeof buf, "%s", TR("回到自动：按 SIM 卡选 APN，会断网几秒")); col = T->warnT; }
-    else if (arm > 0 && arm <= n->napns)
+    else if (arm > 0 && arm < APN_MAN0 && arm <= nc)
+        { snprintf(buf, sizeof buf, TR("只给这张卡改用「%s」：会断网几秒；换卡会自动回到「自动」"),
+                   n->cands[arm - 1].apn); col = T->warnT; }
+    else if (arm >= APN_MAN0 && arm - APN_MAN0 < n->napns)
         { snprintf(buf, sizeof buf, TR("改用「%s」：会断网几秒，之后换卡也一直用它，点「自动」才恢复"),
-                   n->apns[arm - 1].name); col = T->warnT; }
+                   n->apns[arm - APN_MAN0].name); col = T->warnT; }
     else if (!n->apn_known)
         snprintf(buf, sizeof buf, "%s", n->err[0] ? n->err : TR("读取中…"));
+    else if (n->apn_notice[0])
+        { snprintf(buf, sizeof buf, "%s", n->apn_notice); col = T->accT; }
+    else if (n->apn_manual && n->apn_picked[0] && !strcmp(n->apn_in_use.id, n->apn_picked))
+        snprintf(buf, sizeof buf, TR("这张卡固定用「%s」，换卡会自动回到「自动」"), n->apn_in_use.apn);
+    else if (!n->apn_manual && nc && n->apn_in_use.id[0] && n->apn_in_use.iot)
+        { snprintf(buf, sizeof buf, TR("正在用物联网 APN「%s」，可能上不了网；点一条候选可以只给这张卡换掉（两下确认）"),
+                   n->apn_in_use.apn); col = T->warnT; }
+    else if (!n->apn_manual && nc)
+        snprintf(buf, sizeof buf, TR("这张卡有 %d 个候选 APN，点一条可以只给这张卡固定用它（两下确认）"), nc);
     else if (!n->napns)
         snprintf(buf, sizeof buf, "%s", TR("还没有手动 APN。要用自定义 APN，先在管理网页里新建"));
     else if (n->apn_manual)
@@ -200,10 +265,23 @@ static void apn_paint(int changed)
     set_label_fmt(s_apn_note, c_note, sizeof c_note, "%s", buf);
     uk_text_color(s_apn_note, col);
 
-    int ch = rows * APN_ROW_H + APN_NOTE_H;
-    lv_obj_set_height(s_apn_card, ch);
-    lv_obj_set_y(s_apn_note, rows * APN_ROW_H + 8);
-    int y = 24 + UK_HERO_H + 10 + 20 + ch + 10;
+    /* 两张卡往下排：自动 APN（+ 候选）→ 手动 APN（没有就只留小标题）→ 提示 → 页脚 */
+    uk_show(s_apn_ccap, nc > 0);
+    int y = 24 + UK_HERO_H + 10;
+    lv_obj_set_height(s_apn_card, y1);
+    y += 20 + y1 + 12;
+    lv_obj_set_y(s_apn_sec2, y);
+    uk_show(s_apn_card2, y2 > 0);
+    if (y2 > 0) {
+        lv_obj_set_y(s_apn_card2, y + 20);
+        lv_obj_set_height(s_apn_card2, y2);
+        y += 20 + y2;
+    } else {
+        y += 18;
+    }
+    lv_obj_set_y(s_apn_note, y + 8);
+    lv_obj_update_layout(s_apn_note);
+    y += 8 + lv_obj_get_height(s_apn_note) + 10;
     lv_obj_set_y(s_apn_foot, y);
     uk_scroll_extent(s_apn_scroll, y + 40 + 16);
 }

@@ -20,53 +20,52 @@ static void wifi_sw_cb(lv_event_t *e)
     int id = (int)(intptr_t)lv_event_get_user_data(e);
     lv_obj_t *sw = (lv_obj_t *)lv_event_get_target(e);
     int on = lv_obj_has_state(sw, LV_STATE_CHECKED);
-    const char *ic = on ? "up" : "down";
-    char cmd[720];
 
     switch (id) {
     case WSW_MASTER:
-        snprintf(cmd, sizeof cmd, "(ifconfig wlan0 %s; ifconfig wlan2 %s) >/dev/null 2>&1 &", ic, ic);
-        s_aux_w24 = s_aux_w5 = on;
-        break;
     case WSW_24:
-        snprintf(cmd, sizeof cmd, "ifconfig wlan0 %s >/dev/null 2>&1 &", ic);
-        s_aux_w24 = on;
-        break;
-    case WSW_5:
-        snprintf(cmd, sizeof cmd, "ifconfig wlan2 %s >/dev/null 2>&1 &", ic);
-        s_aux_w5 = on;
-        break;
+    case WSW_5: {
+        /* The same lasting switch as the web page (E4): the main AP
+         * interfaces' uci `disabled`, written and reloaded by datad
+         * (wifi.apply, as zte-agent's wifi_radio does). It used to be
+         * ifconfig up/down, which only lasted until the next reload. */
+        char params[160], fb[24];
+        int w24 = id == WSW_5 ? s_aux_w24 == 1 : on;
+        int w5 = id == WSW_24 ? s_aux_w5 == 1 : on;
+        s_aux_w24 = w24;
+        s_aux_w5 = w5;
+        aux_hold(&s_hold_w24);
+        aux_hold(&s_hold_w5);
+        snprintf(params, sizeof params,
+                 "{\"set\":{\"wireless.main_2g.disabled\":\"%d\",\"wireless.main_5g.disabled\":\"%d\"},\"reload\":true}",
+                 !w24, !w5);
+        snprintf(fb, sizeof fb, "ap_2g=%d ap_5g=%d", w24, w5);
+        /* the script calls this write wifi.radio; sent as wifi.apply it was
+         * refused (exit 2), so the emergency path never turned Wi-Fi on */
+        data_control_fb("wifi.apply", params, "wifi.radio", fb);
+        return;
+    }
     case WSW_PSM: {
-        /* Verbatim from htmlmain.c's act:psm — the switch owns
-         * /etc/hotplug.d/iface/99-disable-powersave so the choice survives
-         * an ifup, and applies it to the live interfaces now. */
-        const char *m = on ? "on" : "off";
-        snprintf(cmd, sizeof cmd,
-            "(mkdir -p /etc/hotplug.d/iface; rm -f /etc/hotplug.d/iface/psm; "
-            "{ echo '#!/bin/sh'; echo '[ \"$ACTION\" = ifup ] && {'; "
-            "echo '  iw dev wlan0 set power_save %s 2>/dev/null'; "
-            "echo '  iw dev wlan1 set power_save %s 2>/dev/null'; "
-            "echo '  iw dev wlan2 set power_save %s 2>/dev/null'; "
-            "echo '  iw dev wlan3 set power_save %s 2>/dev/null'; echo '}'; } "
-            "> /etc/hotplug.d/iface/99-disable-powersave; "
-            "chmod +x /etc/hotplug.d/iface/99-disable-powersave; "
-            "for w in wlan0 wlan1 wlan2 wlan3; do iw dev $w set power_save %s 2>/dev/null; done) "
-            ">/dev/null 2>&1 &", m, m, m, m, m);
+        /* Through datad (E4, 10-04): it keeps the same hotplug script so the
+         * choice survives an ifup, applies it to wlan0-3 now and reads it
+         * back; the change log records it. No emergency path: it doesn't
+         * cut the uplink. */
+        char params[24];
+        snprintf(params, sizeof params, "{\"enabled\":%d}", on);
         s_aux_psm = on;
-        break;
+        data_control("wifi.power_save", params, NULL);
+        return;
     }
     case WSW_NFC: {
-        char params[48];
-        snprintf(cmd, sizeof cmd,
-            "ubus call zwrt_nfc zwrt_nfc_wifi_set '{\"switch\":%d,\"flag\":2}' >/dev/null 2>&1 &", on);
+        char params[48], fb[24];
         snprintf(params, sizeof params, "{\"enabled\":%d,\"flag\":2}", on);
-        data_control("nfc.set", params, cmd);
+        snprintf(fb, sizeof fb, "enabled=%d flag=2", on);
+        data_control("nfc.set", params, fb);
         return;
     }
     default:
         return;
     }
-    system(cmd);
 }
 
 /* A card row with a label, a state word and a switch (e.g. Wi-Fi). */

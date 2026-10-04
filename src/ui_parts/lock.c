@@ -17,7 +17,7 @@ static void band_group_apply(int gi)
 {
     band_group_t *g = &s_bg[gi];
     char csv[256] = "";
-    char cmd[400], params[300];
+    char fb[280], params[300];
     int o = 0, n = 0;
 
     for (int i = 0; i < g->n; i++)
@@ -26,17 +26,10 @@ static void band_group_apply(int gi)
             n++;
         }
     if (!n) return;   /* locking zero bands would strand the modem */
-    if (gi == BG_LTE)
-        snprintf(cmd, sizeof cmd,
-                 "ubus call zte_nwinfo_api nwinfo_set_lte_ext_band '{\"lte_band\":\"%s\"}' >/dev/null 2>&1 &",
-                 csv);
-    else
-        snprintf(cmd, sizeof cmd,
-                 "ubus call zte_nwinfo_api nwinfo_set_nrbandlock '{\"nr5g_type\":\"%s\",\"nr5g_band\":\"%s\"}' >/dev/null 2>&1 &",
-                 gi == BG_SA ? "0" : "1", csv);   /* vendor web: SA "0", NSA "1" */
     snprintf(params, sizeof params, "{\"bands\":\"%s\"}", csv);
+    snprintf(fb, sizeof fb, "bands=%s", csv);
     data_control(gi == BG_LTE ? "band.set_lte" : gi == BG_SA ? "band.set_nr_sa" : "band.set_nr_nsa",
-                 params, cmd);
+                 params, fb);
 }
 
 static void band_summary_set(int gi)
@@ -106,7 +99,6 @@ static void lk_mode_cb(lv_event_t *e)
 {
     int idx = (int)(intptr_t)lv_event_get_user_data(e);
     uint32_t now = lv_tick_get();
-    char cmd[200];
 
     if (s_lk_mode_want >= 0) {
         /* 上一次还没读回：别叠着发，高亮留在目标上 */
@@ -115,13 +107,11 @@ static void lk_mode_cb(lv_event_t *e)
         return;
     }
     if (s_lk_mode_pending == idx && s_lk_mode_arm && now - s_lk_mode_arm < 5000) {
-        snprintf(cmd, sizeof cmd,
-                 "ubus call zte_nwinfo_api nwinfo_set_netselect '{\"net_select\":\"%s\"}' >/dev/null 2>&1 &",
-                 k_lk_mode_v[idx]);
         {
-            char params[48];
+            char params[48], fb[40];
             snprintf(params, sizeof params, "{\"mode\":\"%s\"}", k_lk_mode_v[idx]);
-            data_control("network.set_mode", params, cmd);
+            snprintf(fb, sizeof fb, "mode=%s", k_lk_mode_v[idx]);
+            data_control("network.set_mode", params, fb);
         }
         s_lk_mode_arm = 0;
         s_lk_mode_pending = -1;
@@ -160,6 +150,25 @@ static void lk_mode_sync(int sel, int known)
         }
         return;
     }
+    static char c_op[128];    /* E4: the line last taken from datad's transaction, "" none */
+    if (s_lk_mode_want >= 0 || s_op.active.have || c_op[0]) {
+        /* E4: datad 有这一项的事务时用它的结论和倒计时，不再自己猜读回（触屏、网页发起的都算）；
+         * 结果只认这次点了以后结束的那个 */
+        char ol[128];
+        uint32_t since = s_lk_mode_want >= 0 ? (s_lk_mode_sent ? s_lk_mode_sent : 1) : (c_op[0] ? 1 : 0);
+        if (op_mode_line(ol, sizeof ol, since)) {
+            if (strcmp(ol, c_op)) { snprintf(c_op, sizeof c_op, "%s", ol); lv_label_set_text(s_lk_mode_lbl, c_op); }
+            if (s_op.active.have && !strcmp(s_op.active.item, "network.mode")) {
+                if (s_lk_mode_want >= 0) sel = s_lk_mode_want;
+            } else {
+                s_lk_mode_want = -1;
+            }
+            if (sel != s_lk_seg.sel) uk_seg_set(&s_lk_seg, sel);
+            return;
+        }
+        if (c_op[0] && s_lk_mode_want < 0) lv_label_set_text(s_lk_mode_lbl, TR("切换会短暂断网，需要按两次确认"));
+        c_op[0] = 0;
+    }
     if (s_lk_mode_want >= 0) {
         /* 等读回：到了说「已切到」，超时说没切成并显示设备真实的模式。
          * 基带因报错重启过几次后，原厂切换程序只记日志不干活（9-27、9-29 都是），
@@ -187,8 +196,7 @@ static void lk_reset_cb(lv_event_t *e)
     LV_UNUSED(e);
     if (s_lk_reset_arm && now - s_lk_reset_arm < 5000) {
         s_lk_reset_arm = 0;
-        data_control("band.reset", "{}",
-                     "ubus call zte_nwinfo_api nwinfo_reset_band_cell_setting '{}' >/dev/null 2>&1 &");
+        data_control("band.reset", "{}", "");
         lv_label_set_text(s_lk_reset_lbl, TR("已恢复默认"));
         uk_button_kind(s_lk_reset_btn, s_lk_reset_lbl, UK_BTN_DANGER);
         return;

@@ -56,6 +56,7 @@ echo "\$*" >>$T/ubus.log
 [ "\$1" = -t ] && shift 2
 case "\$2 \$3" in
     "zwrt_web device_info") cat $T/device_info 2>/dev/null ;;
+    "zwrt_bsp.pm list") cat $T/pm 2>/dev/null ;;
     "zwrt_wlan reload") [ -f $T/reload-works ] && echo 8 >$T/hostapd ;;
     "zwrt_wms zte_libwms_send_sms") cat $T/sms-resp 2>/dev/null || echo '{"result":3}' ;;
     "zwrt_wms zte_libwms_get_sms_data") case "\$4" in *'"mem_store":1'*) cat $T/sent-box 2>/dev/null ;; esac ;;
@@ -160,6 +161,18 @@ EOF
     # \$T/ts-code (200), or exits \$T/ts-rc; \$T/ts-hang: no answer in its -m
     cat >"$T/bin/curl" <<EOF
 #!/bin/sh
+case "\$*" in
+    *9460/control*)
+        # datad's /control: absent unless \$T/datad-control; answers \$T/control-reply
+        # (default ok), or exits \$T/control-rc (28 = no answer in time)
+        [ -f $T/datad-control ] || exit 7
+        while [ \$# -gt 0 ]; do [ "\$1" = --data-binary ] && { printf '%s\n' "\$2" >>$T/control.log; break; }; shift; done
+        rc=\$(cat $T/control-rc 2>/dev/null)
+        [ -n "\$rc" ] && exit "\$rc"
+        cat $T/control-reply 2>/dev/null || printf '{"action":"x","ok":true,"result":{"result":"3"}}'
+        exit 0
+        ;;
+esac
 echo "\$*" >>$T/curl.log
 out=
 m=
@@ -258,6 +271,37 @@ check "turns radios AND APs on" 'grep -q "set wireless.wifi0.disabled=0" $T/uci.
 check "alerts: silent + takeover" '[ "$(kinds)" = "agent-silent wifi-takeover " ]'
 check "holds sleep off while rescuing" 'grep -q "enableAutoSleep {\"switch\":false}" $T/ubus.log'
 check "lock released afterwards" 'flock -n $T/wifi.lock true'
+teardown
+
+echo "datad is there: the guard writes through it (E4 T7c)"
+setup
+up 1000
+touch "$T/reload-works" "$T/datad-control"
+round
+check "Wi-Fi restore through datad as guard: wifi.apply, all four switches, reload" 'grep -q "\"action\":\"wifi.apply\",\"source\":\"guard\"" $T/control.log && grep -q "\"wireless.wifi0.disabled\":\"0\",\"wireless.wifi1.disabled\":\"0\",\"wireless.main_2g.disabled\":\"0\",\"wireless.main_5g.disabled\":\"0\"},\"reload\":true" $T/control.log'
+check "no direct uci write" '! grep -q "set wireless" $T/uci.log 2>/dev/null'
+check "sleep hold through datad too, not ubus" 'grep -q "enableAutoSleep\",\"args\":{\"switch\":false}" $T/control.log && ! grep -q enableAutoSleep $T/ubus.log 2>/dev/null'
+teardown
+setup
+up 1000
+touch "$T/reload-works" "$T/datad-control"
+echo 28 >"$T/control-rc"
+round
+check "datad alive but not answering: no direct write (D18), restore counted as failed" '! grep -q "set wireless" $T/uci.log 2>/dev/null && grep -q "did not answer the Wi-Fi restore" $T/guard.log'
+teardown
+setup
+up 1000
+touch "$T/reload-works" "$T/datad-control"
+printf '{"action":"wifi.apply","error":{"code":"failed"},"ok":false}' >"$T/control-reply"
+round
+check "datad says no: no direct write either" '! grep -q "set wireless" $T/uci.log 2>/dev/null'
+teardown
+setup
+up 1000
+touch "$T/reload-works" "$T/datad-control"
+printf '{"action":"wifi.apply","error":{"code":"unknown_action","message":"unsupported control action"},"ok":false}' >"$T/control-reply"
+round
+check "datad from before T7 (unknown action): writes directly as before" 'grep -q "set wireless.main_2g.disabled=0" $T/uci.log && [ "$(restores)" = 1 ]'
 teardown
 
 echo "agent dies while Wi-Fi is up"
@@ -888,7 +932,7 @@ printf 'A=1\000ZWRT_DATAD_UBUS=socket\000' >"$T/proc/701/environ"
 up 1000; hb 995; sh "$GUARD" started; round
 bl=$(lines | grep '"k":"boot"')
 check "boot line: this boot's reason code, mode, cleaned firmware string, net_select" 'echo "$bl" | grep -q "\"code\":1182,\"mode\":\"mode_power_on\",\"fw\":\"MU5250 B27  ok\",\"net_select\":\"WCDMA_AND_LTE\""'
-check "boot line: the vendor auto-reboot settings as option=value, no uci header lines" 'echo "$bl" | grep -q "\"rb_weekly\":\"reboot_schedule_enable=1 reboot_schedule_mode=1 reboot_dow=2\",\"rb_cutoff\":\"reboot_times=0\",\"rb_connfail\":\"connect_fail_reboot_enable=1 connect_fail_reboot_counts=60\""'
+check "boot line: the vendor auto-reboot settings as option=value, no uci header lines" 'echo "$bl" | grep -q "\"rb_weekly\":\"reboot_schedule_enable=1 reboot_schedule_mode=1 reboot_dow=2\",\"rb_cutoff\":\"reboot_times=0\",\"rb_connfail\":\"connect_fail_reboot_enable=1 connect_fail_reboot_counts=60\",\"pon\":null"'
 check "ver: datad by its running binary, with its ubus backend" 'lines | grep -q "\"k\":\"ver\",\"prog\":\"zwrt-datad\",\"md5\":\"$(echo D | md5sum | cut -c1-8)\",\"how\":\"exe\",\"pid\":701,\"extra\":\"ubus=socket\""'
 check "ver: guard itself by its script file, not by /bin/sh" 'lines | grep -q "\"k\":\"ver\",\"prog\":\"u60-guard.sh\",\"md5\":\"$(md5sum $GUARD | cut -c1-8)\",\"how\":\"file\""'
 check "first go-live: no history backfilled; crash files only recorded" '! lines | grep -q boot_backfill && ! lines | grep -q svc_exit && [ -f $T/ledger/state/init-done ] && grep -q "zte-agent/20250104-000100-up60.log" $T/ledger/state/crashlog.seen'
@@ -897,7 +941,9 @@ check "guard_start from started.log; recovery seen, set by guard" 'lines | grep 
 { kl "2025-01-04 00:00:19" 1134; echo "y"; kl "2025-01-04 00:00:19" 1182; } >>"$T/key.log"
 mkdir -p "$T/crashlog/zwrt-datad"; printf 'program: zwrt-datad\nstatus:  killed by SIGSEGV\n' >"$T/crashlog/zwrt-datad/20250104-000200-up120.log"
 printf '{\n\t"wa_inner_version": "BD_CNMU5250V1.0.0B27",\n\t"cr_inner_version": ""\n}\n' >"$T/device_info"
+printf '{\n\t"power_on_reason": 1\n}\n' >"$T/pm"
 echo feedc0de-0000-4000-8000-000000000002 >"$T/bootid"; rm -rf "$T/state"; up 100; sh "$GUARD" started; round
+check "boot line: the power-on reason as zwrt_bsp.pm list gives it" 'lines | grep "\"seq\":2," | grep "\"k\":\"boot\"" | grep -q ",\"pon\":1}"'
 check "boot line: firmware from device_info's wa_inner_version when it answers (the build number is in it)" 'lines | grep "\"seq\":2," | grep "\"k\":\"boot\"" | grep -q "\"fw\":\"BD_CNMU5250V1.0.0B27\""'
 check "next boot: the boot in between is backfilled; this one is the boot line" '[ "$(lines | grep -c boot_backfill)" = 1 ] && lines | grep -q "\"k\":\"boot_backfill\",\"id\":\"kl-[0-9]*-5\",\"code\":1134,\"at\":\"2025-01-04 00:00:19\",\"started\":null,\"gap\":0" && lines | grep "\"seq\":2," | grep "\"k\":\"boot\"" | grep -q "\"code\":1182"'
 check "a new crash file becomes svc_exit (status, crash uptime)" 'lines | grep -q "\"k\":\"svc_exit\",\"id\":\"cl-[0-9a-f]*\",\"prog\":\"zwrt-datad\",\"file\":\"20250104-000200-up120.log\",\"status\":\"killed by SIGSEGV\",\"found\":\"boot_init\",\"crash_up\":120"'
@@ -1034,15 +1080,39 @@ lround 1300
 check "u60-uid restarted as another build: proc_restart and a ver line hashed for it" 'lines | grep -q "\"prog\":\"u60-uid\",\"old\":702,\"new\":740" && lines | grep "\"k\":\"ver\",\"prog\":\"u60-uid\"" | tail -n 1 | grep -q "\"pid\":740,"'
 lround 1360
 check "nothing changed: no new restart lines" '[ "$(lines | grep -c "\"k\":\"proc_restart\"")" = 4 ]'
+check "no transaction file: every restart so far ship=0" '[ "$(lines | grep "\"k\":\"proc_restart\"" | grep -c "\"ship\":0}")" = 4 ]'
+# a deployment's restarts (S4 leaves them out): the transaction of this boot,
+# of the component that restarts the program, running or ended ≤ 10 min ago
+txn() { mkdir -p "$T/u60-ship"; printf 'v=2\ntxn=x\ncomp=%s\nphase=%s\nboot_id=%s\nt_phase=%s\n' "$1" "$2" "${4:-$(cat $T/bootid)}" "$3" >"$T/u60-ship/txn"; }
+txn touch done 1350
+rm -rf "$T/proc/740"; fakeproc 750 u60-uid 14000
+lround 1380
+check "u60-uid restarted by a touch ship that just ended: ship=1" 'lines | grep -q "\"prog\":\"u60-uid\",\"old\":740,\"new\":750,\"crashlog\":0,\"ship\":1}"'
+rm -rf "$T/proc/720"; fakeproc 760 zwrt-datad 15000
+lround 1385
+check "datad restarting during a touch ship is not that ship's: ship=0" 'lines | grep -q "\"prog\":\"zwrt-datad\",\"old\":720,\"new\":760,\"crashlog\":0,\"ship\":0}"'
+txn datad trial 1386
+rm -rf "$T/proc/760"; fakeproc 770 zwrt-datad 16000
+lround 1390
+check "datad in its own ship's trial: ship=1" 'lines | grep -q "\"old\":760,\"new\":770,\"crashlog\":0,\"ship\":1}"'
+txn datad done 1391
+rm -rf "$T/proc/770"; fakeproc 780 zwrt-datad 17000
+lround 2000
+check "more than 10 minutes after the ship ended: ship=0" 'lines | grep -q "\"old\":770,\"new\":780,\"crashlog\":0,\"ship\":0}"'
+txn datad done 1990 feedc0de-0000-4000-8000-00000000beef
+rm -rf "$T/proc/780"; fakeproc 790 zwrt-datad 18000
+lround 2010
+check "a transaction of another boot: ship=0" 'lines | grep -q "\"old\":780,\"new\":790,\"crashlog\":0,\"ship\":0}"'
+rm -f "$T/u60-ship/txn"
 
 printf '2026-09-28T10:00:00 starting (pid 740)\n2026-09-28T10:00:01 launched u60pro-devui pid 800 (attempt 1 of 3 before giving up)\n' >"$T/uid.log"
-lround 1420
+lround 2020
 check "u60-uid launch lines are not events (its 'before giving up' does not count)" '! lines | grep -q "\"k\":\"uid\""'
 printf '%s\n' "2026-09-28T10:05:00 giving up: 3 launches did not stay up; vendor UI on screen. Corner long-press or 'echo devui > /tmp/u60-uid.ctl' to retry" \
     "2026-09-28T10:05:00 starting the vendor UI" "2026-09-28T10:06:00 request: our UI (clears give-up and the attempt count)" >>"$T/uid.log"
-lround 1480
+lround 2080
 check "give-up, hand-back, the owner's request: one uid line each, numbered by log line" '[ "$(lines | grep -c "\"k\":\"uid\"")" = 3 ] && lines | grep -q "\"k\":\"uid\",\"id\":\"uid-feedc0de-3\",\"what\":\"gave_up\",\"detail\":\"2026-09-28T10:05:00 giving up: 3 launches" && lines | grep -q "\"what\":\"handback\"" && lines | grep -q "\"what\":\"other\""'
-lround 1540
+lround 2140
 check "read once: the next round adds none" '[ "$(lines | grep -c "\"k\":\"uid\"")" = 3 ]'
 check "all of it is flat JSON" 'jsonok'
 teardown

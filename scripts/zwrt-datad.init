@@ -20,6 +20,7 @@ TOKEN_FILE=$DIR/auth.token
 LAN_BIND=0.0.0.0
 LAN_PORT=9461
 SUPERVISE=/data/u60-guard/supervise.sh
+ROLLBACK_FLAG=/data/u60-ops/rollback-on
 
 # Same test as start.sh: in power-off charging the UI falls back to sysfs,
 # so there is nothing for datad to do.
@@ -58,7 +59,16 @@ start_service() {
         "$BIN" -i 1000 --lan-bind "$LAN_BIND" --lan-port "$LAN_PORT" --auth-token-file "$TOKEN_FILE"
     # ZWRT_DATAD_OTA_DISABLE_AUTO: our fork has no update sources and defaults
     # off; this keeps it off regardless (see start.sh).
-    procd_set_param env DATAD_MODEM_REMOTE_STREAM=1 DATAD_MODEM_REMOTE_STALE_SEC=6 ZWRT_DATAD_OTA_DISABLE_AUTO=1
+    # ZWRT_DATAD_UBUS=auto: read ubus over ubusd's socket instead of forking
+    # `ubus call` each time; falls back to the CLI for 30 s only when a request
+    # never reached ubusd (data-service docs/PERF-AUDIT.md, 10-04 trial).
+    # Auto-revert (E4 D30): on while /data/u60-ops/rollback-on exists. Turn
+    # it on or off by creating or removing the file, then restart this
+    # service; no new build needed.
+    local rollback=0
+    [ -f "$ROLLBACK_FLAG" ] && rollback=1
+    procd_set_param env DATAD_MODEM_REMOTE_STREAM=1 DATAD_MODEM_REMOTE_STALE_SEC=6 ZWRT_DATAD_OTA_DISABLE_AUTO=1 ZWRT_DATAD_UBUS=auto \
+        ZWRT_DATAD_ROLLBACK="$rollback"
     procd_set_param respawn 300 5 5  # see zte-agent.init for why 300
     procd_set_param term_timeout 10
     procd_close_instance

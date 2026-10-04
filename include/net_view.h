@@ -27,7 +27,10 @@ typedef enum {
     NV_STATE_OK, NV_STATE_NOSIM, NV_STATE_AIRPLANE, NV_STATE_SOS, NV_STATE_NOSVC,
     NV_STATE_NODATA, NV_STATE_LIMIT, NV_STATE_WEAK, NV_STATE_NOISE, NV_STATE_CROWD,
     NV_STATE_ONLY2G, NV_STATE_ONLY3G, NV_STATE_NARROW,
-    NV_STATE_STALL         /* connected, packets go out, nothing comes back (datad 10-02) */
+    NV_STATE_STALL,        /* connected, packets go out, nothing comes back (datad 10-02) */
+    NV_STATE_CHANGING,     /* E4: a write transaction in progress (net.home, neutral)      */
+    NV_STATE_REVERT_FAIL,  /* E4: its revert did not come through either (net.home, red)   */
+    NV_STATE_HOT           /* the firmware limits speed while too hot (datad 10-04)       */
 } nv_state_t;
 
 typedef struct {

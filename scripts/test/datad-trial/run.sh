@@ -460,7 +460,7 @@ EXPECT="env $(sh "$TRIAL" print-launch ZWRT_DATAD_UBUS=cli | sed 's/^env //')"
 check "launch: exit 0" '[ "$RC" = 0 ]'
 check "launch: production stopped, not restarted" '[ "$(cat "$T/initd.log")" = stop ]'
 check "launch: test build started as print-launch says" '[ "$(sed -n 1p "$T/setsid.log")" = "$EXPECT" ]'
-check "launch: extra env passed" "sed -n 1p '$T/setsid.log' | grep -q 'ZWRT_DATAD_OTA_DISABLE_AUTO=1 ZWRT_DATAD_UBUS=cli nohup $T/zwrt-datad.test -i 1000'"
+check "launch: extra env passed" "sed -n 1p '$T/setsid.log' | grep -q 'ZWRT_DATAD_OTA_DISABLE_AUTO=1 ZWRT_DATAD_UBUS=auto ZWRT_DATAD_ROLLBACK=0 ZWRT_DATAD_UBUS=cli nohup $T/zwrt-datad.test -i 1000'"
 check "launch: no supervise.sh" "! grep -q supervise '$T/setsid.log'"
 check "launch: then the watcher, detached" "sed -n 2p '$T/setsid.log' | grep -q '^nohup sh .*datad-trial.sh run'"
 check "launch: test output header" "grep -q '^=== .*zwrt-datad.test -i 1000' '$T/data/test.log'"
@@ -657,9 +657,17 @@ done
 unset DT_SSD
 
 # ── drift: launch must run what the init script's start_service runs ────────
+# twice: without the auto-revert flag file and with it (E4 D30)
 INIT=$SCRIPTS/zwrt-datad.init
+for _flag in absent present; do
 (
     unset DT_TEST_BIN
+    _f=$(mktemp)
+    [ $_flag = absent ] && rm -f "$_f"
+    export DT_ROLLBACK_FLAG=$_f
+    # the init script's start_service: rollback=1 while its flag file exists
+    rollback=0
+    [ -f "$_f" ] && rollback=1
     # the init script's own variables (DIR, BIN, TOKEN_FILE, LAN_*)
     eval "$(grep -E '^(DIR|BIN|TOKEN_FILE|LAN_BIND|LAN_PORT)=' "$INIT")"
     # procd_set_param command …: join continuation lines, keep what follows "$BIN"
@@ -667,18 +675,24 @@ INIT=$SCRIPTS/zwrt-datad.init
     case "$CMD" in *'"$BIN"'*) ;; *) echo "  FAIL drift: no \"\$BIN\" in the init command"; exit 1 ;; esac
     eval "set -- ${CMD#*\"\$BIN\"}"
     WANT_ARGS=$*
-    WANT_ENV=$(sed -n 's/^[[:space:]]*procd_set_param env[[:space:]]*//p' "$INIT" | sed 's/[[:space:]]*#.*//' | tr -s ' \t' '  ')
+    # procd_set_param env …: join continuation lines, expand $rollback
+    ENVL=$(sed -n '/procd_set_param env/,/[^\\]$/p' "$INIT" | sed 's/[[:space:]]*#.*//; s/\\$//; s/^[[:space:]]*procd_set_param env[[:space:]]*//' | tr '\n' ' ')
+    case "$ENVL" in *ZWRT_DATAD_ROLLBACK*) ;; *) echo "  FAIL drift: no ZWRT_DATAD_ROLLBACK in the init env"; exit 1 ;; esac
+    eval "set -- $ENVL"
+    WANT_ENV=$*
     WANT="env $WANT_ENV nohup $BIN.test $WANT_ARGS"
     GOT=$(sh "$TRIAL" print-launch)
+    rm -f "$_f"
     if [ -n "$WANT_ARGS" ] && [ -n "$WANT_ENV" ] && [ "$GOT" = "$WANT" ]; then
-        echo "  ok   drift: launch = init start_service (args, env, binary)"
+        echo "  ok   drift ($_flag flag): launch = init start_service (args, env, binary)"
     else
-        echo "  FAIL drift: launch differs from $INIT"
+        echo "  FAIL drift ($_flag flag): launch differs from $INIT"
         echo "       init:   $WANT"
         echo "       launch: $GOT"
         exit 1
     fi
 ) && PASS=$((PASS + 1)) || FAIL=$((FAIL + 1))
+done
 
 echo "datad-trial: $PASS passed, $FAIL failed"
 [ "$FAIL" = 0 ]

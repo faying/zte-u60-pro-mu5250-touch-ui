@@ -39,17 +39,18 @@ static void offsel_cb(lv_event_t *e)
     s_autooff_ms = k_off_ms[idx];
     s_auto_slept = 0;
     highlight_off_btns(idx);
+    if (s_cf_autooff_ms != (int)k_off_ms[idx]) {   /* kept across restarts */
+        s_cf_autooff_ms = (int)k_off_ms[idx];
+        save_devui_conf();
+    }
 }
 
 static void dps_cb(lv_event_t *e)
 {
     lv_obj_t *sw = (lv_obj_t *)lv_event_get_target(e);
     int on = lv_obj_has_state(sw, LV_STATE_CHECKED);
-    char cmd[200];
-    snprintf(cmd, sizeof cmd,
-        "ubus call zwrt_bsp.charger set '{\"direct_power_supply_mode\":\"%s\"}' >/dev/null 2>&1 &",
-        on ? "enable" : "disable");
-    data_control("power.direct_supply.set", on ? "{\"enabled\":true}" : "{\"enabled\":false}", cmd);
+    data_control("power.direct_supply.set", on ? "{\"enabled\":true}" : "{\"enabled\":false}",
+                 on ? "enabled=1" : "enabled=0");
     s_aux_dps = on;
     aux_hold(&s_hold_dps);
 }
@@ -219,7 +220,7 @@ static void build_system(lv_obj_t *t)
     y += build_charts(t, y) + 10;
 
     uk_section(t, y, TR("设备")); y += 20;
-    c = uk_card(t, UK_MARGIN, y, UK_CARD_W, 5 * UK_ROW_H);
+    c = uk_card(t, UK_MARGIN, y, UK_CARD_W, 6 * UK_ROW_H);
     s_set_ver  = uk_row(c, 0, TR("版本"), 1);
     lv_obj_set_style_text_font(s_set_ver, UF.n12, 0);
     s_set_imei = uk_row(c, UK_ROW_H, "IMEI", 0);
@@ -230,11 +231,13 @@ static void build_system(lv_obj_t *t)
     lv_obj_set_y(s_set_fw, 3 * UK_ROW_H + 12);
     /* 健康: the device check's counts (doctor.sh via the agent); the whole row opens 告警 */
     s_set_health = uk_row_nav(c, 4 * UK_ROW_H, TR("健康"), 0, open_alerts_cb, NULL);
-    y += 5 * UK_ROW_H + 10;
+    /* E4 DD5: who changed what, when (datad's change log) */
+    s_tile_sub[SUB_LOG] = uk_row_nav(c, 5 * UK_ROW_H, TR("改动记录"), 0, tile_click_cb, (void *)(intptr_t)SUB_LOG);
+    y += 6 * UK_ROW_H + 10;
 
     uk_section(t, y, TR("开关")); y += 20;
     c = uk_card(t, UK_MARGIN, y, UK_CARD_W, 2 * UK_ROW_H);
-    uk_label(c, UF.cj14, T->t2, UK_PAD, 11, TR("电源直供电"));
+    uk_label(c, UF.cj14, T->t2, UK_PAD, 11, TR("停止充电"));
     s_sy_dps_st = uk_label_r(c, UF.cj12, T->t3, UK_CARD_W - UK_PAD - 52, 13, "");
     s_sy_dps_sw = uk_toggle(c, UK_CARD_W - UK_PAD, 7, dps_cb, NULL);
     uk_sep(c, UK_ROW_H);

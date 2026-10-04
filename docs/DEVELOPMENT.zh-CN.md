@@ -14,6 +14,7 @@
 | `src/ui_logic.c`、`src/ui_exec.c` | 不依赖 LVGL 的判断逻辑和「点了以后做什么」，可单独测试 |
 | `src/data.c`、`src/json.c` | 从 `zwrt-datad`（`127.0.0.1:9460` 的 `/state` + `/events`）读数据 |
 | `src/screen_feed.c`、`src/net_view.c` | 首页信号卡和状态栏的结论（顺畅 / 慢：信号弱 …、5G-A / 4G+、载波、漫游、logo）由 `zwrt-datad` 的 `GET /v2/screen` 算好，这里每份新快照读一次并解析；规则本身在 data-service `rust/src/screen.rs`，C 里不再判断 |
+| `src/op_view.c`、`src/ui_parts/op.c` | 改设备的进度和结果（E4 写操作事务）：`zwrt-datad` 在 `/v2/screen` 的 `op` 里发，每句话中英各一份；`op_view.c` 解析，`op.c` 画标题栏下的事务行、事务页（退回 / 保留、知道了、再试一次、重启）并把网络模式那行交给 datad 的结论。写本身走 `src/data.c` 的 `data_control()`；应急脚本 `scripts/u60-fallback.sh` 只在连不上 datad 时用 |
 | `src/http.c`、`src/agent_client.c` | 共用的 HTTP 客户端（超时、分块解码、不触发 SIGPIPE）和带登录的 zte-agent 请求（密码、token、401 重登一次）；各功能模块都走它，只有 `data.c` 因 `/events`、`/control` 的冻结语义自己写 |
 | `src/esim.c`、`src/tailscale.c`、`src/speedtest.c`、`src/netinfo.c`、`src/scenario.c`、`src/alerts.c` | 各功能的后端：eSIM / APN 等写操作走 zte-agent（`127.0.0.1:9090`） |
 | `src/drm_disp.c`、`src/touch_input.c`、`src/key_input.c`、`src/backlight.c` | 硬件接口，见 [HARDWARE.zh-CN.md](HARDWARE.zh-CN.md) |

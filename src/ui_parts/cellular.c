@@ -31,21 +31,16 @@ static void md_sw_cb(lv_event_t *e)
     uint32_t now = lv_tick_get();
 
     if (s_md_pending == id && s_md_want == on && s_md_arm && now - s_md_arm < 5000) {
-        int data = id == MD_DATA ? on : s_aux_data != 0;
-        int roam = id == MD_ROAM ? on : s_aux_roam == 1;
-        char cmd[220];
-        snprintf(cmd, sizeof cmd,
-                 "ubus call zwrt_data set_wwaniface '{\"cid\":1,\"connect_mode\":1,\"enable\":%d,\"roam_enable\":%d}' >/dev/null 2>&1 &",
-                 data, roam);
         {
             /* datad reads the whole get_wwaniface object and overrides only
              * what is named here: just the switch pressed, so the other one
              * keeps its live value even if the web page changed it since our
-             * last read (the direct-ubus fallback above has to send both). */
-            char params[48];
-            if (id == MD_DATA) snprintf(params, sizeof params, "{\"enabled\":%d}", data);
-            else               snprintf(params, sizeof params, "{\"roaming\":%d}", roam);
-            data_control("cellular.set", params, cmd);
+             * last read. The emergency script merges the same way. */
+            char params[48], fb[24];
+            const char *k = id == MD_DATA ? "enabled" : "roaming";
+            snprintf(params, sizeof params, "{\"%s\":%d}", k, on);
+            snprintf(fb, sizeof fb, "%s=%d", k, on);
+            data_control("cellular.set", params, fb);
         }
         if (id == MD_DATA) { s_aux_data = on; aux_hold(&s_hold_data); }
         else               { s_aux_roam = on; aux_hold(&s_hold_roam); }
@@ -125,11 +120,37 @@ static void build_cellular(lv_obj_t *t)
     uk_seg(&s_lk_seg, md, UK_PAD, 12, UK_CARD_W - 2 * UK_PAD, k_lk_mode_n, LK_MODES, lk_mode_cb);   /* uk_seg TRs the items */
     for (int i = 0; i < LK_MODES; i++) s_lk_mode_btn[i] = s_lk_seg.item[i];
     s_lk_mode_lbl = uk_label_w(md, UF.cj12, T->t3, UK_PAD, 54, UK_CARD_W - 2 * UK_PAD, 1, TR("切换会短暂断网，需要按两次确认"));
+    /* 「上次改动 10-03 14:32 · 网页 ›」（DD5）：datad 记着这一项最后是谁改的才出现，卡加高 40 */
+    s_md_mode_card = md;
+    s_md_own_row = uk_box(md, 0, 100, UK_CARD_W, UK_ROW_H, T->card, 0);
+    lv_obj_set_style_bg_opa(s_md_own_row, LV_OPA_TRANSP, 0);
+    s_md_own_val = uk_row_nav(s_md_own_row, 0, TR("上次改动"), 0, op_owner_cb, NULL);
+    uk_show(s_md_own_row, 0);
     y += 20 + 100 + 10;
 
-    y = nav_card(t, y, N_("网络"), ids2, names2, 3);
-    y = nav_card(t, y, N_("消息"), ids3, names3, 1);
-    lv_obj_set_height(t, y);
+    /* 后面的卡放进一层，「上次改动」出现时整体下移（cell_own_layout） */
+    s_cell_tail_y = y;
+    s_cell_tail = lv_obj_create(t);
+    lv_obj_remove_style_all(s_cell_tail);
+    lv_obj_remove_flag(s_cell_tail, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_pos(s_cell_tail, 0, y);
+    lv_obj_set_width(s_cell_tail, UK_W);
+    int ty = nav_card(s_cell_tail, 0, N_("网络"), ids2, names2, 3);
+    ty = nav_card(s_cell_tail, ty, N_("消息"), ids3, names3, 1);
+    lv_obj_set_height(s_cell_tail, ty);
+    lv_obj_set_height(t, y + ty);
+    cell_reflow();
+}
+
+/* 网络模式卡有没有「上次改动」那一行：卡高 100 / 140，后面的卡跟着挪 */
+static void cell_own_layout(int show)
+{
+    int extra = show ? UK_ROW_H : 0;
+    if (!s_md_mode_card) return;
+    uk_show(s_md_own_row, show);
+    lv_obj_set_height(s_md_mode_card, 100 + extra);
+    lv_obj_set_y(s_cell_tail, s_cell_tail_y + extra);
+    lv_obj_set_height(s_cell_rest, s_cell_tail_y + extra + (int)lv_obj_get_style_height(s_cell_tail, 0));
     cell_reflow();
 }
 

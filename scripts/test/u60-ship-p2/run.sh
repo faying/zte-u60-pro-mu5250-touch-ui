@@ -815,7 +815,7 @@ teardown
 
 # ═══ T15 guard ══════════════════════════════════════════════════════════════
 TG=20261001-120000-guard
-GFILES="alert-lib.sh u60-guard.sh supervise.sh agent-auth.sh chaos.sh doctor.sh config-backup.sh power-sample.sh wan-sources.sh wifi-ab.sh zte-agent.init zwrt-datad.init u60-guard.init"
+GFILES="alert-lib.sh u60-guard.sh supervise.sh agent-auth.sh chaos.sh doctor.sh config-backup.sh power-sample.sh wan-sources.sh wifi-ab.sh u60-fallback.sh zte-agent.init zwrt-datad.init u60-guard.init"
 doctor_src() { # doctor_src <OLD|NEW>: a doctor that prints $T/tsv-<v> and passes --ledger-selftest
     cat <<EOF
 #!/bin/sh

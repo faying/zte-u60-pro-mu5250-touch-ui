@@ -26,8 +26,17 @@ esac
 X
     cat >"$T/bin/uci" <<X
 #!/bin/sh
-case "\$*" in *dm_update_mode*) cat $T/mode ;; *TURNOFFPOLLING*) cat $T/poll ;; esac
+case "\$*" in
+  *dm_update_mode*) cat $T/mode ;; *TURNOFFPOLLING*) cat $T/poll ;;
+  "-q show zwrt_mqtt.config") cat $T/mqtt 2>/dev/null ;;
+  "-q show zwrt_tr069.ManagementServer") cat $T/tr069 2>/dev/null ;;
+  "-q show zwrt_zte_dadian_debug") cat $T/dadian 2>/dev/null ;;
+esac
 X
+    # stock phone-home as on the device (10-04, B31): reporting on, TR-069 without a server
+    printf "zwrt_mqtt.config=config\nzwrt_mqtt.config.reportFreqInS='1000'\nzwrt_mqtt.config.mqttOnreportEnable='1'\n" >"$T/mqtt"
+    printf "zwrt_tr069.ManagementServer=zudata_mgt\nzwrt_tr069.ManagementServer.EnableCWMP='1'\nzwrt_tr069.ManagementServer.PeriodicInformInterval='3600'\n" >"$T/tr069"
+    printf "zwrt_zte_dadian_debug.wlan.switch='1'\nzwrt_zte_dadian_debug.wlan.appid='1'\nzwrt_zte_dadian_debug.web.switch='1'\nzwrt_zte_dadian_debug.sms.switch='0'\n" >"$T/dadian"
     cat >"$T/bin/ps" <<X
 #!/bin/sh
 n=\$(cat $T/aps); i=0; while [ \$i -lt \$n ]; do echo "1 root 0 S /usr/sbin/hostapd -g x"; i=\$((i+1)); done
@@ -246,6 +255,15 @@ check "P2: each cell over 6 h has a figure, the rest too few" 'line P2 | grep -q
 check "P4a: datad at 1.0% of a core: 达标; P4b: cli backend: 不达标" 'line P4a | grep -q "平均 1.0%（24 小时） · 达标" && line P4b | grep -q "cli 后端.* · 不达标"'
 check "P5: a boot that ran 24 h, RSS flat: 达标" 'line P5 | grep -q "RSS 增长都在 10% 以内；OOM 0 次 · 达标"'
 check "P6: no throttling, no thermal rise: 达标" 'line P6 | grep -q "降频 0 分；过热等级上升 0 次 · 达标"'
+check "S4: a clean week, every program 0: 达标" 'line S4 | grep -q "agent 0；datad 0；触屏 0；u60-uid 0；guard 0 · 达标"'
+# u60-uid restarted three times: twice by a deployment (ship=1), once not;
+# lines from before 10-04 have no ship field and still count
+ev 1 400000 $((W0 + 400000)) proc_restart ',"id":"pr-aaaaaaaa-900-1","prog":"u60-uid","old":800,"new":900,"crashlog":0,"ship":1'
+ev 1 400100 $((W0 + 400100)) proc_restart ',"id":"pr-aaaaaaaa-901-2","prog":"u60-uid","old":900,"new":901,"crashlog":0,"ship":1'
+ev 1 400200 $((W0 + 400200)) proc_restart ',"id":"pr-aaaaaaaa-902-3","prog":"u60-uid","old":901,"new":902,"crashlog":0,"ship":0'
+ev 1 400300 $((W0 + 400300)) proc_restart ',"id":"pr-aaaaaaaa-903-4","prog":"u60-uid","old":902,"new":903,"crashlog":0'
+rep 7d
+check "S4: a deployment's restarts are left out, the others counted" 'line S4 | grep -q "u60-uid 2（不达标）"'
 rep 24h
 check "--report 24h: 7-day items show 1 day of 7: 注意" 'line S1 | grep -q "0 次 · 注意 · 1 天 / 7 天"'
 check "summary: three lines for the default output" 'sh "$SCRIPTS/doctor.sh" --report 7d --summary >$T/sum && [ "$(wc -l <$T/sum)" = 3 ] && grep -q "意外重启 0 次（达标）" $T/sum && grep -q "耗电：平均 900 mW" $T/sum'
@@ -574,6 +592,24 @@ check "just started, disk low, a Chinese ship reason left out of English" '[ "$(
 run
 check "disk unreadable" '[ "$(en disk)" = "warn|/data space|Unreadable" ]'
 unset DOC_SHIP_TXN; rm -rf "$T"
+
+echo "stock phone-home (read only)"
+setup
+mkdir -p "$T/proc/200" "$T/proc/201"; echo zte_mqtt_sdk_st >"$T/proc/200/comm"; echo zte_smart_manag >"$T/proc/201/comm"
+run
+check "phone-home: MQTT on and running, TR-069 on without a server, 2 switches on, smart_manage running; ok, never a warning" '[ "$(level phonehome)" = ok ] &&
+    [ "$(detail phonehome)" = "MQTT 上报开着（在跑）；TR-069 开着（没在跑），没配服务器；打点开关 2 个开着；应用库更新（smart_manage）在跑" ] &&
+    [ "$(awk -F"\t" "\$2 == \"phonehome\" {print \$6}" "$T/out2")" = "MQTT reporting on (running); TR-069 on (not running), no server set; 2 analytics switches on; app catalog updates (smart_manage) running" ]'
+printf "zwrt_mqtt.config.mqttOnreportEnable='0'\n" >"$T/mqtt"
+printf "zwrt_tr069.ManagementServer.EnableCWMP='1'\nzwrt_tr069.ManagementServer.URL='http://acs.example'\n" >"$T/tr069"
+rm -f "$T/dadian"; rm -rf "$T/proc/200" "$T/proc/201"
+run
+check "phone-home: MQTT off, TR-069 with a server (the address not shown), nothing else" '[ "$(level phonehome)" = ok ] &&
+    [ "$(detail phonehome)" = "MQTT 上报关着；TR-069 开着（没在跑），配了服务器；打点开关 0 个开着；应用库更新（smart_manage）没在跑" ] && ! grep -q acs.example "$T/out"'
+rm -f "$T/mqtt" "$T/tr069"
+run
+check "phone-home: unreadable says so" 'detail phonehome | grep -q "^MQTT 读不到；TR-069 读不到；"'
+rm -rf "$T"
 
 echo "snapshots"
 GOLD=$SCRIPTS/test/doctor/golden

@@ -18,6 +18,7 @@
 #define NI_MAX_SCENES 6
 #define NI_MAX_CLIENTS 8
 #define NI_MAX_APNS   10
+#define NI_MAX_CANDS  6     /* 自动模式下这张卡的候选 APN（固件库按 MCC-MNC 给的） */
 
 typedef struct {
     int  present;           /* agent 给了这一项（没有第二个出口时 proxy 不给） */
@@ -71,6 +72,7 @@ typedef struct {
     int  pdp;               /* 1 IPv4  2 IPv6  3 IPv4v6 */
     int  selected;          /* 手动列表：手动模式会用这条（不等于正在用） */
     int  in_use;            /* 数据连接拨的就是它 */
+    int  iot;               /* 物联网 APN（ctiot、cmiot…）：能拨上但多半上不了网，agent 判定 */
 } ni_apn_t;
 
 typedef struct {
@@ -130,6 +132,10 @@ typedef struct {
     ni_apn_t apn_in_use;    /* id 空 = 读不到 */
     int  napns;
     ni_apn_t apns[NI_MAX_APNS];   /* 手动列表 */
+    int  ncands;
+    ni_apn_t cands[NI_MAX_CANDS]; /* 自动候选（2026-10-03：可以只给这张卡挑一条） */
+    char apn_picked[24];    /* 这张卡从候选里挑的那条，复制成的手动 APN 的 id；空 = 没挑 */
+    char apn_notice[96];    /* agent 换卡时自动改了 APN 的说明（10 分钟内才有） */
 } netinfo_t;
 
 /* 主循环每轮调用。mode：NI_OFF 没人看；NI_PAGE 「情景 · 网络」页开着（刚打开
@@ -152,7 +158,7 @@ void netinfo_register(int op);      /* 注册到 ops[op]，失败 agent 自己�
 void netinfo_auto(void);            /* 恢复自动选网 */
 void netinfo_nbr_scan(void);        /* 扫一次邻区 */
 void netinfo_pin(const char *id);   /* 固定到这个情景；NULL = 回到自动 */
-void netinfo_apn_use(const char *id);   /* "auto" 或手动 APN 的 id；会短暂断网 */
+void netinfo_apn_use(const char *id);   /* "auto"、手动 APN 的 id 或候选 id（"auto109600"）；会短暂断网 */
 /* 刚发了动作、在等结果：接下来 secs 秒按忙时节奏（2 秒）重读 */
 void netinfo_hurry(int secs);
 const char *netinfo_action_error(void);   /* 上一个动作被拒的原因，"" = 没有 */

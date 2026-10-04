@@ -10,6 +10,7 @@
 #define SF_GAP_MS    0
 #define SF_RETRY_MS  0
 #define SF_STALE_MS  300
+#define SF_REFRESH_MS 200
 #include "../src/screen_feed.c"
 #include "../src/net_view.c"
 #include "../src/http.c"
@@ -28,6 +29,8 @@ static int s_fail, s_pass_n;
 
 static int *s_hits;    /* shared with the child: requests served */
 
+static const char *s_extra = "";   /* more top-level members after "net" */
+
 static pid_t fake(int status)
 {
     struct sockaddr_in sa;
@@ -41,7 +44,7 @@ static pid_t fake(int status)
     pid_t pid = fork();
     if (pid == 0) {
         static char body[16384], out[20000], rq[1024];
-        snprintf(body, sizeof body, "{\"v\":1,\"ts\":1,\"net\":%s}", k_views[0].json);
+        snprintf(body, sizeof body, "{\"v\":1,\"ts\":1,\"net\":%s%s}", k_views[0].json, s_extra);
         for (;;) {
             int c = accept(lfd, NULL, NULL);
             if (c < 0) _exit(1);
@@ -105,6 +108,26 @@ int main(void)
     usleep(400000);
     screen_feed_poll(3);
     CHECK(screen_feed_net() != NULL);
+
+    /* E4: exec_age_ms and op; an older datad sends neither */
+    CHECK(screen_feed_exec_age() == -1 && !screen_feed_stuck() && !screen_feed_op()[0]);
+    s_extra = ",\"op\":{\"rollback_enabled\":false,\"active\":null,\"last\":null},\"exec_age_ms\":250";
+    pid = fake(200);
+    *s_hits = 0;
+    /* the snapshot did not move, but it is fetched again after SF_REFRESH_MS */
+    usleep(250000);
+    screen_feed_poll(3);
+    CHECK(*s_hits == 1 && screen_feed_exec_age() == 250 && !screen_feed_stuck());
+    CHECK(!strncmp(screen_feed_op(), "{\"rollback_enabled\":false,", 26));
+    screen_feed_poll(3);
+    CHECK(*s_hits == 1);   /* not before SF_REFRESH_MS */
+    stop(pid);
+    /* stuck: changed (the screen greys its controls) */
+    s_extra = ",\"exec_age_ms\":21000";
+    pid = fake(200);
+    usleep(250000);
+    CHECK(screen_feed_poll(3) == 1 && screen_feed_stuck() && !screen_feed_op()[0]);
+    stop(pid);
 
     printf("passed %d, failed %d\n", s_pass_n, s_fail);
     return s_fail != 0;

@@ -56,6 +56,10 @@ static void power_run(int which)
     lv_obj_move_foreground(s_pw_cover);
     backlight_on();
     lv_refr_now(NULL);
+    /* Through datad (E4): it writes 「重启/关机 requested」 into the change log
+     * and waits for it to reach flash first. datad not there: the vendor
+     * call directly, as before. Either way the 40 s last resort below stays. */
+    if (data_control(which ? "device.reboot" : "device.poweroff", "{}", NULL)) return;
     char cmd[256];
     snprintf(cmd, sizeof cmd,
              "( sync; ubus -t 10 call zwrt_mc.device.manager %s '{\"moduleName\":\"zte_topsw_devui\"}'"

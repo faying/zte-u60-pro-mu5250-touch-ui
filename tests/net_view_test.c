@@ -181,6 +181,29 @@ int main(void)
     net_view_placeholder(&v, "—", "数据服务版本太旧");
     CHECK(!strcmp(v.name, "数据服务版本太旧") && !v.story.hint[0] && v.bars_tier == -1);
 
+    /* E4: net.home (the story with a write transaction over it) wins over
+     * story; without it, story as before */
+    {
+        net_view_t hv;
+        const char *with =
+            "{\"story\":{\"tone\":\"bad\",\"state\":\"nosvc\",\"headline\":\"无服务\",\"hint\":\"正在搜网\"},"
+            "\"nosvc\":true,"
+            "\"home\":{\"tone\":\"neutral\",\"state\":\"changing\",\"headline\":\"正在确认\","
+            "\"hint\":\"1:42 后没通就退回到自动\"}}";
+        CHECK(net_view_parse(with, &hv) && hv.state == NV_STATE_CHANGING && hv.story.tone == UI_NET_NEUTRAL);
+        CHECK(!strcmp(hv.story.headline, "正在确认") && !strcmp(hv.story.hint, "1:42 后没通就退回到自动") && hv.nosvc);
+        CHECK(!nv_abnormal(hv.state, hv.story.cause));
+        const char *rf = "{\"story\":{\"tone\":\"ok\",\"state\":\"ok\",\"headline\":\"顺畅\"},"
+                         "\"home\":{\"tone\":\"bad\",\"state\":\"revert_fail\",\"headline\":\"退回也没通\"}}";
+        CHECK(net_view_parse(rf, &hv) && hv.state == NV_STATE_REVERT_FAIL && hv.story.tone == UI_NET_BAD);
+        /* hot: a warn verdict 网络诊断 can't explain further, so no 查原因 */
+        const char *hot = "{\"story\":{\"tone\":\"warn\",\"cause\":\"none\",\"state\":\"hot\",\"headline\":\"慢：过热限速\"}}";
+        CHECK(net_view_parse(hot, &hv) && hv.state == NV_STATE_HOT && hv.story.tone == UI_NET_WARN);
+        CHECK(!nv_abnormal(hv.state, hv.story.cause));
+        const char *no = "{\"story\":{\"tone\":\"ok\",\"state\":\"ok\",\"headline\":\"顺畅\"}}";
+        CHECK(net_view_parse(no, &hv) && hv.state == NV_STATE_OK && !strcmp(hv.story.headline, "顺畅"));
+    }
+
     printf("passed %d, failed %d\n", s_pass_n, s_fail);
     return s_fail != 0;
 }

@@ -21,6 +21,8 @@
 #include "diagnose.h"
 #include "ui_logic.h"
 #include "net_view.h"
+#include "http.h"
+#include "op_view.h"
 #include "screen_feed.h"
 #include "ui_theme.h"
 #include "ui_exec.h"
@@ -72,6 +74,10 @@ enum { SUB_SMS, SUB_CELL, SUB_LOCK, SUB_SPEED, SUB_ESIM, SUB_PERF,
        SUB_ALERT_DETAIL,
        /* 网络诊断（首页提示行「查原因 ›」、蜂窝标签）和摆放模式（蜂窝标签、诊断的信号行） */
        SUB_DIAG, SUB_PLACE,
+       /* E4: the change in progress / its result (事务页, ui_parts/op.c) */
+       SUB_OP,
+       /* E4: 系统 › 改动记录, and one line in full (DD5) */
+       SUB_LOG, SUB_LOG_DETAIL,
        SUB_N };
 
 /* ---- shared widget handles ---- */
@@ -106,6 +112,9 @@ static home_row_t s_hr_wifi, s_hr_traf, s_hr_ca, s_hr_exit;
 static lv_obj_t *s_hr_ca_sub, *s_hr_exit_sub;
 static lv_obj_t *s_ch_net_card;                 /* 网速图（首页，原图表页第一张） */
 static lv_obj_t *s_cell_scroll, *s_cell_rest;  /* 蜂窝标签：载波卡在上，其余跟在下面 */
+/* 网络模式卡底部「上次改动」一行（E4 T15）和它下面的卡（行出现时整体下移） */
+static lv_obj_t *s_md_mode_card, *s_md_own_row, *s_md_own_val, *s_cell_tail;
+static int       s_cell_tail_y;
 static void cell_reflow(void);
 static lv_obj_t *s_ca_card, *s_ca_qos;          /* 载波明细卡 */
 #define CA_CARD_TOP 34
@@ -333,9 +342,11 @@ static void fmt_rate_top(char *out, size_t n, long Bps, int bits, int shortf)
 
 /* ---- persisted UI settings, shared file with htmlmain.c's load_conf()/
  * save_conf() (src/htmlmain.c:815-844) — same devui.conf, same key set, so
- * whichever binary runs doesn't clobber the other's settings. LVGL only
- * acts on speed_bits (2026-09-21: tap-to-toggle Mbps/MB/s on the status
- * bar); the rest just round-trip verbatim through load/save. */
+ * whichever binary runs doesn't clobber the other's settings. Acted on:
+ * speed_bits, autooff (screen-off time: read at start, written when the
+ * 系统 page changes it — before 10-04 it lived only in memory and every
+ * restart came back as 常亮), bright, appearance*, lang; the rest
+ * round-trip verbatim. */
 #ifndef DEVUI_CONF_FILE
 #define DEVUI_CONF_FILE "/data/plugins/u60pro-devui/devui.conf"
 #endif
@@ -736,6 +747,14 @@ static void sub_open_child(int id, int parent);
 static void sub_close(void);
 static void sub_back(void);
 static void tile_click_cb(lv_event_t *e);   /* › rows and Home cards: open a subpage */
+/* E4 write transactions (ui_parts/op.c): datad's /v2/screen "op", parsed */
+static op_view_t s_op;
+static void op_refresh(void);
+static int  op_mode_line(char *out, size_t n, uint32_t since);
+static void op_owner_cb(lv_event_t *e);      /* 网络模式卡的「上次改动」：开改动记录那一条 */
+static void op_on_open(void);
+static void op_log_on_open(void);
+static void op_logd_on_open(void);
 static void tab_go_cb(lv_event_t *e);       /* Home summary rows: jump to a tab */
 static void open_alerts_cb(lv_event_t *e);  /* status-bar alert dot, 系统 page's 健康 row */
 static void sc_card_cb(lv_event_t *e);      /* Home 情景 card: opens the 情景 page */
@@ -774,6 +793,7 @@ static void sub_show(int id)
         [SUB_PERF] = N_("性能测试"), [SUB_TS] = "Tailscale", [SUB_SMS_DETAIL] = N_("短信详情"),
         [SUB_ALERTS] = N_("健康与告警"), [SUB_NET] = N_("运营商选择"), [SUB_SCENE] = N_("情景"), [SUB_APN] = "APN",
         [SUB_ALERT_DETAIL] = N_("详情"), [SUB_DIAG] = N_("网络诊断"), [SUB_PLACE] = N_("摆放模式"),
+        [SUB_OP] = N_("改动"), [SUB_LOG] = N_("改动记录"), [SUB_LOG_DETAIL] = N_("详情"),
     };
     if (id < 0 || id >= SUB_N) return;
     for (int i = 0; i < SUB_N; i++)
@@ -791,6 +811,9 @@ static void sub_show(int id)
     diag_hdr_sync();
     if (id == SUB_DIAG) diag_on_open();
     if (id == SUB_PLACE) place_on_open();
+    if (id == SUB_OP) op_on_open();
+    if (id == SUB_LOG) op_log_on_open();
+    if (id == SUB_LOG_DETAIL) op_logd_on_open();
 }
 
 /* Open a subpage fresh: always from its top (2026-09-25: a page reopened
@@ -869,6 +892,7 @@ static int sub_visible(int id)
 #include "ui_parts/diagnose.c"
 #include "ui_parts/refresh.c"
 #include "ui_parts/power.c"
+#include "ui_parts/op.c"
 
 /* ---- shared chrome: floating tab capsule ----
  * Five top-level pages, text only (the icon row read as guesses). The
@@ -1136,7 +1160,10 @@ void ui_create(void)
         save_devui_conf();
     }
     backlight_init();
+    /* an in-process exec (theme, language) carries the live value; a fresh
+     * start (boot, u60-uid relaunch, crash) takes the saved one */
     if (s_launch.autooff_ms >= 0) s_autooff_ms = (uint32_t)s_launch.autooff_ms;
+    else s_autooff_ms = (uint32_t)ui_autooff_snap(s_cf_autooff_ms);
     if (s_launch.bright > 0) backlight_remember(s_launch.bright);
     else if (!backlight_panel_lit() && s_cf_bright > 0) backlight_remember(s_cf_bright);   /* started dark: wake to the saved level, not max */
     if (s_launch.screen_off && !backlight_panel_lit()) {
@@ -1232,6 +1259,9 @@ void ui_create(void)
     build_sub_net(s_sub_page[SUB_NET]);   /* also fills SUB_SCENE and hangs cards on 小区信息 / 出口 / Wi-Fi */
     build_sub_diag(s_sub_page[SUB_DIAG]);
     build_sub_place(s_sub_page[SUB_PLACE]);
+    build_sub_op(s_sub_page[SUB_OP]);
+    build_sub_log(s_sub_page[SUB_LOG]);
+    build_sub_log_detail(s_sub_page[SUB_LOG_DETAIL]);
     sub_close();
 
     /* Seed the tileview's "active tile" pointer. lv_tileview_add_tile()
@@ -1268,6 +1298,7 @@ void ui_create(void)
     build_statusbar();
     build_tabbar();
     build_banner();
+    build_op_row();
     for (lv_indev_t *in = lv_indev_get_next(NULL); in; in = lv_indev_get_next(in)) {
         lv_indev_add_event_cb(in, edge_back_cb, LV_EVENT_PRESSED, NULL);
         lv_indev_add_event_cb(in, edge_back_cb, LV_EVENT_RELEASED, NULL);

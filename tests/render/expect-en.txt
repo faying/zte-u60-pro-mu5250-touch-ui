@@ -83,7 +83,7 @@ good	system	Debug page
 *	system	USB
 *	system	Health
 *	system	Switches
-*	system	Direct power
+*	system	Stop charging
 *	system	Status bar speed in Mbps
 *	system	Switch to stock UI
 good	system	78% · 33°C 4.05V -349mA
@@ -170,7 +170,7 @@ good	cell	Off
 *	cellular	5G SA
 *	cellular	4G
 *	cellular	4G+3G
-*	cellular	Switching cuts data briefly; tap twice to confirm
+!op-verifying,op-rollback-off	cellular	Switching cuts data briefly; tap twice to confirm
 *	lock	5G SA bands
 *	lock	5G NSA bands
 *	lock	4G bands
@@ -302,6 +302,12 @@ good	apn	ctiot · IPv4v6 · Chosen automatically
 good	apn	CTNET
 good	apn	ctnet · IPv4v6
 abroad	apn	ctnet · IPv4v6 · Set manually
+good	apn	Candidates for this SIM
+*	apn	Manual APNs
+good	apn	In use · IoT
+good	apn	On IoT APN "ctiot"
+abroad	apn	In use (this SIM)
+abroad	apn	This SIM stays on "ctnet"
 loading	apn	Loading…
 good	apn-already	Already automatic
 good	apn-armed	Tap again
@@ -416,3 +422,30 @@ diagnose-running	diagnose	Checking… 3/5
 diagnose-result	diagnose-error	Agent not responding
 diagnose-result	diagnose-error	Retry
 diagnose-result	diagnose-error	Cellular link
+op-busy	home	Busy: network mode (Web)
+op-datad-stuck	home	Data service not responding
+op-verifying,op-rollback-off	home	Checking
+op-verifying	home	if no data
+op-rolled-back	home	No data · back to Auto
+op-rollback-failed	home	Failed
+op-verifying,op-rollback-off	op	Setting applied
+op-verifying,op-rollback-off	op	Auto → 5G SA only · Web
+op-verifying,op-rollback-off	op	Revert to Auto
+op-verifying,op-rollback-off	op	Keep 5G SA only
+op-rollback-off	op	Auto revert off: it stays even with no data
+op-verifying	op-armed	Tap again
+op-rolled-back,op-rollback-failed,op-not-applied	op	Got it
+op-rollback-failed	op	Retry revert to Auto
+op-rollback-failed,op-not-applied	op	Restart device
+op-not-applied	op	Common after a modem crash; restart, then try again
+op-verifying	op-armed	Back to Auto now; offline ~30 s while it re-registers
+*	system	Change log
+journal	journal	Network mode · 4G only → Auto
+journal	journal	Scene skipped ×5
+journal-empty	journal	No changes yet
+journal	journal-detail	Undo
+journal	journal-detail-old	Changed since
+journal	journal-cell	Last changed
+journal	journal-cell	10-03 14:32 · Web
+op-notice	home	Auto revert on: reverts a mode change
+op-notice	home	Got it

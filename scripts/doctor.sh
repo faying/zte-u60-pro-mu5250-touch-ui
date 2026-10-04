@@ -359,7 +359,7 @@ BEGIN {
     else if (k == "ssr") { NSSR++; SSR_ID[NSSR] = id; SSR_S[NSSR] = s; SSR_UP[NSSR] = up; SSR_NET[NSSR] = fld($0, "net"); SSR_HOME[NSSR] = fld($0, "home"); SSR_RAT[NSSR] = fld($0, "rat"); SSR_BAND[NSSR] = fld($0, "band"); SSR_NR[NSSR] = fld($0, "nrband"); SSR_PPM[NSSR] = fld($0, "wan_ppm"); LAST_SSR[s] = NSSR }
     else if (k == "ssr_result") { r = fld($0, "ssr"); RES[r] = fld($0, "result"); RES_REC[r] = fld($0, "recovered_s"); RES_RX[r] = fld($0, "rx_seen_s"); RES_RESUMED[r] = fld($0, "resumed"); RES_SLEPT[r] = fld($0, "slept") }
     else if (k == "svc_exit") { NSX++; SX_S[NSX] = s; SX_UP[NSX] = up; SX_P[NSX] = fld($0, "prog"); SX_ST[NSX] = fld($0, "status") }
-    else if (k == "proc_restart") { NPR++; PR_S[NPR] = s; PR_UP[NPR] = up; PR_P[NPR] = fld($0, "prog"); PR_CL[NPR] = fld($0, "crashlog") }
+    else if (k == "proc_restart") { NPR++; PR_S[NPR] = s; PR_UP[NPR] = up; PR_P[NPR] = fld($0, "prog"); PR_CL[NPR] = fld($0, "crashlog"); PR_SH[NPR] = fld($0, "ship") }
     else if (k == "uid") { if (fld($0, "what") == "gave_up") { NUG++; UG_S[NUG] = s; UG_UP[NUG] = up } }
     else if (k == "datad_degraded") { st = fld($0, "state"); sc = fld($0, "since")
         if (st == "start") { NDD++; DD_S[NDD] = s; DD_UP[NDD] = up; DD_SINCE[NDD] = sc; DDI[sc] = NDD }
@@ -511,13 +511,13 @@ END {
         p = PG[q]; ch = ((p in VER_CS) ? wall(VER_CS[p], VER_CU[p]) : "")
         ws = wstart(D7, ch); n = 0; pre = 0
         for (i = 1; i <= NSX; i++) if (SX_P[i] == p && SX_ST[i] != "0" && SX_ST[i] != "exit 0") { x = wall(SX_S[i], SX_UP[i]); if (x != "" && x > ws && x <= WEND) n++; else if (x != "") pre++ }
-        for (i = 1; i <= NPR; i++) if (PR_P[i] == p && PR_CL[i] != "1") { x = wall(PR_S[i], PR_UP[i]); if (x != "" && x > ws && x <= WEND) n++ }
+        for (i = 1; i <= NPR; i++) if (PR_P[i] == p && PR_CL[i] != "1" && PR_SH[i] != "1") { x = wall(PR_S[i], PR_UP[i]); if (x != "" && x > ws && x <= WEND) n++ }
         if (p == "u60-guard.sh") for (i = 1; i <= NGX; i++) { x = wall(GX_S[i], GX_UP[i]); if (x != "" && x > ws && x <= WEND) n++ }
         cv = cov(ws, "crashlog guard"); t_ = tier(n > 0, cv, ws, D7)
         val = val PL[q] " " n ((t_ != "达标") ? "（" t_ ((t_ == "注意") ? " " dur(WEND - ws) : "") "）" : "") "；"
         if (t_ == "不达标") worst = t_; else if (t_ == "没测" && worst != "不达标") worst = t_; else if (t_ == "注意" && worst == "达标") worst = t_
     }
-    row("S4", "我们的程序意外退出", trim(val), worst, 0, 0, "", "自动；u60-uid 的 pid 变化含人为重启；退出码 0 的意外退出第二步才看得到")
+    row("S4", "我们的程序意外退出", trim(val), worst, 0, 0, "", "自动；上机事务里的重启不算（10-04 起记）；手工重启仍算；退出码 0 的意外退出第二步才看得到")
     # S5a / S5b the screen
     ws = wstart(D7, UIDTK); n = 0
     for (i = 1; i <= NR_; i++) if (R_W[i] != "" && R_W[i] > ws && R_W[i] <= WEND && R_CODE[i] == 1185) n++
@@ -589,7 +589,8 @@ END {
     for (i = 1; i <= NH; i++) if (HWE[i] > ws && HWS[i] < WEND && (i in HQ) && isn(HQ_CPU[i])) { cpu += HQ_CPU[i]; nc++ }
     cv = cov(ws, "guard")
     row("P4a", "datad 的 CPU", (nc ? sprintf("平均 %.1f%%（%d 小时）", cpu / nc / 10, nc) : "没有记录"), tier(nc && cpu / nc > 20, (nc ? cv : "没有记录"), ws, D1), ws, D1, cv, "自动")
-    row("P4b", "读数不派生进程", ((DATAD_X == "ubus=socket") ? "socket 后端" : "cli 后端，每读一次起一个 ubus 进程"), ((DATAD_X == "ubus=socket") ? "达标" : "不达标"), 0, 0, "", "设计事实")
+    p4b = (DATAD_X == "ubus=socket" || DATAD_X == "ubus=auto")
+    row("P4b", "读数不派生进程", (p4b ? ((DATAD_X == "ubus=auto") ? "socket 后端（auto：连不上 ubusd 才临时退回 CLI）" : "socket 后端") : "cli 后端，每读一次起一个 ubus 进程"), (p4b ? "达标" : "不达标"), 0, 0, "", "设计事实")
     # P5 memory over boots that ran 24 h; oom kills
     ws = wstart(D7, ""); val = ""; viol = 0; long_ = 0; cmp_ = 0
     for (x = 1; x <= NS; x++) { s = SQ[x]; if (!(s in BLAST) || H_T[BLAST[s]] < 86400) continue
@@ -1104,6 +1105,36 @@ if [ -d "$OVERLAY_RCD" ]; then
             "Boot links" "No boot-sync service is masked${wo:+ ($(echo $wo | wc -w) unrelated: $(echo $wo))}"
     fi
 fi
+
+# Stock phone-home (read only): what the firmware reports outward. Whether to
+# turn any of it off is the user's call (with uci, never by stopping stock
+# services); FOTA has its own row above. One /proc pass, three uci forks.
+pmq=0; ptr=0; psm=0
+for _d in "$PROC"/[0-9]*; do
+    { read -r _c <"$_d/comm"; } 2>/dev/null || continue
+    case "$_c" in zte_mqtt_sdk_st) pmq=1 ;; zte_topsw_tr069) ptr=1 ;; zte_smart_manag*) psm=1 ;; esac
+done
+_run() { [ "$1" = 1 ] && printf '在跑' || printf '没在跑'; }
+_run_en() { [ "$1" = 1 ] && printf 'running' || printf 'not running'; }
+mq=$($UCI -q show zwrt_mqtt.config 2>/dev/null | sed -n "s/^zwrt_mqtt\.config\.mqttOnreportEnable='*\([^']*\)'*\$/\1/p")
+case "$mq" in
+    1) mqz="MQTT 上报开着（$(_run $pmq)）"; mqe="MQTT reporting on ($(_run_en $pmq))" ;;
+    0) mqz="MQTT 上报关着"; mqe="MQTT reporting off" ;;
+    *) mqz="MQTT 读不到"; mqe="MQTT unreadable" ;;
+esac
+trs=$($UCI -q show zwrt_tr069.ManagementServer 2>/dev/null)
+tre=$(printf '%s\n' "$trs" | sed -n "s/^zwrt_tr069\.ManagementServer\.EnableCWMP='*\([^']*\)'*\$/\1/p")
+tru=$(printf '%s\n' "$trs" | sed -n "s/^zwrt_tr069\.ManagementServer\.URL='*\([^']*\)'*\$/\1/p")
+case "$tre" in
+    1) if [ -n "$tru" ]; then trz="TR-069 开着（$(_run $ptr)），配了服务器"; tren="TR-069 on ($(_run_en $ptr)), server set"
+       else trz="TR-069 开着（$(_run $ptr)），没配服务器"; tren="TR-069 on ($(_run_en $ptr)), no server set"; fi ;;
+    0) trz="TR-069 关着"; tren="TR-069 off" ;;
+    *) trz="TR-069 读不到"; tren="TR-069 unreadable" ;;
+esac
+ddn=$($UCI -q show zwrt_zte_dadian_debug 2>/dev/null | grep -c "\.switch='*1'*\$")
+case "$ddn" in '' | *[!0-9]*) ddn=0 ;; esac
+report ok phonehome "原厂外联上报" "$mqz；$trz；打点开关 $ddn 个开着；应用库更新（smart_manage）$(_run $psm)" \
+    "Stock phone-home" "$mqe; $tren; $ddn analytics switches on; app catalog updates (smart_manage) $(_run_en $psm)"
 
 # Clock trust: u60-guard's verdict when it is fresh, else the same rule here
 # (docs/LEDGER.md §7). Before NTP the device clock reads 2025-01-04.

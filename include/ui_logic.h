@@ -42,12 +42,25 @@ int ui_legacy_theme_value(int dark);
  * usable limit → just the start address. Bad ip/start → "". */
 void ui_dhcp_pool_text(const char *ip, const char *start, const char *limit, char *out, size_t n);
 
-/* datad /control reply → run the direct-ubus fallback? `head` is the first
- * bytes of the reply (NUL-terminated), `n` what recv() returned. Yes for
- * 503 (control queue full) and for a connection closed without a reply
- * (n == 0: datad went away mid-request). No for anything else, including
- * errors: datad ran it, running it again would not help. */
-int ui_control_should_fallback(const char *head, long n);
+/* datad /control reply (E4 T8). `reply` is what came back (NUL-terminated),
+ * `n` its length or what recv() returned. None of these runs the emergency
+ * script: only a refused connect does (datad not there, write-op-layer.md
+ * 前提 6) — a 503 or a hang-up may come from a datad still doing the write. */
+typedef enum {
+    UI_CTL_OK,        /* 2xx */
+    UI_CTL_BUSY,      /* 409: another change in progress ("doing" says which) */
+    UI_CTL_FULL,      /* 503: datad's queue is full, not done */
+    UI_CTL_FAILED,    /* any other status */
+    UI_CTL_NOREPLY,   /* closed without a status line, or garbage */
+} ui_ctl_t;
+ui_ctl_t ui_control_reply(const char *reply, long n);
+
+/* The emergency write when datad cannot be reached:
+ * "<script> --by screen <action> <args> >/dev/null 2>&1 &" into `out`.
+ * `args` is "key=value key=value" ("" for none). Only [a-z._] in the action
+ * and [A-Za-z0-9_.,:=+-] and single spaces in the args go through (the
+ * script checks again); anything else → 0 and `out` = "". */
+int ui_control_fallback_cmd(char *out, size_t n, const char *script, const char *action, const char *args);
 
 /* ---- exec-restart guard (theme switch = exec /proc/self/exe) ---- */
 #define UI_EXEC_COOLDOWN_S   600   /* no automatic exec within 10 min of the last one        */
@@ -102,6 +115,12 @@ int ui_launch_argv(const ui_launch_t *l, char store[UI_LAUNCH_MAXARG][UI_LAUNCH_
  * wall seconds below 2024-01-01 are not a time of day to act on. */
 #define UI_CLOCK_SANE_AFTER 1704067200L
 int ui_clock_sane(long wall_s);
+
+/* ---- screen-off time ---- */
+/* devui.conf autooff= (ms) → one of the 系统 page's choices: 0 (never),
+ * 30000, 120000. Other values (the old UI's default 60000, garbage) round up
+ * to the next choice; negative or larger than 2 min → 2 min. */
+int ui_autooff_snap(long ms);
 
 /* ---- automatic appearance ---- */
 typedef struct {

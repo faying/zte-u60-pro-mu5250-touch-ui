@@ -107,11 +107,47 @@ static void home_logo_place(void)
     lv_obj_set_width(s_cc_hero.st, UK_CARD_W - x - UK_PAD);
 }
 
+/* The status block's hint row: 查原因 › (网络诊断), or 详情 › while it shows a
+ * write transaction (E4, the 事务页). */
+/* DD18 (write-op-layer.md 打开自动退回): the one-time 「自动退回已打开」 line at
+ * the top of Home, in the 事务行's dress (full width, card ground, a dot,
+ * a line under it). Shown and acknowledged by op.c (op_notice_paint). */
+static lv_obj_t *s_hn_box, *s_hn_lbl, *s_hn_ack;
+static int s_hn_h = UK_ROW_H;
+static void op_notice_cb(lv_event_t *e);
+
+static int s_cc_hint_sub = SUB_DIAG;
+static void cc_hint_cb(lv_event_t *e) { LV_UNUSED(e); sub_open(s_cc_hint_sub); }
+
 static void build_home(lv_obj_t *t)
 {
     /* Worst case (5 active carriers, 5 Tailscale rows, …) is
      * ~1010; the spacer is moved by home_reflow to the real height. */
     t = s_home_scroll = uk_scroll(t, 0, UI_VIEW_H, 1100);
+
+    /* 自动退回已打开 · 知道了: text left (wraps), 知道了 a ≥40 px target right */
+    {
+        enum { DOT_X = UK_PAD + UK_MARGIN, LBL_X = UK_PAD + UK_MARGIN + 16, ACK_W = 72 };
+        s_hn_box = uk_box(t, 0, 0, UK_W, UK_ROW_H, T->card, 0);
+        lv_obj_set_style_border_side(s_hn_box, LV_BORDER_SIDE_BOTTOM, 0);
+        lv_obj_set_style_border_width(s_hn_box, 1, 0);
+        lv_obj_set_style_border_color(s_hn_box, lv_color_hex(T->sep), 0);
+        lv_obj_t *dot = uk_dot(s_hn_box, DOT_X, 0, 8, T->accT);
+        s_hn_lbl = uk_label_w(s_hn_box, UF.cj13, T->t1, LBL_X, 0, UK_W - LBL_X - ACK_W, 1,
+                              TR("自动退回已开：切模式没通会退回"));
+        lv_obj_update_layout(s_hn_lbl);
+        int lh = (int)lv_obj_get_height(s_hn_lbl);
+        s_hn_h = lh + 18 > UK_ROW_H ? lh + 18 : UK_ROW_H;
+        lv_obj_set_height(s_hn_box, s_hn_h);
+        lv_obj_set_y(s_hn_lbl, (s_hn_h - lh) / 2);
+        lv_obj_set_y(dot, (s_hn_h - 8) / 2);
+        lv_obj_t *ack = s_hn_ack = uk_box(s_hn_box, UK_W - ACK_W, 0, ACK_W, s_hn_h - 1, T->card, 0);
+        lv_obj_set_style_bg_opa(ack, LV_OPA_TRANSP, 0);
+        lv_obj_t *al = uk_label(ack, UF.cj14, T->accT, 0, 0, TR("知道了"));
+        lv_obj_align(al, LV_ALIGN_CENTER, 0, 0);
+        uk_tappable(ack, op_notice_cb, NULL);
+        uk_show(s_hn_box, 0);
+    }
 
     /* status card: the conclusion, then Wi-Fi · traffic · carrier summary */
     s_cell_card = uk_card(t, UK_MARGIN, 4, UK_CARD_W, UK_HERO_H + 4 * UK_ROW_H);
@@ -124,7 +160,7 @@ static void build_home(lv_obj_t *t)
     lv_obj_set_style_bg_opa(s_cc_hint_box, LV_OPA_TRANSP, 0);
     s_cc_hint = uk_label_w(s_cc_hint_box, UF.cj13, T->t2, UK_PAD, 8, UK_CARD_W - 2 * UK_PAD, 1, "");
     s_cc_diag = uk_label(s_cc_hint_box, UF.cj13, T->accT, 0, 8, TR("查原因 ›"));
-    uk_tappable(s_cc_hint_box, tile_click_cb, (void *)(intptr_t)SUB_DIAG);
+    uk_tappable(s_cc_hint_box, cc_hint_cb, NULL);
     uk_show(s_cc_diag, 0);
     uk_show(s_cc_hint_box, 0);
     /* 顶行（运营商 · 制式 · 本地/漫游）名字可能很长：限宽，末尾「…」 */
@@ -254,6 +290,7 @@ static int home_visible_h(lv_obj_t *o) { return lv_obj_has_flag(o, LV_OBJ_FLAG_H
 static void home_reflow(void)
 {
     int y = 4;
+    if (home_visible_h(s_hn_box) >= 0) y += s_hn_h;   /* 自动退回已打开 (DD18) */
     lv_obj_set_y(s_cell_card, y);
     y += home_visible_h(s_cell_card) + UK_MARGIN;
     /* 情景：独立的一块，整行 */
@@ -339,6 +376,8 @@ static char s_aux_pool[48];
 
 #define AUX_HOLD_MS 30000
 static uint32_t s_hold_dps, s_hold_data, s_hold_roam;   /* lv_tick of the local flip, 0 = none */
+/* Wi-Fi APs: datad reloads Wi-Fi after the write, the interfaces come and go for a few s */
+static uint32_t s_hold_w24, s_hold_w5;
 
 /* nonzero without ever being ahead of now (tick | 1 could be, and then
  * now - hold wraps and the hold is dropped at once) */
@@ -386,8 +425,8 @@ static void aux_refresh(int active, const devui_data_t *d)
     if (last && now - last < 5000) return;
     last = now;
 
-    s_aux_w24 = sys_oper_up("wlan0");
-    s_aux_w5  = sys_oper_up("wlan2");
+    aux_take(&s_aux_w24, &s_hold_w24, sys_oper_up("wlan0"), now);
+    aux_take(&s_aux_w5,  &s_hold_w5,  sys_oper_up("wlan2"), now);
     fp = popen(
         "ps=$(iw dev wlan0 get power_save 2>/dev/null | grep -o 'o[nf]*' | tail -1);"
         "[ -z \"$ps\" ] && ps=$(iw dev wlan2 get power_save 2>/dev/null | grep -o 'o[nf]*' | tail -1);"

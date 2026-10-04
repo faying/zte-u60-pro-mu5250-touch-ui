@@ -273,6 +273,15 @@ int main(void)
      * tested there (the cases that used to be here moved with the rules) */
     /* radio-mode preference words: zwrt-datad screen.rs */
 
+    puts("screen-off time from devui.conf");
+    CHECK("0 = never", ui_autooff_snap(0) == 0);
+    CHECK("30 s", ui_autooff_snap(30000) == 30000);
+    CHECK("2 min", ui_autooff_snap(120000) == 120000);
+    CHECK("old default 60 s rounds up to 2 min", ui_autooff_snap(60000) == 120000);
+    CHECK("10 s rounds up to 30 s", ui_autooff_snap(10000) == 30000);
+    CHECK("negative → 2 min, not never", ui_autooff_snap(-5) == 120000);
+    CHECK("an hour → 2 min", ui_autooff_snap(3600000) == 120000);
+
     puts("headline hold: 15 s before a new verdict shows");
     {
         ui_net_hold_t h = {0};
@@ -320,15 +329,34 @@ int main(void)
         CHECK("pool: garbage start → empty", b[0] == 0);
     }
 
-    /* datad /control reply → direct-ubus fallback (T13 writes) */
-    CHECK("control: 200 → no fallback", !ui_control_should_fallback("HTTP/1.1 200 OK\r\n", 17));
-    CHECK("control: 503 busy → fallback", ui_control_should_fallback("HTTP/1.1 503 Service Unavailable", 32));
-    CHECK("control: 400 invalid → no fallback", !ui_control_should_fallback("HTTP/1.1 400 Bad Request", 24));
-    CHECK("control: 500 failed → no fallback", !ui_control_should_fallback("HTTP/1.1 500 Internal", 21));
-    CHECK("control: closed without reply → fallback", ui_control_should_fallback("", 0));
-    CHECK("control: recv error → no fallback", !ui_control_should_fallback("", -1));
-    CHECK("control: garbage → no fallback", !ui_control_should_fallback("xx 503", 6));
-    CHECK("control: HTTP/1.0 503 → fallback", ui_control_should_fallback("HTTP/1.0 503 x", 14));
+    /* datad /control reply (E4 T8): nothing here runs the emergency script */
+    CHECK("control: 200 → ok", ui_control_reply("HTTP/1.1 200 OK\r\n", 17) == UI_CTL_OK);
+    CHECK("control: 409 → busy", ui_control_reply("HTTP/1.1 409 Conflict", 21) == UI_CTL_BUSY);
+    CHECK("control: 503 → queue full", ui_control_reply("HTTP/1.1 503 Service Unavailable", 32) == UI_CTL_FULL);
+    CHECK("control: HTTP/1.0 503 → queue full", ui_control_reply("HTTP/1.0 503 x", 14) == UI_CTL_FULL);
+    CHECK("control: 400 → failed", ui_control_reply("HTTP/1.1 400 Bad Request", 24) == UI_CTL_FAILED);
+    CHECK("control: 502 → failed", ui_control_reply("HTTP/1.1 502 Bad Gateway", 24) == UI_CTL_FAILED);
+    CHECK("control: closed without reply", ui_control_reply("", 0) == UI_CTL_NOREPLY);
+    CHECK("control: recv error", ui_control_reply("", -1) == UI_CTL_NOREPLY);
+    CHECK("control: garbage", ui_control_reply("xx 503", 6) == UI_CTL_NOREPLY);
+    CHECK("control: short status", ui_control_reply("HTTP/1.1 50", 11) == UI_CTL_NOREPLY);
+    {
+        char c[256];
+        const char *sc = "/data/u60-guard/u60-fallback.sh";
+        CHECK("fallback: command", ui_control_fallback_cmd(c, sizeof c, sc, "network.set_mode", "mode=WL_AND_5G") &&
+              !strcmp(c, "/data/u60-guard/u60-fallback.sh --by screen network.set_mode mode=WL_AND_5G >/dev/null 2>&1 &"));
+        CHECK("fallback: no args", ui_control_fallback_cmd(c, sizeof c, sc, "band.reset", "") &&
+              !strcmp(c, "/data/u60-guard/u60-fallback.sh --by screen band.reset >/dev/null 2>&1 &"));
+        CHECK("fallback: two args", ui_control_fallback_cmd(c, sizeof c, sc, "wifi.radio", "ap_2g=1 ap_5g=0"));
+        CHECK("fallback: bands list", ui_control_fallback_cmd(c, sizeof c, sc, "band.set_lte", "bands=1,3,28"));
+        CHECK("fallback: quote refused", !ui_control_fallback_cmd(c, sizeof c, sc, "network.set_mode", "mode='x'") && !c[0]);
+        CHECK("fallback: ; refused", !ui_control_fallback_cmd(c, sizeof c, sc, "band.reset", "a=1;reboot"));
+        CHECK("fallback: $ refused", !ui_control_fallback_cmd(c, sizeof c, sc, "band.reset", "a=$(x)"));
+        CHECK("fallback: bad action", !ui_control_fallback_cmd(c, sizeof c, sc, "band.reset;x", ""));
+        CHECK("fallback: double space refused", !ui_control_fallback_cmd(c, sizeof c, sc, "wifi.radio", "a=1  b=2"));
+        CHECK("fallback: no args pointer", !ui_control_fallback_cmd(c, sizeof c, sc, "band.reset", NULL));
+        CHECK("fallback: too long", !ui_control_fallback_cmd(c, 20, sc, "band.reset", "") && !c[0]);
+    }
 
     /* Power key (9-26: a long press on a dark screen did nothing) */
     {

@@ -24,11 +24,18 @@
 #ifndef SF_STALE_MS
 #define SF_STALE_MS  30000
 #endif
+/* Fetch again this often even when the snapshot did not move: a stuck datad
+ * executor never moves it, and exec_age_ms is how the screen sees that (E4). */
+#ifndef SF_REFRESH_MS
+#define SF_REFRESH_MS 5000
+#endif
 
 static net_view_t s_view;
 static int  s_have, s_status;
 static long long s_last_try, s_behind_since;   /* behind = a newer snapshot than s_view */
 static unsigned long long s_version, s_view_version;
+static long s_exec_age = -1;            /* -1: not said (older datad) */
+static char s_op[8192];                 /* the reply's "op" (write transactions), "" if none */
 
 static long long now_ms(void)
 {
@@ -56,7 +63,13 @@ static int fetch(void)
         s_status = SF_FAILING;
         return 0;
     }
-    int changed = !s_have || memcmp(&v, &s_view, sizeof v) != 0;
+    static char op[sizeof s_op];
+    long age = json_get_int(r.body, "exec_age_ms", -1);
+    if (!json_get(r.body, "op", op, sizeof op) || op[0] != '{') op[0] = 0;
+    int changed = !s_have || memcmp(&v, &s_view, sizeof v) != 0 || strcmp(op, s_op) != 0 ||
+                  (age >= SF_STUCK_MS) != (s_exec_age >= SF_STUCK_MS);
+    s_exec_age = age;
+    memcpy(s_op, op, sizeof s_op);
     s_view = v;
     s_have = 1;
     s_status = SF_OK;
@@ -67,15 +80,24 @@ int screen_feed_poll(unsigned long long version)
 {
     long long t = now_ms();
     int changed = 0, was = screen_feed_net() != NULL;
+    int ok = s_status == SF_OK || s_status == SF_NONE;
 
     s_version = version;
     if (s_view_version != s_version || !s_have) {
-        long long gap = s_status == SF_OK || s_status == SF_NONE ? SF_GAP_MS : SF_RETRY_MS;
+        long long gap = ok ? SF_GAP_MS : SF_RETRY_MS;
         if (!s_behind_since) s_behind_since = t;
         if (!s_last_try || t - s_last_try >= gap) {
             s_last_try = t;
             changed = fetch();
             if (s_status == SF_OK) { s_view_version = s_version; s_behind_since = 0; }
+        }
+    } else {
+        /* Same snapshot: fetch again now and then anyway (exec_age_ms, the
+         * write transaction's phase); after a failure no faster than retries. */
+        long long gap = ok || SF_RETRY_MS < SF_REFRESH_MS ? SF_REFRESH_MS : SF_RETRY_MS;
+        if (t - s_last_try >= gap) {
+            s_last_try = t;
+            changed = fetch();
         }
     }
     return changed || was != (screen_feed_net() != NULL);
@@ -94,3 +116,9 @@ const net_view_t *screen_feed_net(void)
 }
 
 int screen_feed_status(void) { return s_status; }
+
+long screen_feed_exec_age(void) { return s_have ? s_exec_age : -1; }
+
+int screen_feed_stuck(void) { return s_have && s_exec_age >= SF_STUCK_MS; }
+
+const char *screen_feed_op(void) { return s_have ? s_op : ""; }

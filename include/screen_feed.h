@@ -25,4 +25,17 @@ const net_view_t *screen_feed_net(void);
 /* SF_* — why screen_feed_net() is NULL. */
 int screen_feed_status(void);
 
+/* E4 (datad STATE_V2.md V2-40): how long datad's executor has made no
+ * progress, from the last good reply; -1 when not known (older datad, no
+ * reply yet). Fetched at least every 5 s while polled, since a stuck
+ * executor never moves the snapshot. Stuck = SF_STUCK_MS or more: the
+ * screen says 数据服务没响应 and greys its write controls. */
+#define SF_STUCK_MS 20000
+long screen_feed_exec_age(void);
+int  screen_feed_stuck(void);
+
+/* E4 T13 (V2-34): the reply's "op" object as JSON text — {rollback_enabled,
+ * active, last} — or "" when datad sent none. */
+const char *screen_feed_op(void);
+
 #endif

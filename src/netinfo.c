@@ -127,6 +127,7 @@ static void parse_apn(const char *obj, ni_apn_t *a)
     jstr(obj, "pdp", v, sizeof v);      a->pdp = (int)strtol(v, NULL, 10);
     jstr(obj, "selected", v, sizeof v); a->selected = !strcmp(v, "true");
     jstr(obj, "in_use", v, sizeof v);   a->in_use = !strcmp(v, "true");
+    jstr(obj, "iot", v, sizeof v);      a->iot = !strcmp(v, "true");
 }
 
 static void parse(const char *data)
@@ -246,7 +247,8 @@ static void parse(const char *data)
 
     s_ni.apn_known = s_ni.apn_manual = s_ni.apn_switching = 0;
     s_ni.apn_switch_err[0] = 0;
-    s_ni.napns = 0;
+    s_ni.napns = s_ni.ncands = 0;
+    s_ni.apn_picked[0] = s_ni.apn_notice[0] = 0;
     memset(&s_ni.apn_in_use, 0, sizeof s_ni.apn_in_use);
     if (json_get(data, "apn", sub, sizeof sub) && sub[0] == '{') {
         char arr[4096];
@@ -261,6 +263,20 @@ static void parse(const char *data)
             cur = arr;
             while (s_ni.napns < NI_MAX_APNS && next_obj(&cur, obj, sizeof obj))
                 parse_apn(obj, &s_ni.apns[s_ni.napns++]);
+        }
+        if (json_get(sub, "auto", arr, sizeof arr)) {
+            cur = arr;
+            while (s_ni.ncands < NI_MAX_CANDS && next_obj(&cur, obj, sizeof obj))
+                parse_apn(obj, &s_ni.cands[s_ni.ncands++]);
+        }
+        jstr(sub, "picked_id", s_ni.apn_picked, sizeof s_ni.apn_picked);
+        if (!strcmp(s_ni.apn_picked, "null")) s_ni.apn_picked[0] = 0;
+        if (json_get(sub, "notice", obj, sizeof obj) && obj[0] == '{') {
+            jstr(obj, "at", tmp, sizeof tmp);
+            long at = strtol(tmp, NULL, 10);
+            long now = (long)time(NULL);
+            if (at > 0 && now - at >= 0 && now - at < 600)
+                jstr_pick(obj, "text", "text_en", s_ni.apn_notice, sizeof s_ni.apn_notice);
         }
     }
 

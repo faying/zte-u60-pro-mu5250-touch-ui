@@ -62,6 +62,7 @@ static nv_state_t state(const char *obj)
     static const char *const names[] = {
         "", "ok", "nosim", "airplane", "sos", "nosvc", "nodata",
         "limit", "weak", "noise", "crowd", "only2g", "only3g", "narrow", "stall",
+        "changing", "revert_fail", "hot",
     };
     char v[12];
     if (!json_get(obj, "state", v, sizeof v) || !v[0]) return NV_STATE_UNKNOWN;
@@ -100,6 +101,13 @@ int net_view_parse(const char *net, net_view_t *v)
     memset(v, 0, sizeof *v);
     v->bars_tier = -1;
     if (!net || !json_get(net, "story", st, sizeof st)) return 0;
+    /* E4 (datad STATE_V2.md V2-38): "home" = the story with a write
+     * transaction laid over it (正在确认 …); only there while one is. The
+     * story itself stays the network's own verdict. */
+    {
+        static char home[sizeof st];
+        if (json_get(net, "home", home, sizeof home) && home[0] == '{') memcpy(st, home, sizeof st);
+    }
 
     if (json_get(net, "carriers", arr, sizeof arr) && arr[0] == '[')
         for (p = arr; v->ca_n < NV_CA_MAX && (p = json_arr_next(p, item, sizeof item)) != NULL; )

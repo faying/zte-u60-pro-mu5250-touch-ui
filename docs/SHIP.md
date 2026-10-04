@@ -268,7 +268,7 @@ init.d 超过 25 秒就 kill -9 并当作失败（之后照常按「停不下来
 | `guard` | `/data/u60-guard/` 下 `GUARD_FILES` 每个文件 + `/etc/init.d/u60-guard` | `git show X:scripts/<名>` | direct，停止标记 + 重启 | — / 300 s | 2（有新文件或 `/etc` 路径时） |
 
 - `GUARD_FILES`（u60-ship.sh 里一张表，build-kit 的 guard 清单去掉下面三个后和它一致，测试比对）：`alert-lib.sh u60-guard.sh supervise.sh
-  agent-auth.sh chaos.sh doctor.sh config-backup.sh power-sample.sh wan-sources.sh wifi-ab.sh zte-agent.init zwrt-datad.init u60-guard.init`，
+  agent-auth.sh chaos.sh doctor.sh config-backup.sh power-sample.sh wan-sources.sh wifi-ab.sh u60-fallback.sh zte-agent.init zwrt-datad.init u60-guard.init`（`u60-fallback.sh` 是 E4 的应急直写脚本，触屏和 zte-agent 都调 `/data/u60-guard/u60-fallback.sh`），
   加 `/etc/init.d/u60-guard`（内容 = `u60-guard.init`）。设备目录里其余文件（日志、账本、`lan-ipv6-off`、`standby.baseline`、手工备份）一律不碰。
 - **谁管哪个脚本**：`u60-ship.sh`、`datad-trial.sh` 只随每次 ship 上传（K4），不进 guard 组件，guard 退回也不会把它们换回旧版；
   `u60-recover.sh` 只由 `install-recover` 换（先问用户）。

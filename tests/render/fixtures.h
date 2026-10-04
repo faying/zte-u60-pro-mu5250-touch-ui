@@ -46,6 +46,16 @@ typedef enum {
     RT_DIAG_RUNNING,   /* 网络诊断 open, 3 of the layers done                            */
     RT_DIAG_RESULT,    /* 网络诊断 done: main cause, can't-tell rows, a speed row          */
     RT_PLACEMENT,      /* 摆放模式: SINR best 18.0, now 14.5                              */
+    RT_OP_BUSY,        /* E4: a write turned down, another change in progress (409)      */
+    RT_OP_STUCK,       /* E4: datad answers but its executor is stuck (exec_age ≥ 20 s)  */
+    RT_OP_VERIFYING,   /* E4: network mode changed from the web, checking, revert in 1:42 */
+    RT_OP_ROLLBACK_OFF,/* E4: the same with automatic revert off (DD6)                    */
+    RT_OP_ROLLED_BACK, /* E4: result: no data, back to Auto, not acknowledged             */
+    RT_OP_ROLLBACK_FAILED, /* E4: result: the revert did not come through either (DD9)   */
+    RT_OP_NOT_APPLIED, /* E4: result: the modem ignored the write (DD17)                 */
+    RT_JOURNAL,        /* E4: 系统 › 改动记录 with one of each kind of line (DD5, DD11)   */
+    RT_JOURNAL_EMPTY,  /* E4: 改动记录 with nothing in it                               */
+    RT_OP_NOTICE,      /* E4: auto revert just turned on, nobody acked (DD18)           */
     RT_SCENES
 } rt_scene_t;
 
@@ -58,6 +68,12 @@ extern ui_launch_t rt_exec_last;      /* what the last one asked for            
 extern int  rt_apn_calls;             /* netinfo_apn_use() calls                         */
 extern char rt_apn_last[24];
 extern int  rt_system_calls;
+/* data_control() calls (E4): how many, and the last action and params */
+extern int  rt_control_calls;
+extern char rt_control_last[48], rt_control_params[160];
+int rt_scene_is_op(void);
+extern int  rt_undo_calls;
+extern char rt_undo_last[48];   /* one of the RT_OP_VERIFYING … RT_OP_NOT_APPLIED scenes */
 extern char rt_system_last[256];
 extern int  rt_place_t0;              /* rt_refreshes when 摆放模式 was opened (its SINR series) */
 extern int  rt_diag_err;              /* diagnose_agent_err(): the agent not answering */

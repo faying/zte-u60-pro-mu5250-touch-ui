@@ -48,8 +48,10 @@ int main(void)
     puts("full body, no second exit, roaming, more rows than the screen holds");
     cells_and_ops(mid, sizeof mid, 16, 12);
     snprintf(body, sizeof body,
-             "{\"apn\":{\"auto\":[{\"apn\":\"ctiot\",\"id\":\"auto109590\",\"in_use\":true,\"name\":\"China Telecom\",\"pdp\":3,\"selected\":true}],"
-             "\"in_use\":{\"apn\":\"ctiot\",\"id\":\"auto109590\",\"in_use\":true,\"name\":\"China Telecom\",\"pdp\":3,\"selected\":false},"
+             "{\"apn\":{\"auto\":[{\"apn\":\"ctiot\",\"id\":\"auto109590\",\"in_use\":true,\"iot\":true,\"name\":\"China Telecom\",\"pdp\":3,\"selected\":true},"
+             "{\"apn\":\"ctnet\",\"id\":\"auto109600\",\"in_use\":false,\"iot\":false,\"name\":\"China Telecom 4G\",\"pdp\":3,\"selected\":false}],"
+             "\"picked_id\":null,\"notice\":{\"at\":1,\"text\":\"old\",\"text_en\":\"old\"},"
+             "\"in_use\":{\"apn\":\"ctiot\",\"id\":\"auto109590\",\"in_use\":true,\"iot\":true,\"name\":\"China Telecom\",\"pdp\":3,\"selected\":false},"
              "\"manual\":[{\"apn\":\"ctnet\",\"id\":\"manu1\",\"in_use\":false,\"name\":\"CTNET\",\"pdp\":3,\"selected\":true}],\"mode\":\"auto\"},"
              "\"clients\":{\"at\":1790250000,\"list\":["
              "{\"connected_secs\":360,\"down_bytes\":5000000000,\"down_rate\":250000,\"iface\":\"wlan1\",\"ip\":\"192.168.0.109\",\"mac\":\"02:00:00:00:00:0a\",\"name\":\"MacBook\",\"signal\":-47,\"signal_tier\":\"great\",\"up_bytes\":1000,\"up_rate\":null,"
@@ -90,6 +92,10 @@ int main(void)
     CHECK("apn mode auto", n->apn_known && !n->apn_manual);
     CHECK("apn in use = dialled, not the nested auto entry", !strcmp(n->apn_in_use.id, "auto109590") && !strcmp(n->apn_in_use.apn, "ctiot") && n->apn_in_use.pdp == 3);
     CHECK("apn manual list", n->napns == 1 && !strcmp(n->apns[0].name, "CTNET") && n->apns[0].selected && !n->apns[0].in_use);
+    CHECK("apn candidates", n->ncands == 2 && !strcmp(n->cands[1].id, "auto109600") && n->cands[0].iot && !n->cands[1].iot);
+    CHECK("apn in use iot", n->apn_in_use.iot);
+    CHECK("apn picked null = none", n->apn_picked[0] == 0);
+    CHECK("apn notice older than 10 min dropped", n->apn_notice[0] == 0);
     CHECK("clients", n->clients_known && n->nclients == 2);
     CHECK("client bytes > 4 GB", n->clients[0].down == 5000000000LL && n->clients[0].down_rate == 250000);
     CHECK("client no rate yet", n->clients[0].up_rate == -1 && n->clients[1].name[0] == 0);

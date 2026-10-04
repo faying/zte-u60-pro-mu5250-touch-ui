@@ -135,6 +135,7 @@ STOP_REQ=${GUARD_STOP_REQ:-$STATE/stop-requested}  # "<who> <why>": the next gua
 FSYNC_LOG=${GUARD_FSYNC_LOG:-}
 UID_LOG=${GUARD_UID_LOG:-/tmp/u60-uid.log}         # u60-uid's own log: hand-backs and give-ups
 DATAD_URL=${GUARD_DATAD_URL:-http://127.0.0.1:9460/state} # the loopback listener needs no token
+DATAD_CONTROL=${GUARD_DATAD_CONTROL:-http://127.0.0.1:9460/control} # writes go through datad when it is there (E4 T7c)
 WGET=${GUARD_WGET:-wget}
 LEDGER_READ_BUDGET=${GUARD_LEDGER_READ_BUDGET:-3} # seconds of outside reads per ledger round (§6)
 # What the hourly summary reads (docs/LEDGER.md §4 hour, hour_power, hour_proc)
@@ -247,6 +248,28 @@ clock_ok() {
 # than it ever legitimately does, it is wedged: kill it (procd restarts it)
 # and take the lock. Anything else holding it is left alone.
 
+# via_datad <request-json>: the write through datad (source "guard"; datad is
+# the one writer, write-op-layer.md E4). 0 = done, 1 = datad answered no or did
+# not answer in time (alive but stuck: no direct write either, D18; its
+# watchdog restarts it), 2 = nothing listening, or a datad too old to know the
+# action: the caller writes directly, as before E4 (the guard is the rescue
+# when everything else is gone).
+# datad's reply on stdout.
+via_datad() {
+    _vd=$($CURL -s -m 30 -H 'Content-Type: application/json' --data-binary "$1" "$DATAD_CONTROL" 2>/dev/null)
+    _vrc=$?
+    [ "$_vrc" = 7 ] && return 2
+    [ "$_vrc" = 0 ] || return 1
+    printf '%s' "$_vd"
+    case $_vd in
+        *'"ok":true'*) return 0 ;;
+        # a datad from before E4 T7 does not know these actions: write directly
+        # as before (the guard may be shipped ahead of datad)
+        *'"unknown_action"'*) return 2 ;;
+    esac
+    return 1
+}
+
 lock_wifi() {
     exec 9>>"$WIFI_LOCK"
     _waited=0
@@ -281,12 +304,23 @@ unlock_wifi() { exec 9>&-; }
 # a disabled radio would be retried forever to no effect.
 restore_wifi() {
     lock_wifi || return 1
-    $UCI set wireless.wifi0.disabled=0
-    $UCI set wireless.wifi1.disabled=0
-    $UCI set wireless.main_2g.disabled=0
-    $UCI set wireless.main_5g.disabled=0
-    $UCI commit wireless
-    $UBUS call zwrt_wlan reload >/dev/null 2>&1
+    via_datad '{"action":"wifi.apply","source":"guard","params":{"set":{"wireless.wifi0.disabled":"0","wireless.wifi1.disabled":"0","wireless.main_2g.disabled":"0","wireless.main_5g.disabled":"0"},"reload":true}}' >/dev/null
+    case $? in
+        0) log "Wi-Fi on asked through datad" ;;
+        1)
+            log "datad refused or did not answer the Wi-Fi restore; next round"
+            unlock_wifi
+            return 1
+            ;;
+        *)
+            $UCI set wireless.wifi0.disabled=0
+            $UCI set wireless.wifi1.disabled=0
+            $UCI set wireless.main_2g.disabled=0
+            $UCI set wireless.main_5g.disabled=0
+            $UCI commit wireless
+            $UBUS call zwrt_wlan reload >/dev/null 2>&1
+            ;;
+    esac
     # Poll, never assume: the same reload has taken 8 s once and done nothing
     # for a full minute another time.
     _t=0
@@ -307,7 +341,9 @@ restore_wifi() {
 # ── sleep survival ──────────────────────────────────────────────────────────
 
 set_autosleep() { # set_autosleep true|false
-    $UBUS call zwrt_zte_sleep_faw.wakelock enableAutoSleep "{\"switch\":$1}" >/dev/null 2>&1
+    via_datad "{\"action\":\"vendor.call\",\"source\":\"guard\",\"params\":{\"object\":\"zwrt_zte_sleep_faw.wakelock\",\"method\":\"enableAutoSleep\",\"args\":{\"switch\":$1}}}" >/dev/null
+    [ $? = 2 ] && $UBUS call zwrt_zte_sleep_faw.wakelock enableAutoSleep "{\"switch\":$1}" >/dev/null 2>&1
+    return 0
 }
 
 # While the APs are down, make sure the RTC will wake the device within five
@@ -582,11 +618,21 @@ sms_time() {
 send_sms() { # send_sms <number> <text> — 0 on success
     _json=$(printf '{"number":"%s","message_body":"%s","encode_type":"UNICODE","sms_time":"%s","id":"-1"}' \
         "$1" "$(ucs2_hex "$2")" "$(sms_time)")
-    _resp=$($UBUS call zwrt_wms zte_libwms_send_sms "$_json" 2>&1) || {
-        log "sms: ubus failed: $_resp"
-        return 1
-    }
-    _res=$(printf '%s' "$_resp" | $JSONFILTER -e '@.result' 2>/dev/null)
+    _resp=$(via_datad "{\"action\":\"vendor.call\",\"source\":\"guard\",\"params\":{\"object\":\"zwrt_wms\",\"method\":\"zte_libwms_send_sms\",\"args\":$_json}}")
+    case $? in
+        0) _res=$(printf '%s' "$_resp" | $JSONFILTER -e '@.result.result' 2>/dev/null) ;;
+        1)
+            log "sms: datad refused or did not answer: $_resp"
+            return 1
+            ;;
+        *)
+            _resp=$($UBUS call zwrt_wms zte_libwms_send_sms "$_json" 2>&1) || {
+                log "sms: ubus failed: $_resp"
+                return 1
+            }
+            _res=$(printf '%s' "$_resp" | $JSONFILTER -e '@.result' 2>/dev/null)
+            ;;
+    esac
     case "$_res" in
         '' | 3) return 0 ;;
         *)
@@ -607,7 +653,9 @@ delete_sent_copy() { # <number>
             "{\"tags\":2,\"page\":0,\"data_per_page\":5,\"mem_store\":$_store,\"order_by\":\"order by id desc\"}" 2>/dev/null |
             $JSONFILTER -e "@.messages[@.number='$1'].id" 2>/dev/null | head -n 1)
         case "$_id" in '' | *[!0-9]*) continue ;; esac
-        $UBUS call zwrt_wms zwrt_wms_delete_sms "{\"id\":\"$_id\"}" >/dev/null 2>&1 &&
+        via_datad "{\"action\":\"sms.delete\",\"source\":\"guard\",\"params\":{\"ids\":\"$_id\"}}" >/dev/null
+        _vrc=$?
+        { [ "$_vrc" = 0 ] || { [ "$_vrc" = 2 ] && $UBUS call zwrt_wms zwrt_wms_delete_sms "{\"id\":\"$_id\"}" >/dev/null 2>&1; }; } &&
             log "sms: deleted the sent copy (id $_id)"
         return 0
     done
@@ -1053,7 +1101,9 @@ ledger_boot_line() {
     _bw=$($UCI -q show zwrt_zte_mc.reboot_schedule 2>/dev/null | uci_brief)
     _bcut=$($UCI -q show zwrt_router.cutoff_protect 2>/dev/null | uci_brief)
     _bcf=$($UCI -q show zwrt_data_commit.wwaniface1 2>/dev/null | grep connect_fail_reboot | uci_brief)
-    ledger_append boot ",\"boot\":$(jstr "$(ledger_bootid)"),\"code\":$(jnum "$_bc"),\"mode\":$(jopt "$_bm"),\"fw\":$(jopt "$_bfw"),\"net_select\":$(jopt "$_bns"),\"rb_weekly\":$(jopt "$_bw"),\"rb_cutoff\":$(jopt "$_bcut"),\"rb_connfail\":$(jopt "$_bcf")"
+    # the PMIC's power-on reason, raw (no table of its codes yet): read beside the reason code
+    _bpo=$($UBUS -t 2 call zwrt_bsp.pm list '{}' 2>/dev/null | sed -n 's/.*"power_on_reason": *\(-\{0,1\}[0-9][0-9]*\).*/\1/p' | head -n 1)
+    ledger_append boot ",\"boot\":$(jstr "$(ledger_bootid)"),\"code\":$(jnum "$_bc"),\"mode\":$(jopt "$_bm"),\"fw\":$(jopt "$_bfw"),\"net_select\":$(jopt "$_bns"),\"rb_weekly\":$(jopt "$_bw"),\"rb_cutoff\":$(jopt "$_bcut"),\"rb_connfail\":$(jopt "$_bcf"),\"pon\":$(jnum "$_bpo")"
 }
 
 # Which build is running: binaries by /proc/<pid>/exe, scripts by their own
@@ -1252,10 +1302,34 @@ ledger_ver_changed() {
     done 2>/dev/null <"$LTMP/fp"
 }
 
+# 1 when <program>'s restart is a deployment's own: the transaction in
+# $SHIP_TXN is of this boot, of the component that restarts it (u60-uid: touch
+# or uid), and still running or ended at most 10 minutes ago. Else 0.
+ship_restart() {
+    [ -f "$SHIP_TXN" ] || { echo 0; return; }
+    case "$1" in zwrt-datad) _srw=" datad " ;; zte-agent) _srw=" agent " ;; u60-uid) _srw=" touch uid " ;; *) echo 0; return ;; esac
+    _srb=; _src=; _srp=; _srt=
+    while IFS= read -r _sl; do
+        case "$_sl" in
+            boot_id=*) _srb=${_sl#boot_id=} ;;
+            comp=*) _src=${_sl#comp=} ;;
+            phase=*) _srp=${_sl#phase=} ;;
+            t_phase=*) _srt=${_sl#t_phase=} ;;
+        esac
+    done <"$SHIP_TXN"
+    case "$_srw" in *" $_src "*) ;; *) echo 0; return ;; esac
+    [ -n "$_src" ] && [ "$_srb" = "$(ledger_bootid)" ] || { echo 0; return; }
+    case "$_srp" in staged | trial | promote | check | manifest | rollback) echo 1; return ;; esac
+    case "$_srt" in '' | *[!0-9]*) echo 0; return ;; esac
+    _srn=$(uptime_s)
+    [ "$_srn" -ge "$_srt" ] && [ $((_srn - _srt)) -le 600 ] && echo 1 || echo 0
+}
+
 # datad, the agent and u60-uid: a pid or start time other than the last one
 # seen is a restart. A program that is gone keeps its record, so its restart
 # counts when it comes back. crashlog=1 when this round's crashlog scan found
-# a new file for it (a restart without one is S4's unexplained kind).
+# a new file for it (a restart without one is S4's unexplained kind); ship=1
+# when a deployment did it (not counted by S4).
 ledger_procs() {
     for _pn in zwrt-datad zte-agent u60-uid; do
         _pp=$(find_pid "$_pn")
@@ -1268,7 +1342,7 @@ ledger_procs() {
             if ! ledger_has_id "$_pid" "$(num "$LTMP/seq")"; then
                 _pc=0
                 grep -q -x -F "$_pn" "$LTMP/cl.new" 2>/dev/null && _pc=1
-                ledger_append proc_restart ",\"prog\":\"$_pn\",\"old\":$(jnum "${_po%% *}"),\"new\":$_pp,\"crashlog\":$_pc" "" "$_pid" || return 1
+                ledger_append proc_restart ",\"prog\":\"$_pn\",\"old\":$(jnum "${_po%% *}"),\"new\":$_pp,\"crashlog\":$_pc,\"ship\":$(ship_restart "$_pn")" "" "$_pid" || return 1
             fi
             if [ "$_pn" = u60-uid ]; then
                 _pm=$(md5sum "$PROC/$_pp/exe" 2>/dev/null | cut -c1-8)

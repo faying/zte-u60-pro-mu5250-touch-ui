@@ -161,6 +161,7 @@ static void refresh_cb(lv_timer_t *t)
         banner_set(TR("后台数据服务不可用"));
         home_signal_down();
         lk_mode_sync(-1, 0);    /* 点过的网络模式也要有下文：确认窗口到时、等读回超时 */
+        op_refresh();
         if (sub_visible(SUB_PLACE)) place_paint(&d, 0);
         diag_refresh();
         return;
@@ -182,11 +183,26 @@ static void refresh_cb(lv_timer_t *t)
             net_view_placeholder(&nv, TR("读取中…"), "");
     }
     s_net_roam = nv.roam;
+    op_refresh();           /* E4: 事务行、事务页（/v2/screen 的 op） */
     if (sub_visible(SUB_PLACE)) place_paint(&d, !datad_silent);
     diag_refresh();
+    data_notice_t note;
     if (datad_silent) {
         banner_set(TR("后台数据服务不可用"));
         home_signal_down();
+    } else if (screen_feed_stuck()) {
+        /* E4: answers, but its executor has not moved for 20 s (V2-40) */
+        banner_set(TR("数据服务没响应 · 暂时不能改设置"));
+    } else if (data_control_notice(&note, 4000)) {
+        /* a write datad turned down: say so for a few seconds */
+        if (note.kind == UI_CTL_BUSY && note.say_zh[0])
+            banner_set(pick(note.say_zh, note.say_en));
+        else if (note.kind == UI_CTL_BUSY)
+            banner_set(TR("正在改别的设置，稍等"));
+        else if (note.kind == UI_CTL_FULL)
+            banner_set(TR("数据服务忙 · 没改，稍后再试"));
+        else
+            banner_set(TR("没改成 · 数据服务回了错误"));
     } else if (ah.lost_secs) {
         /* Same banner, lower priority than "data service down" above. */
         char msg[96];
@@ -273,6 +289,9 @@ static void refresh_cb(lv_timer_t *t)
             if (nv.state != NV_STATE_UNKNOWN) key = 0x80000000u | (unsigned)nv.state;
             else for (const char *p = nv.story.headline; *p; p++) key = key * 33u + (unsigned char)*p;
             if (nv.story.tone >= UI_NET_BAD || shown.tone >= UI_NET_BAD) hold.have = 0;
+            /* a write transaction (net.home) shows at once and goes at once */
+            if (nv.state == NV_STATE_CHANGING || nv.state == NV_STATE_REVERT_FAIL ||
+                shown_state == NV_STATE_CHANGING || shown_state == NV_STATE_REVERT_FAIL) hold.have = 0;
             if (ui_net_hold(&hold, key, lv_tick_get())) {
                 shown.tone = nv.story.tone; shown.cause = nv.story.cause;
                 shown_state = nv.state;
@@ -352,9 +371,16 @@ static void refresh_cb(lv_timer_t *t)
         {
             /* 结论异常（慢、没连上、连上了但不通）：提示行可点，右端「查原因 ›」。
              * 提示在缩窄后两行放得下就并排，放不下「查原因 ›」另起一行（提示行不许第 3 行） */
-            int diag = nv_abnormal(shown_state, shown.cause);
+            int op = shown_state == NV_STATE_CHANGING || shown_state == NV_STATE_REVERT_FAIL;
+            int diag = op || nv_abnormal(shown_state, shown.cause);
             static char c_hint[128];
             static int c_diag = -1;
+            /* E4: the status block shows a change in progress; its › opens the 事务页 */
+            if (op != (s_cc_hint_sub == SUB_OP)) {
+                s_cc_hint_sub = op ? SUB_OP : SUB_DIAG;
+                lv_label_set_text(s_cc_diag, op ? TR("详情 ›") : TR("查原因 ›"));
+                c_diag = -1;
+            }
             uk_show(s_cc_hint_box, hint[0] || diag);
             uk_show(s_cc_diag, diag);
             if (diag != c_diag) {

@@ -91,7 +91,7 @@ u60-guard 在设备上记一本跨重启的事件账：整机重启、基带崩�
 
 | k | 谁写 | 什么时候 | 编号 `id` | 字段（按顺序） | fsync |
 |---|---|---|---|---|---|
-| `boot` | 账本任务 | 每次开机一次 | — | `boot` 完整 boot_id；`code` 本次原因码（key.log 最后一个 `reboot_reason_code=`，没有写 null）；`mode` 开机模式；`fw` 固件版本（`zwrt_web device_info` 的 `wa_inner_version`，读不到用 tr069 的 SoftwareVersion）；`net_select`（uci `zte_nwinfo` 里的制式偏好）；`rb_weekly`、`rb_cutoff`、`rb_connfail` 原厂三个自动重启的配置（`选项=值` 空格分隔，不含节头和包名、节名，截到 60 字节） | ✔ |
+| `boot` | 账本任务 | 每次开机一次 | — | `boot` 完整 boot_id；`code` 本次原因码（key.log 最后一个 `reboot_reason_code=`，没有写 null）；`mode` 开机模式；`fw` 固件版本（`zwrt_web device_info` 的 `wa_inner_version`，读不到用 tr069 的 SoftwareVersion）；`net_select`（uci `zte_nwinfo` 里的制式偏好）；`rb_weekly`、`rb_cutoff`、`rb_connfail` 原厂三个自动重启的配置（`选项=值` 空格分隔，不含节头和包名、节名，截到 60 字节）；`pon` 开机原因（`ubus call zwrt_bsp.pm list` 的 `power_on_reason` 原值，整数，读不到写 null；10-04 加，旧行没有这个字段，没升 `v`） | ✔ |
 | `ver` | 账本任务 | 紧跟 `boot`，每个程序一行；之后被测程序 pid 变了且 md5 也变了再记 | — | `prog`；`md5` 前 8 位；`how`：`exe` / `file`；`pid`；`extra`（datad 写 `ubus=cli` 或 `ubus=socket`） | |
 | `boot_backfill` | 账本任务 | 写 `boot` 时 | `kl-<inode>-<行号>` | `code`；`at` key.log 里那行的时间文字；`started`（0/1/null）；`gap`（0/1） | ✔ |
 | `guard_start` | 账本任务 | guard 每次启动（按 `state/started.log` 补写） | `gs-<boot8>-<up>` | `requested`（0/1）；`by`；`why` | |
@@ -106,7 +106,7 @@ u60-guard 在设备上记一本跨重启的事件账：整机重启、基带崩�
 | `oom` | 观察循环 | kmsg 里的内存不足行 | `oom-<boot8>-<kmsg 序号>` | `line` | ✔ |
 | `thermal` | 观察循环 | kmsg 里原厂过热等级变化 | `th-<boot8>-<kmsg 序号>` | `level`（如 `0x3`）；`line`。每次开机约 150 秒时原厂会设一次初始等级，读的一方只数比本次开机第一条更高的 | |
 | `svc_exit` | 账本任务 | crashlog 目录里出现新文件 | `cl-<文件 md5 前 12 位>` | `prog`；`file`；`status`（文件第 2 行）；`found`：`round` / `boot_init`；`crash_up` 文件名里的开机秒数 | ✔ |
-| `proc_restart` | 账本任务 | datad、agent、u60-uid 的 pid 或进程启动时间变了（不在了先不记，回来时记） | `pr-<boot8>-<新 pid>-<启动时间>` | `prog`；`old`、`new` pid；`crashlog`（这一轮看到过它的新 crashlog 没有，0/1） | ✔ |
+| `proc_restart` | 账本任务 | datad、agent、u60-uid 的 pid 或进程启动时间变了（不在了先不记，回来时记） | `pr-<boot8>-<新 pid>-<启动时间>` | `prog`；`old`、`new` pid；`crashlog`（这一轮看到过它的新 crashlog 没有，0/1）；`ship`（1 = 上机事务重启的：`/data/u60-ship/txn` 是本次开机、对应组件（u60-uid 对应 touch 或 uid）、还在跑或结束不到 10 分钟；10-04 加，旧行没有） | ✔ |
 | `uid` | 账本任务 | u60-uid 日志里的放弃（`giving up`）、交还（`starting the vendor UI`）、人为请求（`request:`、`corner long-press:`，记作 `other`） | `uid-<boot8>-<日志行号>` | `what`：`handback` / `gave_up` / `other`；`detail`（那一行原文） | ✔ |
 | `datad_degraded` | 账本任务 | 一次降级开始、结束（第 11 节） | 开始 `dds-<boot8>-<since>`，结束 `dde-<开始那次开机的 boot8>-<since>` | `state`：`start` / `end`；`since` 标记第一行；`reason`；`dur_s`（`end` 时，按本次开机的开机秒数算；不知道写 null）；`how`（`end` 时：`gone` / `new_episode` / `stale` / `reboot`） | ✔ |
 | `gap` | 账本任务 | 醒着时 watcher、capture、uidlog、crashlog、datad 某个数据源没在工作，恢复时写（第 8 节） | — | `src`；`from`（最后一次还在工作的那一轮）、`to` 开机秒数 | |
@@ -319,7 +319,7 @@ u60-guard 在设备上记一本跨重启的事件账：整机重启、基带崩�
 | S2a | 基带崩溃后整机重启的次数：原因码归为基带、且上一次开机 guard 起来过；上一次开机 guard 没起来的单列成「开机空档」 | 0 | 7 天 | 同 S1，外加 capture、watcher |
 | S2b | `ssr_result` 的恢复用时 P95（上面的规则），分在家、国外，分空闲、有流量 | ≤ 45 秒 | 7 天 | watcher、capture |
 | S3 | `ssr` 次数，按服务网国家、`rat`、`band` 分 | 在家 0；国外列出并写对策（人工） | 7 天 | watcher、capture |
-| S4 | 每个程序：`svc_exit`（非 0 退出）+ 没有 crashlog 的 `proc_restart`；guard：同一次开机里没有 `requested` 的第二次及以后的 `guard_start`；u60-uid 的 pid 变化注明含人为重启 | 0 | 7 天 | crashlog、guard |
+| S4 | 每个程序：`svc_exit`（非 0 退出）+ 没有 crashlog 的 `proc_restart`；guard：同一次开机里没有 `requested` 的第二次及以后的 `guard_start`；`ship=1` 的（上机事务自己重启的）不算，手工重启仍算 | 0 | 7 天 | crashlog、guard |
 | S5a | 原因码 1185 的次数 | 0 | 7 天 | 同 S1 |
 | S5b | `uid what=gave_up` 次数（再对照 `/data/u60-uid/gave-up`、告警 `devui-gave-up`） | 0 | 7 天 | uidlog |
 | S6 | `datad_degraded` 次数和总分钟数 | 每天 0 | 1 天 | guard、datad |
@@ -331,7 +331,7 @@ u60-guard 在设备上记一本跨重启的事件账：整机重启、基带崩�
 | P2 | 四格（亮屏/息屏 × 在家/国外）的平均功率，剔除充电分钟；每格样本少于 6 小时写「样本不足」 | 待定 | 7 天 | guard |
 | P3 | 当前待机判定是否只在空闲时做、有没有过期的列 | 规则成立 | — | 待机记录 |
 | P4a | `hour_proc.cpu_datad` 的平均 | ≤ 2% | 1 天 | guard |
-| P4b | datad `ver.extra` 是否 `ubus=socket` | socket | — | — |
+| P4b | datad `ver.extra` 是否 `ubus=socket` 或 `ubus=auto`（socket，连不上 ubusd 时临时退回 CLI） | socket / auto | — | — |
 | P5 | 连续运行 ≥ 24 小时的开机：以开机满 1 小时后第一条 `hour_proc` 为基准，RSS 增长 ≤ 10%；`oom` 为 0 | ≤ 10%、0 | 7 天 | guard、watcher |
 | P6 | `hour_power.throttle_s` 合计（null 的小时算没测）、`thermal` 里比本次开机第一条更高的等级出现的次数 | 0 | 7 天 | guard、watcher |
 
