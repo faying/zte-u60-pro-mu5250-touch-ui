@@ -932,6 +932,7 @@ int main(int argc, char **argv)
         s_apn_flash.until = 0;
     }
 
+
     /* 点正在用的那张：说一句，不静默（以前这一行点了连按下效果都没有） */
     if (esim_profile_count() > 0) {
         to_sub(SUB_ESIM, -1);

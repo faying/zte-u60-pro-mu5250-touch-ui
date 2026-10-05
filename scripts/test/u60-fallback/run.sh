@@ -41,12 +41,15 @@ esac
 [ -f "$T/r/\$k" ] && cat "$T/r/\$k"
 exit "\$(cat "$T/r/\$k.rc" 2>/dev/null || echo 0)"
 EOF
-    # wget: answers per line of r/wget (1 = up, anything else = down), one line per call; default down
+    # wget: answers per line of r/wget (1 = up, 503 = answers 503 like busybox
+    # wget does, anything else = down), one line per call; default down
     cat >"$T/wget" <<EOF
 #!/bin/sh
 n=\$(( \$(cat "$T/wget.n" 2>/dev/null || echo 0) + 1 ))
 echo \$n >"$T/wget.n"
-[ "\$(sed -n "\${n}p" "$T/r/wget" 2>/dev/null)" = 1 ]
+a=\$(sed -n "\${n}p" "$T/r/wget" 2>/dev/null)
+[ "\$a" = 503 ] && { echo "wget: server returned error: HTTP/1.1 503 Service Unavailable" >&2; exit 1; }
+[ "\$a" = 1 ] || { echo "wget: can't connect to remote host (127.0.0.1): Connection refused" >&2; exit 1; }
 EOF
     chmod +x "$T/ubus" "$T/wget"
     export U60_FALLBACK_UBUS=$T/ubus U60_FALLBACK_WGET=$T/wget U60_FALLBACK_HEALTH_URL=http://127.0.0.1:1/healthz
@@ -191,6 +194,11 @@ setup
 printf '1\n' >"$T/r/wget"
 run band.reset
 check "no pid file but /healthz answers → exit 3" '[ "$RC" = 3 ] && [ "$(ncalls)" = 0 ]'
+teardown
+setup
+printf '503\n' >"$T/r/wget"
+run band.reset
+check "no pid file, /healthz 503 (starting or stuck) → still alive, exit 3" '[ "$RC" = 3 ] && [ "$(ncalls)" = 0 ]'
 teardown
 setup
 printf '0\n1\n' >"$T/r/wget"

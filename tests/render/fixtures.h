@@ -56,6 +56,10 @@ typedef enum {
     RT_JOURNAL,        /* E4: 系统 › 改动记录 with one of each kind of line (DD5, DD11)   */
     RT_JOURNAL_EMPTY,  /* E4: 改动记录 with nothing in it                               */
     RT_OP_NOTICE,      /* E4: auto revert just turned on, nobody acked (DD18)           */
+    RT_HOME_EXIT,      /* E3: home exit, abroad: CN media + rest on (1:32 left), direct path */
+    RT_HOME_FALLBACK,  /* E3: home not answering: rest on its fallback, ▲ on the exit line */
+    RT_HOME_BLOCKED,   /* E3: proxy in Global mode: the switches grey out, reason below */
+    RT_HOME_NOCOUNTRY, /* E3: country unknown (media / rest hidden), home IP list empty */
     RT_SCENES
 } rt_scene_t;
 

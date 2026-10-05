@@ -35,8 +35,9 @@
 #      once a second for $U60_FALLBACK_LOCK_WAIT (10) s → else exit 4.
 #   3. datad gone? Twice, $U60_FALLBACK_GAP (1) s apart. Alive when the pid in
 #      $ZWRT_DATAD_PID_FILE has a comm starting with "zwrt-datad" (side-by-side
-#      names like zwrt-datad.test count), or when its /healthz answers (a datad
-#      that writes no pid file). Alive either time → exit 3, nothing written.
+#      names like zwrt-datad.test count), or when its /healthz answers at all,
+#      503 included (a datad that writes no pid file). Alive either time → exit
+#      3, nothing written.
 #   4. reads the write needs (cellular.set: get_wwaniface; direct supply: the
 #      current mode, already there → exit 0 with nothing written).
 #   5. one JSON line appended to $ZWRT_DATAD_OPS_DIR/takeover (/data/u60-ops),
@@ -330,7 +331,12 @@ alive() {
             case $comm in zwrt-datad*) return 0 ;; esac
             ;;
     esac
-    [ -n "$HEALTH" ] && "$WGET" -q -T 2 -O /dev/null "$HEALTH" >/dev/null 2>&1 9>&- && return 0
+    [ -n "$HEALTH" ] || return 1
+    # Any HTTP answer is a datad: /healthz says 503 while it is starting or
+    # its executor is stuck, and busybox wget then fails with "server returned
+    # error" (not answering at all is "can't connect" or a timeout).
+    _h=$("$WGET" -q -T 2 -O /dev/null "$HEALTH" 2>&1 9>&-) && return 0
+    case $_h in *"server returned error"*) return 0 ;; esac
     return 1
 }
 alive && done_ 3 "datad running: not written"

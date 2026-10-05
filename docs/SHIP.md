@@ -45,11 +45,15 @@
 | `touch` | 二 | 可用 | `/data/plugins/u60pro-devui/u60pro-devui`、`…/start.sh` | — | 旁路顶替 60 s / 120 s（下面「第二期」的 touch 检查） |
 | `uid` | 二 | 可用 | `/data/plugins/u60pro-devui/u60-uid` | — | direct，— / 120 s（同 touch 的转正后检查） |
 | `web` | 二 | 可用 | 目录 `/data/admin`（txn v=2） | — | direct，— / 120 s（`/` 和一个 `_next/static` js 得 200） |
-| `guard` | 二 | 可用 | `/data/u60-guard/` 下 `GUARD_FILES` + `/etc/init.d/u60-guard`（txn v=2） | — | direct，— / 300 s（下面「第二期」的 guard 检查） |
+| `guard` | 二 | 可用 | `/data/u60-guard/` 下 `GUARD_FILES` + `/etc/init.d/` 下我们的 4 个 init 脚本 `GUARD_INITS`（txn v=2） | — | direct，— / 300 s（下面「第二期」的 guard 检查） |
 | `selftest` | — | 只在设了 `U60S_ROOT`（沙盒）时存在，供 `selftest` 和测试用 | 沙盒里的两个文件 | 沙盒里的两个文件 | 没有旁路（direct），检查 2 s |
 
 - **datad 的检查**（试跑看测试版，转正后看正式版，每 10 秒）：`/state` 的 ts 30 秒不变；进程不在；u60-uid 日志出现放弃 /
   交还原厂界面 / 界面意外退出，或 u60pro-devui 不在；zte-agent 的 netwatch 计数上升。任何一项 → 试跑中止 / 转正后退回。
+  u60-uid 日志读 `/tmp/u60-uid.log.old` + `/tmp/u60-uid.log`（guard 到 64 KB 把它 mv 成 `.old`）。计数跟着轮转走：每次记下两份的 inode
+  和各自的坏行数，上次见过、这次没了的那份（被轮转换掉的旧 `.old`）把它的坏行数累加进「已消失」，所以轮转前刚写的一行照样算新的，
+  旧 `.old` 里原有的坏行被换掉也不会让计数变小、吃掉新的一行。只有一次轮询之间轮转两次（64 KB × 2），中间那份里的行看不到。
+  touch / uid 的界面检查同样。测试用 `DT_LOGREAD` 时是那份输出的简单计数。
 - **agent 的检查**（同上）：每个窗口开头一次「鉴权三项」（未登录 `/api/scenario` 得 401；`/data/zte-agent.env` 里的密码能登录、
   token 能访问 `/api/scenario`；空密码登录不了）；之后每 10 秒：进程在；`:9090` 未登录请求得 401（200 = 管理接口开着，没回答 = 挂了）；
   情景心跳 `/tmp/scenario.heartbeat` 不超过 60 秒没更新（窗口开头的 60 秒不算）；netwatch 计数 `/tmp/netwatch.errors` 不上升
@@ -265,11 +269,18 @@ init.d 超过 25 秒就 kill -9 并当作失败（之后照常按「停不下来
 | `touch` | `/data/plugins/u60pro-devui/u60pro-devui`、`…/start.sh` | `scripts/build-docker.sh` 的 `out/u60pro-devui-lvgl.stripped`（上传时改名 `u60pro-devui`）；`scripts/start.sh` | 旁路顶替 | 60 s / 120 s | 1 |
 | `uid` | `/data/plugins/u60pro-devui/u60-uid` | `scripts/build-docker.sh` 的 `out/u60-uid` | direct | — / 120 s | 1 |
 | `web` | 目录 `/data/admin` | manager `git archive X web` → `npm ci && npm run build` → `web/out/` | direct，目录两次改名 | — / 120 s | 2 |
-| `guard` | `/data/u60-guard/` 下 `GUARD_FILES` 每个文件 + `/etc/init.d/u60-guard` | `git show X:scripts/<名>` | direct，停止标记 + 重启 | — / 300 s | 2（有新文件或 `/etc` 路径时） |
+| `guard` | `/data/u60-guard/` 下 `GUARD_FILES` 每个文件 + `/etc/init.d/<名>`（`GUARD_INITS`） | `git show X:scripts/<名>`；init.d 的 = `scripts/<名>.init` | direct，停止标记 + 只重启 guard | — / 300 s | 2（有 `/etc` 路径，总是） |
 
 - `GUARD_FILES`（u60-ship.sh 里一张表，build-kit 的 guard 清单去掉下面三个后和它一致，测试比对）：`alert-lib.sh u60-guard.sh supervise.sh
   agent-auth.sh chaos.sh doctor.sh config-backup.sh power-sample.sh wan-sources.sh wifi-ab.sh u60-fallback.sh zte-agent.init zwrt-datad.init u60-guard.init`（`u60-fallback.sh` 是 E4 的应急直写脚本，触屏和 zte-agent 都调 `/data/u60-guard/u60-fallback.sh`），
-  加 `/etc/init.d/u60-guard`（内容 = `u60-guard.init`）。设备目录里其余文件（日志、账本、`lan-ipv6-off`、`standby.baseline`、手工备份）一律不碰。
+  加 `/etc/init.d/` 下的 `GUARD_INITS="u60-guard zte-agent zwrt-datad u60-uid"`（内容 = 同一提交的 `scripts/<名>.init`；u60-ship.sh 和 tools/u60 各一张同样的表，
+  上传顺序 = `GUARD_FILES` 再 `GUARD_INITS`）。设备目录里其余文件（日志、账本、`lan-ipv6-off`、`standby.baseline`、手工备份）一律不碰。
+- **init 脚本归 guard**（10-04 起；之前只换 `/etc/init.d/u60-guard`，另外三个改了要手工换再 `u60 record`）：agent、datad、uid 带不了自己的——
+  产物按正式文件的文件名命名，`/data/zte-agent` 和 `/etc/init.d/zte-agent` 同名（datad、uid 一样）。guard 只重启 guard：
+  新的 `zte-agent`、`zwrt-datad`、`u60-uid` 脚本要等那个服务下次启动（ship 那个组件、手工 restart 或重启设备）才生效；
+  tools/u60 ship guard 会逐个说出哪几个会换。原来没有的 init 脚本照「新文件」处理（`-`，退回时删掉）；没被 procd 启用的脚本放进去也不会开机自启。
+- **清单的只记录条目跟着更新**：事务的文件里有只记录名单上的（就是这 4 个 `init.d/<名>`），`done` 时同一次写清单在 ship 行**前面**各写一条
+  `kind=record`（md5 = 新的，`why` = `ship <事务号>`），doctor 不再报它们「不一致」；退回、中止不写；`u60 rollback guard` 本身是一次 ship，写回旧的 md5。
 - **谁管哪个脚本**：`u60-ship.sh`、`datad-trial.sh` 只随每次 ship 上传（K4），不进 guard 组件，guard 退回也不会把它们换回旧版；
   `u60-recover.sh` 只由 `install-recover` 换（先问用户）。
 - **字体 `fonts/`、运营商 logo `operator-logos/` 不进 touch**：它们不是 touch-ui 某个提交的产物（字体是钉死 sha256 的公开下载，logo 由 manager 的 SVG 生成），
@@ -299,7 +310,7 @@ dir=admin <目录指纹> <tgz 的 md5>      产物是 stage/<事务号>/admin.tg
 stage 对 `dir=`：核 tgz 的 md5 → `rm -rf <正式目录>.test` → 解到 `<正式目录>.test` → 核目录指纹 → sync → 删 tgz。正式目录不存在 → 拒绝（第一次安装走装机包）。
 guard 的新文件（正式位置原来没有）照常 `file=`，stage 记旧 md5 为 `-`。
 产物文件名照旧 = 正式文件的文件名：`/etc/init.d/u60-guard` 的产物叫 `u60-guard`（内容 = `scripts/u60-guard.init`，和 `/data/u60-guard/u60-guard.init` 一样），
-meta 里是 `file=u60-guard <md5>`。meta 的 `v` 仍是 1（`dir=` 是新加的键，不升 meta 版本）。
+meta 里是 `file=u60-guard <md5>`；`zte-agent`、`zwrt-datad`、`u60-uid` 同理。meta 的 `v` 仍是 1（`dir=` 是新加的键，不升 meta 版本）。
 
 ### 事务日志 v=2
 
@@ -316,7 +327,7 @@ file=/etc/init.d/u60-guard|<旧>|<新>
   看到 v=2 一律不动（它本来就这样）。
 - **stage 前置**：要写 v=2 时，设备上的 `/data/u60-ship/u60-recover.sh formats` 必须打印含 `2` 的一行；旧版没有 `formats` 命令 → 拒绝，
   原因「先装新版 u60-recover.sh（u60 install-recover，要用户同意）」。
-- **`/etc/` 下文件的上一版不放在 `/etc/init.d`**（免得多一个看起来像服务的文件）：`/etc/init.d/u60-guard` 的上一版是
+- **`/etc/` 下文件的上一版不放在 `/etc/init.d`**（免得多一个看起来像服务的文件）：`/etc/init.d/u60-guard`（其余 3 个同理）的上一版是
   `/data/u60-ship/prev/etc.init.d.u60-guard.prev-<事务号>`。规则写死在两个脚本里：`/etc/init.d/<名>` → `$SHIP_DIR/prev/etc.init.d.<名>.prev-<事务号>`，
   其余路径照旧 `<路径>.prev-<事务号>`。
 - **目录转正**：`mv <正式> <正式>.prev-<事务号>` → sync → `mv <正式>.test <正式>` → sync（两次改名之间断电 = 没有正式目录，按日志退回）。
@@ -380,7 +391,12 @@ file=/etc/init.d/u60-guard|<旧>|<新>
     `.prev` 目录只留 3 份、prepare-rollback、record-kit。
   - guard：正常（新文件、`/etc/init.d` 的上一版在 u60-ship/prev、停止标记、300 秒检查）、doctor 按行 id 比（排除三行、只算 ok→不 ok、顺序和增减行不算）、
     旧 doctor 跑不完 → 中止且什么都没动、ledger 自检不过、两条 kmsg 管道、新 guard 起不来、检查中文件被改、旧版 u60-recover.sh 时拒绝、语法错误、
-    断电（新旧 u60-recover.sh）、recover-live 整组换回并重启、prepare-rollback（新加的文件保持现状）、record-kit（装机包没装的文件记 `-`）。
+    断电（新旧 u60-recover.sh，含换 `zwrt-datad`、`u60-uid` init 时断电）、recover-live 整组换回并重启、prepare-rollback（新加的文件保持现状；
+    上一次 ship 还没带另外 3 个 init 时它们保持现状；退回后 record 行是旧 md5）、record-kit（装机包没装的文件记 `-`）；
+    4 个 init 都换、各有 u60-ship/prev 里的上一版、u60-uid 的 init.d 一次没调、清单 4 条 record 在 ship 行前；原来没有的 init 脚本放进去、退回时删掉；
+    退回时清单不变。
+  - u60-uid 日志轮转：检查中写了放弃再马上被 mv 成 `.old` → 照样退回（旧 `.old` 里本来有放弃行时也一样）；轮转换掉一份有旧放弃的 `.old` → 不误报；
+    旧 `.old` 被删、再轮转两次 → 不误报。
   - install-recover：正常（换上、留 `.prev`、记清单、之后 v=2 能 stage）、md5 / 语法 / 自检 / meta / 有事务 / 事务号各种拒绝；record-kit touch、uid；旁路文件一律 755。
 - `scripts/test/tree-fp/run.sh`：三个脚本对夹具得 `tree.expected`，空目录、链接、带 `|` 或换行的名字、fifo 结果一致。
 - `scripts/test/cross-repo/run.sh`（在主机上跑，容器里只有 /scripts 时跳过）：`GUARD_FILES` = manager `onboard/build-kit.sh` 的 guard 清单去掉

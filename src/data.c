@@ -885,7 +885,10 @@ int data_backend_poll(uint32_t now_ms)
         if (g_backend.sse_fd < 0 && fetch_state_http() > 0)
             changed = 1;
     }
-    if (g_backend.sse_fd < 0 && now_ms >= g_backend.next_retry_ms) {
+    /* same due test as above: 0 = due, signed difference across the wrap
+     * (a plain >= stops retrying for ~49.7 days once now_ms wraps past 0) */
+    if (g_backend.sse_fd < 0 &&
+        (g_backend.next_retry_ms == 0 || (int32_t)(now_ms - g_backend.next_retry_ms) >= 0)) {
         if (open_sse_stream() == 0) {
             changed |= drain_sse_stream();
         } else {

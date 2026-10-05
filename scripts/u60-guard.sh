@@ -12,7 +12,8 @@
 #
 # Contract with zte-agent (lock, heartbeat, takeover marker, /data/alerts):
 # source/manager docs/RELIABILITY.md. The Wi-Fi-on path mirrors
-# zte-agent/src/wifi_radio.rs `apply(true, true)` — keep the two in step.
+# zte-agent/src/wifi_radio.rs `apply(true, true)` — keep the two in step. Only
+# the guard also turns the vendor master switch back on (vendor_wifi_on).
 #
 #   u60-guard.sh          loop forever (procd)
 #   u60-guard.sh once     one round, then exit (tests only: runs real round actions)
@@ -64,6 +65,14 @@ JSONFILTER=${GUARD_JSONFILTER:-jsonfilter}
 # runs for weeks; start.sh opens it for append, so copy-then-truncate is safe.
 CAP_LOGS=${GUARD_CAP_LOGS:-/data/tailscaled.log}
 CAP_BYTES=${GUARD_CAP_BYTES:-1048576}
+# The same for logs in /tmp (RAM), trimmed otherwise only when their writer
+# starts: agent and datad output (supervise.sh opens it with >>) and the touch
+# UI's (u60-uid opens it O_APPEND). Smaller cap: the .old copy is RAM too.
+# /tmp/u60-uid.log (u60-uid opens it O_APPEND for each line) is only the
+# backstop here: the ledger job reads it by line and renames it at
+# UID_LOG_CAP (ledger_uid), so this cap is reached only when the ledger is off.
+CAP_TMP_LOGS=${GUARD_CAP_TMP_LOGS:-/tmp/zte-agent.log /tmp/zwrt-datad.log /tmp/u60pro-devui.log /tmp/u60-uid.log}
+CAP_TMP_BYTES=${GUARD_CAP_TMP_BYTES:-262144}
 # Standby sentinel records (read by doctor.sh; see docs/RELIABILITY.md §8)
 STANDBY_STAT=${GUARD_STANDBY_STAT:-/tmp/standby.stat}
 NETDEV=${GUARD_NETDEV:-/proc/net/dev}
@@ -91,7 +100,8 @@ MSS_RECOVERY=${GUARD_MSS_RECOVERY:-/sys/class/remoteproc/remoteproc0/recovery}
 # log, so a crash-reboot erases the one line that says why (the modem assert
 # above was only found by copying /dev/kmsg to flash by hand). One reader per
 # boot appends /dev/kmsg, minus the audit spam, to $CRASHCAP_DIR/kmsg-<boot>.log
-# and fsyncs that file every 2 s; the newest $CRASHCAP_KEEP boots (in boot
+# and fsyncs that file every 2 s (when it ends, crashcap_keep starts it again,
+# a bounded number of times); the newest $CRASHCAP_KEEP boots (in boot
 # order, crashcap_prune) are kept and
 # a file over $CRASHCAP_MAX is cut to its second half. Nothing happens when
 # $KMSG does not exist (tests).
@@ -99,6 +109,8 @@ CRASHCAP_DIR=${GUARD_CRASHCAP_DIR:-/data/crashcap}
 CRASHCAP_KEEP=${GUARD_CRASHCAP_KEEP:-5}
 CRASHCAP_MAX=${GUARD_CRASHCAP_MAX:-8388608}
 KMSG=${GUARD_KMSG:-/dev/kmsg}
+CRASHCAP_RESTARTS=${GUARD_CRASHCAP_RESTARTS:-5}  # reader ended: started again at most this many times a boot (crashcap_keep)
+CRASHCAP_RESPAWN=${GUARD_CRASHCAP_RESPAWN:-300} # and not sooner than this after its last start
 BOOT_ID_FILE=${GUARD_BOOT_ID_FILE:-/proc/sys/kernel/random/boot_id}
 # Crash watcher (docs/LEDGER.md §9): a second loop that reads the capture file
 # above every WATCH_INTERVAL s for modem crashes and how the link came back,
@@ -134,6 +146,7 @@ MC_TMP=${GUARD_MC_TMP:-/etc/config/zwrt_zte_mc_tmp} # boot mode (power on / char
 STOP_REQ=${GUARD_STOP_REQ:-$STATE/stop-requested}  # "<who> <why>": the next guard start was asked for
 FSYNC_LOG=${GUARD_FSYNC_LOG:-}
 UID_LOG=${GUARD_UID_LOG:-/tmp/u60-uid.log}         # u60-uid's own log: hand-backs and give-ups
+UID_LOG_CAP=${GUARD_UID_LOG_CAP:-65536}             # read and over this: renamed to .old by the ledger job (ledger_uid)
 DATAD_URL=${GUARD_DATAD_URL:-http://127.0.0.1:9460/state} # the loopback listener needs no token
 DATAD_CONTROL=${GUARD_DATAD_CONTROL:-http://127.0.0.1:9460/control} # writes go through datad when it is there (E4 T7c)
 WGET=${GUARD_WGET:-wget}
@@ -299,11 +312,48 @@ lock_wifi() {
 
 unlock_wifi() { exec 9>&-; }
 
+# The vendor's own master switch, `wireless.zte_mbb.wifi_onoff` (B31; what the
+# stock web page and the stock touch screen turn off). While it reads "0" the
+# APs stay down whatever their `disabled` says, so the restore below would be
+# retried forever. Only "0" is off (missing = on, as zte-agent wifi.rs reads
+# it). Switched on the stock way: `zwrt_wlan set {"zte_mbb":{"wifi_onoff":"1",
+# "lbd":<as it stands>}}` (the stock web page sends the band-steering flag
+# along so switching on keeps it; left out when it doesn't read 0 or 1).
+# Through datad's `wifi.set_module` (journaled, like every guard write);
+# directly only when no datad is listening — that body is data-service
+# control.rs wifi_module_args, keep the two in step.
+# DEPLOY ORDER: the guard must not go on a device whose datad predates the
+# stock-format wifi.set_module (that one sends a flat {"SwitchOption":"1"}).
+# A refusal or failure here is logged and the restore goes on: the hostapd
+# poll is the judge. Called with the Wi-Fi lock held (it writes `wireless`).
+vendor_wifi_on() {
+    _onoff=$($UCI -q get wireless.zte_mbb.wifi_onoff 2>/dev/null)
+    [ "$_onoff" = 0 ] || return 0
+    log "vendor Wi-Fi switch (wireless.zte_mbb.wifi_onoff) is off; turning it on"
+    via_datad '{"action":"wifi.set_module","source":"guard","params":{"enabled":1}}' >/dev/null
+    case $? in
+        0) log "vendor Wi-Fi switch on asked through datad" ;;
+        1) log "datad refused or did not answer the vendor Wi-Fi switch; restoring the APs anyway" ;;
+        *)
+            _lbd=$($UCI -q get wireless.zte_mbb.lbd 2>/dev/null)
+            case "$_lbd" in
+                0 | 1) _lbd=",\"lbd\":\"$_lbd\"" ;;
+                *) _lbd= ;;
+            esac
+            $UBUS call zwrt_wlan set "{\"zte_mbb\":{\"wifi_onoff\":\"1\"$_lbd}}" >/dev/null 2>&1
+            ;;
+    esac
+    return 0
+}
+
 # Radios AND AP interfaces: the agent's scenario engine only toggles the APs,
 # but the admin UI can switch a whole radio off, and turning the APs on under
-# a disabled radio would be retried forever to no effect.
+# a disabled radio would be retried forever to no effect. The vendor master
+# switch first (vendor_wifi_on): with the agent gone there is no telling a
+# stock-UI "Wi-Fi off" from any other, and the takeover overrides them all.
 restore_wifi() {
     lock_wifi || return 1
+    vendor_wifi_on
     via_datad '{"action":"wifi.apply","source":"guard","params":{"set":{"wireless.wifi0.disabled":"0","wireless.wifi1.disabled":"0","wireless.main_2g.disabled":"0","wireless.main_5g.disabled":"0"},"reload":true}}' >/dev/null
     case $? in
         0) log "Wi-Fi on asked through datad" ;;
@@ -711,21 +761,29 @@ appenders_only() { # <file>
     return 0
 }
 logcap_round() {
-    for _f in $CAP_LOGS; do
+    logcap_list "$CAP_BYTES" $CAP_LOGS
+    logcap_list "$CAP_TMP_BYTES" $CAP_TMP_LOGS
+}
+logcap_list() { # <cap bytes> <log>...
+    _cap=$1
+    shift
+    for _f; do
         [ -f "$_f" ] || continue
         _sz=$(wc -c 2>/dev/null <"$_f") || continue
-        [ "${_sz:-0}" -gt "$CAP_BYTES" ] || continue
+        [ "${_sz:-0}" -gt "$_cap" ] || continue
         # The fd scan below starts a process per open file on the device
-        # (~2200), so after a refusal it is not repeated for an hour.
-        _skip=$(num "$STATE/logcap-skip")
+        # (~2200), so after a refusal it is not repeated for an hour (per log:
+        # one refused log does not hold the others back).
+        _sk=$STATE/logcap-skip.${_f##*/}
+        _skip=$(num "$_sk")
         [ "$_skip" -gt 0 ] && [ $(( $(uptime_s) - _skip )) -lt 3600 ] && continue
         if ! appenders_only "$_f"; then
             # truncating under a non-append writer leaves a hole the size of the old log
             [ "$_skip" -gt 0 ] || log "not capping $_f: a writer did not open it for append"
-            mkdir -p "$STATE"; uptime_s >"$STATE/logcap-skip"
+            mkdir -p "$STATE"; uptime_s >"$_sk"
             continue
         fi
-        rm -f "$STATE/logcap-skip"
+        rm -f "$_sk"
         cp "$_f" "$_f.old" && : >"$_f" && log "capped $_f at $_sz bytes (previous copy in $_f.old)"
     done
 }
@@ -1359,16 +1417,17 @@ ledger_procs() {
 # u60-uid's log (/tmp, only appended, gone at reboot): give-ups and hand-backs
 # to the vendor UI, plus the owner's requests so a reader can tell those
 # apart. Its u60pro-devui exits are not repeated here: the crash files have them.
-ledger_uid() {
-    [ -f "$UID_LOG" ] || return 0
-    _ua=$(num "$LTMP/uid.pos")
-    _un=$(wc -l 2>/dev/null <"$UID_LOG")
-    isint "$_un" || return 0
-    [ "$_un" -lt "$_ua" ] && _ua=0
-    [ "$_un" -gt "$_ua" ] || return 0
+# Events are numbered by line, counted over the whole boot: $LTMP/uid.pos is
+# "<lines read in the current file> <lines in the files before it>". Once read
+# and over UID_LOG_CAP the file is renamed to .old (u60-uid opens it for each
+# line, so its next line starts a new file) and the count goes on from there.
+# A file that got shorter otherwise (the logcap backstop, or a rename this job
+# did not finish) is handled the same way: what .old holds past the position
+# is read first.
+ledger_uid_lines() { # <file> <from line> <to line> <lines before the file>
     _ub=$(ledger_bootid | cut -c1-8)
-    sed -n "$((_ua + 1)),${_un}p" "$UID_LOG" | {
-        _ul=$_ua
+    sed -n "$(($2 + 1)),${3}p" "$1" | {
+        _ul=$(($4 + $2))
         while IFS= read -r _ux; do
             _ul=$((_ul + 1))
             case "${_ux#* }" in
@@ -1380,8 +1439,53 @@ ledger_uid() {
             ledger_has_id "uid-$_ub-$_ul" "$(num "$LTMP/seq")" && continue
             ledger_append uid ",\"what\":\"$_uw\",\"detail\":$(jstr "$_ux")" "" "uid-$_ub-$_ul" || exit 1
         done
-    } || return 1
-    echo "$_un" >"$LTMP/uid.pos"
+    }
+}
+ledger_uid_pos() { # <lines read> <lines before>
+    echo "$1 $2" >"$LTMP/uid.pos.tmp" && mv -f "$LTMP/uid.pos.tmp" "$LTMP/uid.pos"
+}
+ledger_uid() {
+    _ua=
+    _ubase=
+    { read -r _ua _ubase _rest <"$LTMP/uid.pos"; } 2>/dev/null
+    isint "$_ua" || _ua=0
+    isint "$_ubase" || _ubase=0
+    if [ -f "$UID_LOG" ]; then
+        _un=$(wc -l 2>/dev/null <"$UID_LOG")
+        isint "$_un" || return 0
+    elif [ "$_ua" -gt 0 ]; then
+        _un=0
+    else
+        return 0
+    fi
+    if [ "$_un" -lt "$_ua" ]; then
+        ledger_uid_old || return 1
+    fi
+    if [ "$_un" -gt "$_ua" ]; then
+        ledger_uid_lines "$UID_LOG" "$_ua" "$_un" "$_ubase" || return 1
+        _ua=$_un
+        ledger_uid_pos "$_ua" "$_ubase"
+    fi
+    file_size "$UID_LOG"
+    [ -n "$_fsz" ] && [ "$_fsz" -gt "$UID_LOG_CAP" ] || return 0
+    # all of it is read: u60-uid starts a new file with its next line
+    mv -f "$UID_LOG" "$UID_LOG.old" 2>/dev/null || return 0
+    log "u60-uid log over $UID_LOG_CAP bytes: moved to $UID_LOG.old"
+    ledger_uid_old
+}
+# The current file is now .old, read up to _ua of its lines: read the rest
+# (written between the count and the rename), then count on past it from 0.
+ledger_uid_old() {
+    _uo=$(wc -l 2>/dev/null <"$UID_LOG.old")
+    isint "$_uo" || _uo=0
+    if [ "$_uo" -gt "$_ua" ]; then
+        ledger_uid_lines "$UID_LOG.old" "$_ua" "$_uo" "$_ubase" || return 1
+    else
+        _uo=$_ua # .old is not that file (gone, or an older one): skip past what was read
+    fi
+    _ubase=$((_ubase + _uo))
+    _ua=0
+    ledger_uid_pos 0 "$_ubase"
 }
 
 # datad_degraded (docs/LEDGER.md §11). An episode is the marker's first line
@@ -1772,6 +1876,8 @@ ledger_cov() { # <awake seconds since the last round> <last round's uptime>
     _ccp=$(num "$STATE/crashcap-pid")
     [ "$_ccp" -gt 0 ] && [ -d "/proc/$_ccp" ] || _cbad="$_cbad capture"
     _cul=$(tail -n 1 "$UID_LOG" 2>/dev/null)
+    # just renamed or cut (ledger_uid, logcap): its last line is in .old
+    [ -n "$_cul" ] || _cul=$(tail -n 1 "$UID_LOG.old" 2>/dev/null)
     case "$_cul" in [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T*) ;; *) _cbad="$_cbad uidlog" ;; esac
     [ -d "$CRASHLOG_DIR" ] && [ -r "$CRASHLOG_DIR" ] || _cbad="$_cbad crashlog"
     [ "$(cat "$LTMP/datad.read" 2>/dev/null)" = "$_hn" ] || _cbad="$_cbad datad"
@@ -1792,8 +1898,9 @@ ledger_cov() { # <awake seconds since the last round> <last round's uptime>
 
 # Retention (docs/LEDGER.md §2): whole boots go, oldest first, while the
 # ledger is over LEDGER_TOTAL_MAX or a boot ended more than 30 days ago (by
-# the wall clock of its last line, when that was trusted). The boot being
-# written now is never touched. Runs once an hour.
+# the wall clock of its last line, when that was trusted). Still over with
+# every older boot gone (up for weeks): this boot's oldest segments go, never
+# the one being written. Runs once an hour.
 ledger_retain() {
     _rq=$(num "$LTMP/seq")
     _rw=$(wall_s)
@@ -1810,6 +1917,23 @@ ledger_retain() {
             break
         fi
         rm -f "$_rf"*.jsonl
+    done
+    ledger_trim_this "$_rq"
+}
+
+# ledger_trim_this <seq>: while over LEDGER_TOTAL_MAX, remove this boot's
+# segments oldest part first. The newest part and the one in $LTMP/seg (the
+# segment being appended to) always stay. Part numbers sort as numbers
+# (%03d widens past 999).
+ledger_trim_this() {
+    _tc=$(cat "$LTMP/seg" 2>/dev/null)
+    for _to in $(ls "$(printf '%s/boot-%06d-' "$LEDGER_DIR" "$1")"*.jsonl 2>/dev/null |
+        awk -F- '{ p = $NF; sub(/[.]jsonl$/, "", p); print (p + 0), $0 }' | sort -n | sed '$d' | cut -d' ' -f2-); do
+        _tkb=$(du -sk "$LEDGER_DIR" 2>/dev/null | awk '{ print $1 }')
+        isint "$_tkb" && [ $((_tkb * 1024)) -gt "$LEDGER_TOTAL_MAX" ] || break
+        [ "$_to" = "$_tc" ] && continue
+        rm -f "$_to"
+        log "ledger: over $LEDGER_TOTAL_MAX bytes with no older boot left; ${_to##*/} removed"
     done
 }
 
@@ -2053,6 +2177,10 @@ crashcap_prune() { # <this boot's file>: it counts as kept even before it exists
 # Start the reader for this boot unless it is already running. The reader is
 # a `sh -c` whose pid is what we remember: it outlives nothing, so when the
 # pipeline ends the pid is gone and the fsync loop stops too.
+# A reader started again in the same boot (crashcap_keep, or a guard restart)
+# skips the records this boot's file already has: a new reader of /dev/kmsg
+# starts at the oldest record the kernel still holds. A record's continuation
+# lines (" KEY=value") go with it.
 crashcap_start() {
     [ -e "$KMSG" ] || return 0
     mkdir -p "$CRASHCAP_DIR" "$STATE" 2>/dev/null || return 0
@@ -2061,13 +2189,39 @@ crashcap_start() {
     _p=$(num "$STATE/crashcap-pid")
     [ "$_p" -gt 0 ] && [ -d "$PROC/$_p" ] && return 0
     crashcap_prune "$_f"
-    sh -c 'cat "$1" | awk "$3" >>"$2"' sh "$KMSG" "$_f" '!/ audit: | avc: /{print; fflush()}' &
+    _cs=-1
+    if [ -s "$_f" ]; then
+        _cs=$(tail -n 200 "$_f" 2>/dev/null | awk -F, '/^[0-9]+,[0-9]+,/ { s = $2 } END { print s + 0 }')
+        isint "$_cs" || _cs=-1
+    fi
+    sh -c 'cat "$1" | awk -v s="$4" "$3" >>"$2"' sh "$KMSG" "$_f" \
+        'BEGIN { k = 1 } /^[0-9]+,[0-9]+,/ { split($0, f, ","); k = (f[2] + 0 > s) } k && !/ audit: | avc: / { print; fflush() }' "$_cs" &
     _p=$!
     echo "$_p" >"$STATE/crashcap-pid"
+    echo "$(($(num "$STATE/crashcap-starts") + 1))" >"$STATE/crashcap-starts"
+    uptime_s >"$STATE/crashcap-started"
     # fsync only this file (run.sh used to sync the whole filesystem every 0.3 s)
     sh -c 'while [ -d "$1/$2" ]; do dd if=/dev/null of="$3" conv=notrunc,fsync 2>/dev/null; sleep 2; done' \
         sh "$PROC" "$_p" "$_f" &
     log "kernel log capture to $_f (pid $_p)"
+}
+
+# The reader ends when cat does: EPIPE once the kernel has overwritten records
+# it had not read yet, or anything else. Start it again from the main loop,
+# at most CRASHCAP_RESTARTS times a boot and CRASHCAP_RESPAWN s after its
+# last start, so a reader that cannot stay up does not spin.
+crashcap_keep() {
+    [ -e "$KMSG" ] && [ -f "$STATE/crashcap-pid" ] || return 0
+    _p=$(num "$STATE/crashcap-pid")
+    [ "$_p" -gt 0 ] && [ -d "$PROC/$_p" ] && return 0
+    _n=$(num "$STATE/crashcap-starts")
+    if [ "$_n" -gt "$CRASHCAP_RESTARTS" ]; then
+        [ -f "$STATE/crashcap-gaveup" ] || { log "kernel log capture (pid $_p) ended: started again $CRASHCAP_RESTARTS times this boot already, not again"; : >"$STATE/crashcap-gaveup"; }
+        return 0
+    fi
+    [ $(($(uptime_s) - $(num "$STATE/crashcap-started"))) -ge "$CRASHCAP_RESPAWN" ] || return 0
+    log "kernel log capture (pid $_p) ended: starting it again"
+    crashcap_start
 }
 
 crashcap_round() {
@@ -2090,7 +2244,7 @@ crashcap_round() {
 #     kernel suspend lines (the only evidence that a long pause was sleep, §8).
 # It writes spool files only (§5); the ledger job takes them in. Its state is
 # $LTMP/w.* (tmpfs), so a restarted watcher carries on where the last stopped.
-# The capture pipeline itself is left exactly as it is.
+# The watcher leaves the capture pipeline alone (crashcap_keep restarts it).
 
 isint() { case "$1" in '' | *[!0-9]*) return 1 ;; esac; }
 now_up() { # _nu = whole seconds of uptime, _nud = the same with one decimal (no fork)
@@ -2636,6 +2790,7 @@ round() {
     sms_round
     logcap_round
     crashcap_round
+    crashcap_keep
     watcher_round
     standby_round
     bg_job fp fp_round

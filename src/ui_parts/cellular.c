@@ -12,8 +12,11 @@
  * 同一个才下发，和网络模式一样。下发后 8 秒内不拿读数覆盖开关（固件要重拨）。 */
 enum { MD_DATA, MD_ROAM };
 static lv_obj_t *s_md_sw[2], *s_md_st[2], *s_md_note;
-static uint32_t s_md_arm, s_md_hold;
-static int s_md_pending = -1, s_md_want;
+static uint32_t s_md_hold;
+/* armed id = switch * 2 + the way it is going (ui_arm_*) */
+static ui_arm_t s_md_arm;
+#define MD_ARM_MS 5000
+static int md_armed_row(void) { return s_md_arm.at ? s_md_arm.id / 2 : -1; }
 
 static void md_note(const char *t, uint32_t col)
 {
@@ -30,7 +33,7 @@ static void md_sw_cb(lv_event_t *e)
     int on = lv_obj_has_state(sw, LV_STATE_CHECKED);
     uint32_t now = lv_tick_get();
 
-    if (s_md_pending == id && s_md_want == on && s_md_arm && now - s_md_arm < 5000) {
+    if (ui_arm_tap(&s_md_arm, id * 2 + on, now, MD_ARM_MS)) {
         {
             /* datad reads the whole get_wwaniface object and overrides only
              * what is named here: just the switch pressed, so the other one
@@ -44,17 +47,12 @@ static void md_sw_cb(lv_event_t *e)
         }
         if (id == MD_DATA) { s_aux_data = on; aux_hold(&s_hold_data); }
         else               { s_aux_roam = on; aux_hold(&s_hold_roam); }
-        s_md_arm = 0;
-        s_md_pending = -1;
         s_md_hold = now ? now : 1;
         md_note(on ? TR("已下发，正在拨号…") : TR("已下发，正在断开…"), T->t2);
         return;
     }
     /* 第一下：开关先回原位，整行说清按第二下会怎样 */
     sw_apply(sw, !on);
-    s_md_arm = now ? now : 1;
-    s_md_pending = id;
-    s_md_want = on;
     md_note(id == MD_DATA ? (on ? TR("再按一次：打开移动数据") : TR("再按一次：关掉移动数据，所有设备断网"))
                           : (on ? TR("再按一次：打开数据漫游，按漫游计费") : TR("再按一次：关掉数据漫游，漫游时会断网")),
             T->warnT);
@@ -65,9 +63,7 @@ static void md_refresh(void)
     static char c_st[2][16];
     uint32_t now = lv_tick_get();
     if (!s_md_note) return;
-    if (s_md_pending >= 0 && now - s_md_arm >= 5000) {   /* 没按第二下：作罢 */
-        s_md_pending = -1;
-        s_md_arm = 0;
+    if (ui_arm_expire(&s_md_arm, now, MD_ARM_MS)) {   /* 没按第二下：作罢 */
         md_note(TR("会断网或按漫游计费，切换要按两次确认"), T->t3);
     }
     if (s_md_hold && now - s_md_hold >= 8000) {
@@ -76,7 +72,7 @@ static void md_refresh(void)
     }
     int v[2] = { s_aux_data, s_aux_roam };
     for (int i = 0; i < 2; i++) {
-        if (s_md_pending != i && !s_md_hold) sw_apply(s_md_sw[i], v[i] == 1);
+        if (md_armed_row() != i && !s_md_hold) sw_apply(s_md_sw[i], v[i] == 1);
         set_label_fmt(s_md_st[i], c_st[i], sizeof c_st[i], "%s", v[i] < 0 ? "—" : v[i] ? TR("已开启") : TR("已关闭"));
     }
 }

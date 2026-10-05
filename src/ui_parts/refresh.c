@@ -26,13 +26,20 @@ static void esim_paint(void)
     lv_label_set_text(s_es_hero.st, none ? TR("没有卡") : plain ? TR("使用中 · 实体 SIM 卡") : TR("使用中 · eSIM"));
     lv_label_set_text(s_es_cur, none ? TR("没插卡") : plain ? (s_sim.oper[0] ? s_sim.oper : TR("SIM 卡"))
                                                         : (cur[0] && strcmp(cur, "-") ? cur : "—"));
+    /* 上次切换卡回了 catBusy：状态行标红，那张配置的行上写要怎么办 */
+    int card_busy = 0;
+    for (int i = 0; i < n && i < ESIM_MAX_ROWS; i++) {
+        esim_profile_t p;
+        esim_get_profile(i, &p);
+        card_busy |= p.card_busy;
+    }
     if (net_flash_on(&s_es_flash)) {
         lv_label_set_text(s_es_state, s_es_flash.txt);
         uk_text_color(s_es_state, s_es_flash.col);
     } else {
         lv_label_set_text(s_es_state, none ? TR("插上 SIM 卡或 eSIM 卡后这里显示卡信息")
                                      : plain ? (s_sim.msisdn[0] ? s_sim.msisdn : TR("号码没写在卡里")) : esim_state());
-        uk_text_color(s_es_state, T->t2);
+        uk_text_color(s_es_state, card_busy && !none && !plain ? T->badT : T->t2);
     }
     lv_label_set_text(s_es_hero.rtop, plain ? tail : "");
     lv_label_set_text(s_es_info[0], s_sim.msisdn[0] ? s_sim.msisdn : "—");
@@ -54,16 +61,19 @@ static void esim_paint(void)
         esim_get_profile(i, &p);
         uk_show(s_es_row[i], 1);
         lv_label_set_text(s_es_row_name[i], p.name);
-        lv_label_set_text(s_es_row_sub[i], p.sub);
+        /* catBusy：等和重试都没用，卡要重新上电（10-04） */
+        int busy_row = p.card_busy && !p.armed;
+        lv_label_set_text(s_es_row_sub[i], busy_row ? TR("卡忙：重启设备或拔插卡后再切") : p.sub);
         if (p.enabled && !plain) lv_label_set_text(s_es_hero.rtop, p.sub);
         lv_label_set_text(s_es_row_tag[i],
-            p.going ? TR("切换中…") : p.armed ? TR("再点一次确认切换") : p.enabled ? (plain ? TR("已启用") : TR("使用中")) : "");
+            p.going ? TR("切换中…") : p.armed ? TR("再点一次确认切换") : busy_row ? TR("没切成")
+            : p.enabled ? (plain ? TR("已启用") : TR("使用中")) : "");
         /* 正在用的、切换中的也能点：esim_row_cb 会说一句为什么不动 */
         uk_bg(s_es_row[i], p.armed ? T->fillOrange : p.enabled ? T->accS : T->card);
         uint32_t fg = p.armed ? 0xffffff : T->t1;
         uk_text_color(s_es_row_name[i], fg);
-        uk_text_color(s_es_row_sub[i], p.armed ? T->onFill : T->t3);
-        uk_text_color(s_es_row_tag[i], p.armed ? 0xffffff : p.enabled ? T->accT : T->t2);
+        uk_text_color(s_es_row_sub[i], p.armed ? T->onFill : busy_row ? T->badT : T->t3);
+        uk_text_color(s_es_row_tag[i], p.armed ? 0xffffff : busy_row ? T->badT : p.enabled ? T->accT : T->t2);
     }
     lv_obj_set_height(s_es_list_card, n ? n * ESIM_ROW_H : UK_ROW_H);
 }

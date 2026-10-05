@@ -42,7 +42,7 @@ static const char *const k_names[RT_SCENES] = {
     "bandlock", "datad-silent", "old-datad", "stall", "mf-backup", "mf-alldown",
     "diagnose-running", "diagnose-result", "placement", "op-busy", "op-datad-stuck",
     "op-verifying", "op-rollback-off", "op-rolled-back", "op-rollback-failed", "op-not-applied",
-    "journal", "journal-empty", "op-notice",
+    "journal", "journal-empty", "op-notice", "home-exit", "home-fallback", "home-blocked", "home-nocountry",
 };
 const char *rt_scene_name(int s) { return s >= 0 && s < RT_SCENES ? k_names[s] : "?"; }
 
@@ -318,7 +318,8 @@ const net_view_t *screen_feed_net(void)
     /* the two datad-trouble scenes and the notice / diagnosis / placement ones have the good scene's data */
     const char *name = IS(RT_DATAD_SILENT) || IS(RT_MF_BACKUP) || IS(RT_MF_ALLDOWN) || IS(RT_DIAG_RUNNING) ||
                        IS(RT_DIAG_RESULT) || IS(RT_PLACEMENT) || IS(RT_OP_BUSY) || IS(RT_OP_STUCK) ||
-                       rt_scene_is_op() || IS(RT_JOURNAL) || IS(RT_JOURNAL_EMPTY) || IS(RT_OP_NOTICE) ? "good" : rt_scene_name(rt_scene);
+                       rt_scene_is_op() || IS(RT_JOURNAL) || IS(RT_JOURNAL_EMPTY) || IS(RT_OP_NOTICE) ||
+                       IS(RT_HOME_EXIT) || IS(RT_HOME_FALLBACK) || IS(RT_HOME_BLOCKED) || IS(RT_HOME_NOCOUNTRY) ? "good" : rt_scene_name(rt_scene);
     if (IS(RT_OLD_DATAD)) return NULL;
     if (done != rt_scene) {
         done = rt_scene;
@@ -597,6 +598,7 @@ void esim_get_profile(int i, esim_profile_t *o)
     o->armed = i == s_esim_armed;
 }
 int esim_locked(void) { return 0; }
+int esim_switching(void) { return 0; }
 int esim_loaded(void) { return !IS(RT_LOADING); }
 const char *esim_enabled_iccid(void) { return EMPTY ? "" : "89860000000000000001"; }
 int esim_prefetch(const char *key) { (void)key; return 0; }

@@ -243,4 +243,20 @@ typedef enum { UI_SIM_NONE = 0, UI_SIM_PLAIN, UI_SIM_ESIM } ui_sim_kind_t;
 int ui_iccid_same(const char *a, const char *b);
 ui_sim_kind_t ui_sim_kind(const char *sim_state, const char *modem_iccid, const char *esim_enabled_iccid);
 
+/* ---- two-tap confirm (DESIGN §4: a control that changes the device needs
+ * a second tap within a few seconds) ----
+ * One per screen part. `id` says what the first tap was on — the item and,
+ * where it matters, which way (on/off) — so a tap on something else arms
+ * that instead of confirming. Times are lv_tick_get() milliseconds; `at` is
+ * never 0 while armed (a tick of 0 is stored as 1). */
+typedef struct { unsigned at; int id; } ui_arm_t;
+/* A tap on `id`: 1 = the second tap in time (disarms; go ahead), 0 = this tap
+ * armed it (draw the "tap again" state). */
+int  ui_arm_tap(ui_arm_t *a, int id, unsigned now, unsigned ms);
+/* Armed for `id` (any id when id < 0) and not past `ms`. */
+int  ui_arm_live(const ui_arm_t *a, int id, unsigned now, unsigned ms);
+/* Drop an arm past `ms`; 1 = it just lapsed (redraw the plain state). */
+int  ui_arm_expire(ui_arm_t *a, unsigned now, unsigned ms);
+void ui_arm_clear(ui_arm_t *a);
+
 #endif /* U60PRO_UI_LOGIC_H */

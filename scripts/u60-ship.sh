@@ -61,7 +61,9 @@ CURL=${DT_CURL:-/usr/bin/curl}
 PIDOF=${DT_PIDOF:-pidof}
 PS=${DT_PS:-ps w}
 UID_LOG=${DT_UID_LOG:-/tmp/u60-uid.log}
-LOGREAD=${DT_LOGREAD:-cat $UID_LOG}
+# u60-guard moves the log to <log>.old at 64 KB (mv): read both, .old first
+# (cat goes on past a missing file); uid_bad_count follows the rotation
+LOGREAD=${DT_LOGREAD:-cat $UID_LOG.old $UID_LOG}
 KILL=${DT_KILL:-kill}
 SLEEP=${DT_SLEEP:-sleep}
 DATE=${DT_DATE:-date}
@@ -144,11 +146,18 @@ UBUS=${U60S_UBUS:-ubus}
 TO_DOCTOR=${U60S_TO_DOCTOR:-90}           # s: one doctor.sh run (guard)
 BLANK_MAX=20                              # s: the screen without a UI (touch trial)
 UID_UP=10                                 # s: uid-restart waits this long per start
-# The guard component: these files in /data/u60-guard plus /etc/init.d/u60-guard
-# (= u60-guard.init). Must equal manager onboard/build-kit.sh's guard list
+# The guard component: these files in /data/u60-guard plus GUARD_INITS in
+# /etc/init.d (below). GUARD_FILES must equal manager onboard/build-kit.sh's guard list
 # minus u60-ship.sh, datad-trial.sh, u60-recover.sh (those go up with every
 # ship / with install-recover); wifi-ab.sh is ours only (scripts/test/guard-files).
 GUARD_FILES="alert-lib.sh u60-guard.sh supervise.sh agent-auth.sh chaos.sh doctor.sh config-backup.sh power-sample.sh wan-sources.sh wifi-ab.sh u60-fallback.sh zte-agent.init zwrt-datad.init u60-guard.init"
+# …and our four init scripts in /etc/init.d (<name> = scripts/<name>.init at
+# the same commit; the order is the upload's). Only u60-guard is restarted by
+# a guard ship: a new zte-agent / zwrt-datad / u60-uid script takes effect at
+# that service's next start (its own ship, or the next boot). The agent, datad
+# and uid components cannot carry their own: an upload is named by the live
+# file's base name, and /data/zte-agent and /etc/init.d/zte-agent share one.
+GUARD_INITS="u60-guard zte-agent zwrt-datad u60-uid"
 
 # u60-uid's own wording (src/uid.c logf_). Its file lines have no "u60-uid:"
 # prefix, so the pattern must not require one. "giving up:" with the colon:
@@ -222,8 +231,36 @@ watcher_pid_ok() {
     [ -n "$1" ] && [ -d "/proc/$1" ] && tr '\0' ' ' <"/proc/$1/cmdline" 2>/dev/null | grep -q 'datad-trial\.sh'
 }
 
+# uid_bad_in <file…>: u60-uid's bad lines in those files (0 if none there)
+uid_bad_in() { num "$(cat "$@" 2>/dev/null | grep -E "$UID_BAD" | grep -vc '(requested)')"; }
+inode_of() { ls -i "$1" 2>/dev/null | awk 'NR == 1 { print $1 }'; }
+
+# uid_bad_reset, then uid_bad_count → UB_N: u60-uid's bad lines so far, as a
+# count that only grows across a rotation (not in a $( ), it keeps state).
+# Each call notes the log's and .old's inode and bad lines. A file seen last
+# time that is gone now takes its bad lines into UB_GONE: the last log is
+# still there as the log or (rotated) as the .old; the last .old only as the
+# .old. A bad line written into a file that came and went between two polls
+# (two rotations in one poll) is not seen.
+# With DT_LOGREAD (tests, a logread) it is the plain count of that output.
+uid_bad_reset() { UB_GONE=0 UB_CI= UB_OI= UB_CC=0 UB_OC=0; }
 uid_bad_count() {
-    $LOGREAD 2>/dev/null | grep -E "$UID_BAD" | grep -vc '(requested)'
+    if [ -n "${DT_LOGREAD:-}" ]; then
+        UB_N=$(num "$($LOGREAD 2>/dev/null | grep -E "$UID_BAD" | grep -vc '(requested)')")
+        return 0
+    fi
+    _ci=$(inode_of "$UID_LOG")
+    _oi=$(inode_of "$UID_LOG.old")
+    _cc=$(uid_bad_in "$UID_LOG")
+    _oc=$(uid_bad_in "$UID_LOG.old")
+    if [ -n "$UB_CI" ] && [ "$_ci" != "$UB_CI" ] && [ "$_oi" != "$UB_CI" ]; then
+        UB_GONE=$((UB_GONE + UB_CC))
+    fi
+    if [ -n "$UB_OI" ] && [ "$_oi" != "$UB_OI" ]; then
+        UB_GONE=$((UB_GONE + UB_OC))
+    fi
+    UB_CI=$_ci UB_OI=$_oi UB_CC=$_cc UB_OC=$_oc
+    UB_N=$((UB_GONE + _oc + _cc))
 }
 
 wrapper_pids() {
@@ -513,7 +550,9 @@ watch_datad() {
     fetch_state
     LAST_TS=$(state_ts)
     LAST_CHANGE=$T0
-    UID_BASE=$(uid_bad_count)
+    uid_bad_reset
+    uid_bad_count
+    UID_BASE=$UB_N
     NW_OWN=0
     netwatch_read
     NW_BASE=$NW_VAL
@@ -544,7 +583,8 @@ watch_datad() {
         fi
 
         # 3. screen owner / UI
-        N=$(uid_bad_count)
+        uid_bad_count
+        N=$UB_N
         if [ "$N" -lt "$UID_BASE" ]; then
             UID_BASE=$N # log buffer wrapped
         elif [ "$N" -gt "$UID_BASE" ]; then
@@ -761,7 +801,8 @@ comp_load() {
         guard)
             C_KIND=direct
             for _gf in $GUARD_FILES; do C_FILES="$C_FILES$GUARD_DIR/$_gf "; done
-            C_FILES="$C_FILES$ROOT/etc/init.d/u60-guard"
+            for _gf in $GUARD_INITS; do C_FILES="$C_FILES$ROOT/etc/init.d/$_gf "; done
+            C_FILES=${C_FILES% }
             C_ALLOW_NEW=1
             C_PRE=1
             C_CHECK=300
@@ -1079,7 +1120,9 @@ uid_restart() {
 watch_screen() {
     _ww=$1
     _wpid=${UI_PID:-$(first_pid u60pro-devui)}
-    _wbase=$(uid_bad_count)
+    uid_bad_reset
+    uid_bad_count
+    _wbase=$UB_N
     T0=$(num "$(now)")
     log "开始：界面检查 pid $_wpid，窗口 ${_ww}s，每 ${INTERVAL}s 查一次"
     while :; do
@@ -1102,7 +1145,8 @@ watch_screen() {
             REASON="界面进程跑的不是这一版"
             return 1
         fi
-        N=$(uid_bad_count)
+        uid_bad_count
+        N=$UB_N
         if [ "$N" -lt "$_wbase" ]; then
             _wbase=$N
         elif [ "$N" -gt "$_wbase" ]; then
@@ -1224,7 +1268,7 @@ c_web_check() {
     done
 }
 
-# ── guard (/data/u60-guard + /etc/init.d/u60-guard) ─────────────────────────
+# ── guard (/data/u60-guard + our four /etc/init.d scripts) ──────────────────
 # Before: the OLD doctor's --tsv (cannot run → no promotion). Stop: the
 # stop-requested marker (the ledger then calls the next start a requested
 # one), init.d stop. Check 300 s: the guard runs, one kmsg capture pipeline,
@@ -1820,10 +1864,30 @@ manifest_line() {
         _st="$_st${_st:+,}\"${_e%%|*}\""
     done
     IFS=$_ifs
+    manifest_records
     _nt=
     [ -n "$X_NOTE" ] && _nt=",\"note\":\"$X_NOTE\""
     printf '{"v":1,"kind":"ship","comp":"%s","txn":"%s","commit":"%s","format":%s,"mac_time":%s,"boot_id":"%s","uptime":%s,"files":[%s],"state":[%s]%s}\n' \
         "$X_COMP" "$X_TXN" "$X_COMMIT" "$(num "$X_FORMAT")" "$(num "$X_MACTIME")" "$X_BOOT" "$(num "$(now)")" "$_files" "$_st" "$_nt"
+}
+
+# manifest_records: a kind=record line for every file of this transaction
+# that is also on the record list (the /etc/init.d scripts guard ships), with
+# its new md5 — else doctor would call it changed until a `u60 record`. Printed
+# before the ship line, in the same write (manifest_has_txn stays the test).
+manifest_records() {
+    _ifs=$IFS
+    IFS=$NL
+    for _e in $X_FILES; do
+        IFS=$_ifs
+        _p=${_e%%|*}
+        _n=${_e##*|}
+        _rn=$(record_list | awk -v p="$_p" '$2 == p && $3 != "tree" { print $1; exit }')
+        [ -n "$_rn" ] || continue
+        printf '{"v":1,"kind":"record","name":"%s","path":"%s","md5":"%s","mac_time":%s,"boot_id":"%s","uptime":%s,"why":"ship %s"}\n' \
+            "$_rn" "$_p" "$_n" "$(num "$X_MACTIME")" "$X_BOOT" "$(num "$(now)")" "$X_TXN"
+    done
+    IFS=$_ifs
 }
 
 manifest_has_txn() { grep -q "\"txn\":\"$X_TXN\"" "$MANIFEST" 2>/dev/null; }

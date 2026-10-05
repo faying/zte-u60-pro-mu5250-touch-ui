@@ -14,7 +14,7 @@ DATAD_DIR=/data/plugins/zwrt-datad
 UI_DIR=$DEVUI_DIR/ui
 LEGACY_DIR=/data/u60pro
 LEGACY_UI_DIR=/data/ui
-RC=/etc/rc.local
+RC=${AUTOSTART_RC:-/etc/rc.local}
 HOOK="[ -x $DEVUI_DIR/start.sh ] && sh $DEVUI_DIR/start.sh >/tmp/u60pro-boot.log 2>&1 & # u60pro_devui"
 
 count_ui_pages() {
@@ -32,20 +32,38 @@ migrate_legacy_ui() {
     fi
 }
 
-remove_legacy_rc_hook() {
-    [ -f "$RC" ] || return 0
-    tmp=$(mktemp)
-    grep -v "$DEVUI_DIR/start.sh" "$RC" | grep -v "$LEGACY_DIR/start.sh" | grep -v "u60pro_devui" > "$tmp"
-    cat "$tmp" > "$RC"
-    rm -f "$tmp"
-}
-
-install_rc_hook() {
+# rc.local: drop the old start.sh hooks and put ours before the first exit 0,
+# in one candidate written next to rc.local (/tmp is RAM: a mv from there is a
+# copy, not a rename) with rc.local's mode (cp -p). The candidate must pass
+# sh -n; then sync, mv over rc.local, sync: a power cut leaves the old file or
+# the new one, never half of one (half = nothing starts at boot). Unchanged:
+# nothing written. Changed: the file as it was is kept as $RC.pre-autostart.
+# Fails (1) with rc.local untouched when it is missing or anything goes wrong.
+update_rc_hook() {
     [ -f "$RC" ] || return 1
-    tmp=$(mktemp)
-    awk -v hook="$HOOK" '/^exit 0/ && !d { print hook; d=1 } { print }' "$RC" > "$tmp" \
-        && cat "$tmp" > "$RC"
-    rm -f "$tmp"
+    _rt="$RC.autostart.tmp"
+    rm -f "$_rt"
+    if ! { cp -p "$RC" "$_rt" &&
+        grep -v -e "$DEVUI_DIR/start.sh" -e "$LEGACY_DIR/start.sh" -e "u60pro_devui" "$RC" |
+        awk -v hook="$HOOK" '/^exit 0/ && !d { print hook; d = 1 } { print }' >"$_rt"; }; then
+        rm -f "$_rt"
+        echo "rc.local: could not write $_rt; left as it was" >&2
+        return 1
+    fi
+    if cmp -s "$_rt" "$RC"; then
+        rm -f "$_rt"
+        return 0
+    fi
+    if ! sh -n "$_rt"; then
+        rm -f "$_rt"
+        echo "rc.local: the new version fails sh -n; left as it was" >&2
+        return 1
+    fi
+    if ! { cp -p "$RC" "$RC.pre-autostart" && sync && mv -f "$_rt" "$RC" && sync; }; then
+        rm -f "$_rt"
+        echo "rc.local: could not replace it; left as it was" >&2
+        return 1
+    fi
 }
 
 mkdir -p "$DEVUI_DIR" "$DATAD_DIR" "$UI_DIR"
@@ -56,8 +74,7 @@ rm -f "$DATAD_DIR/u60-datad" "$DEVUI_DIR"/*.new "$DATAD_DIR"/*.new \
       "$DEVUI_DIR/ui.tar.gz" "$DEVUI_DIR/u60pro_ui.tar.gz" "$DEVUI_DIR/boot-trace.log.tmp" 2>/dev/null
 rm -rf "$DEVUI_DIR/ui_extract" 2>/dev/null
 
-remove_legacy_rc_hook
-install_rc_hook
+update_rc_hook
 
 /etc/init.d/u60pro-devui disable 2>/dev/null
 # /etc/init.d/zwrt-datad may now be the procd service from the install kit

@@ -25,5 +25,6 @@ To override it, write `/data/plugins/u60pro-devui/esim.conf`.
 
 ## Notes
 
-- Some cards (e.g. eSTK.me) return `catBusy` after several operations in a short time: the agent has a 5-minute cooldown, the UI shows the reason; don't keep tapping.
+- Some cards (e.g. eSTK.me) sometimes answer a switch with `catBusy`. Waiting and retrying doesn't clear it; restarting the device (or taking the card out and putting it back) does. The agent tries once, reads the card to confirm the profile didn't change, and the screen marks that profile "Busy: restart device or reinsert card".
+- Whether a switch worked is judged by the card's own profile list, not by lpac's exit. After a successful switch the agent removes older enable/disable notifications that a newer one for the same profile has superseded, and sends the switch's own once data is back (otherwise they stay pending for the web page's "send notifications").
 - If you are operating remotely over this U60's own network, don't switch to a profile with no data; once switched, you can't connect back and have to switch back on the screen in front of the device.

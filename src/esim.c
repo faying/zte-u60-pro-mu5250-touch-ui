@@ -50,6 +50,7 @@ static char s_target_iccid[24];
 static char s_target_name[96];
 static long s_t0;
 static char s_msg[160];         /* 最近一次切换的结果 */
+static char s_busy_iccid[24];   /* 上次切到这张时卡回了 catBusy：要重启设备或拔插卡，跟 s_msg 同生同灭 */
 static long s_msg_ms;           /* 出结果的时间：离开页面期间出的结果，回来还要看得到 */
 
 static char s_arm_iccid[24];
@@ -183,7 +184,7 @@ int esim_loaded(void) { return s_loaded; }
 /* 查 job。*reload 置 1 = 有操作刚结束，卡上的列表可能变了。返回 0 = agent 没响应 */
 static int poll_job(int *reload)
 {
-    char data[1024], status[16] = "", msg[128] = "", reboot[8] = "", *b;
+    char data[1024], status[16] = "", msg[256] = "", reboot[8] = "", reason[24] = "", *b;
     long id;
     int code = es_api("GET", "/api/esim/job", NULL, &b);
 
@@ -193,19 +194,26 @@ static int poll_job(int *reload)
     json_str(data, "message", msg, sizeof msg);
     json_str(data, "kind", s_busy_kind, sizeof s_busy_kind);
     json_str(data, "rebooting", reboot, sizeof reboot);
+    json_str(data, "reason", reason, sizeof reason);   /* agent 10-04 起有；旧 agent 没有，下面再看 message */
     s_busy = !strcmp(status, "running");
 
     /* 任何 job 结束都算（网页端的下载/删除也会改列表） */
     if (!s_busy && s_seen_id >= 0 && (id != s_seen_id || strcmp(status, s_seen_status))) {
         *reload = 1;
-        if (id != s_my_job) s_msg[0] = 0;   /* 别人的操作结束了，本机上一次的结果已经过时 */
+        /* 别人的操作结束了，本机上一次的结果已经过时。切换成功后 agent 自己接着
+         * 发这次切换的通知（kind=notifications），那不算，切换结果要留着 */
+        if (id != s_my_job && strcmp(s_busy_kind, "notifications")) { s_msg[0] = 0; s_busy_iccid[0] = 0; }
     }
     s_seen_id = id;
     snprintf(s_seen_status, sizeof s_seen_status, "%s", status);
 
     if (s_my_job) {
         long secs = (now_ms() - s_t0) / 1000;
-        if (id != s_my_job) {           /* agent 重启过，job 丢了 */
+        if (id > s_my_job && !strcmp(s_busy_kind, "notifications")) {
+            /* 没赶上看到切换的结果，槽位已经是 agent 切换成功后自己发通知的那个 job
+             * （只有切换成功、没重启时才有）：算切换成功 */
+            snprintf(s_msg, sizeof s_msg, TR("已切换到 %s（%ld 秒）"), s_target_name, secs);
+        } else if (id != s_my_job) {    /* agent 重启过，job 丢了 */
             snprintf(s_msg, sizeof s_msg, "%s",
                      TR("切换结果未知，"
                         "请看当前配置"));
@@ -218,9 +226,12 @@ static int poll_job(int *reload)
                 snprintf(s_msg, sizeof s_msg,
                          TR("已切换到 %s（%ld 秒）"),
                          s_target_name, secs);   /* 已切换到 X（N 秒） */
-        } else if (!strcmp(status, "error") && strstr(msg, "card is busy")) {
-            /* agent 重试几次后卡仍回 catBusy（eSTK.me 卡偶发），它会拦 5 分钟 */
-            snprintf(s_msg, sizeof s_msg, "%s", TR("卡正忙，没切成，约 5 分钟后再试"));
+        } else if (!strcmp(status, "error") && (!strcmp(reason, "card_busy") || strstr(msg, "card is busy"))) {
+            /* 卡回 catBusy（eSTK.me 卡偶发），agent 读卡确认没切过去。等和重试都
+             * 没用，只有给卡重新上电才清得掉：直接说要重启设备（或拔插卡）。
+             * 状态行只有一行；完整的话写在那张配置的行上（esim_get_profile） */
+            snprintf(s_msg, sizeof s_msg, "%s", TR("卡忙没切成"));
+            snprintf(s_busy_iccid, sizeof s_busy_iccid, "%s", s_target_iccid);
         } else if (!strcmp(status, "error")) {
             snprintf(s_msg, sizeof s_msg, TR("切换失败：%s"), msg);
         } else {
@@ -277,7 +288,7 @@ int esim_poll(int active)
     if (active) s_was_active = 1;
     if (entering) {
         s_arm_iccid[0] = 0;
-        if (!s_my_job && t - s_msg_ms > 60000) s_msg[0] = 0;   /* 太久以前的结果别再挂着 */
+        if (!s_my_job && t - s_msg_ms > 60000) { s_msg[0] = 0; s_busy_iccid[0] = 0; }   /* 太久以前的结果别再挂着 */
     }
 
     if (entering || t - s_poll_ms >= (s_my_job ? ES_JOB_MS : s_poll_gap)) {
@@ -364,6 +375,8 @@ const char *esim_state(void)
         const char *k = !strcmp(s_busy_kind, "switch")   ? TR("网页端正在切换") :
                         !strcmp(s_busy_kind, "download") ? TR("网页端正在下载") :
                         !strcmp(s_busy_kind, "delete")   ? TR("网页端正在删除") :
+                        /* 切换成功后 agent 自己发通知，网页端点「发送通知」也是这个 */
+                        !strcmp(s_busy_kind, "notifications") ? TR("正在发送 eSIM 通知") :
                                                            TR("网页端正在操作");
         snprintf(tmp, sizeof tmp, "%s", k);
     }
@@ -448,7 +461,10 @@ void esim_get_profile(int index, esim_profile_t *out)
     out->enabled = e->enabled;
     out->going = s_my_job && !strcmp(s_target_iccid, e->iccid);
     out->armed = armed_live && !strcmp(s_arm_iccid, e->iccid);
+    out->card_busy = !out->going && s_busy_iccid[0] && !strcmp(s_busy_iccid, e->iccid);
 }
+
+int esim_switching(void) { return s_my_job != 0; }
 
 /* ---- 切换 ---- */
 
@@ -511,6 +527,7 @@ int esim_select(int index)
     s_poll_ms = t;
     s_busy = 1;
     s_msg[0] = 0;
+    s_busy_iccid[0] = 0;
     fprintf(stderr, "esim: switch to %s started (job %ld)\n", e->iccid, s_my_job);
     return ESIM_SEL_STARTED;
 }

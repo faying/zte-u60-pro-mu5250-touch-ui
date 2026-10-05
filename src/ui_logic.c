@@ -379,3 +379,31 @@ int ui_control_fallback_cmd(char *out, size_t n, const char *script, const char 
     }
     return 1;
 }
+
+/* ---- two-tap confirm ---- */
+int ui_arm_live(const ui_arm_t *a, int id, unsigned now, unsigned ms)
+{
+    return a->at && (id < 0 || a->id == id) && now - a->at < ms;
+}
+
+int ui_arm_tap(ui_arm_t *a, int id, unsigned now, unsigned ms)
+{
+    if (ui_arm_live(a, id, now, ms)) {
+        a->at = 0;
+        return 1;
+    }
+    a->at = now ? now : 1;
+    a->id = id;
+    return 0;
+}
+
+int ui_arm_expire(ui_arm_t *a, unsigned now, unsigned ms)
+{
+    if (a->at && now - a->at >= ms) {
+        a->at = 0;
+        return 1;
+    }
+    return 0;
+}
+
+void ui_arm_clear(ui_arm_t *a) { a->at = 0; }

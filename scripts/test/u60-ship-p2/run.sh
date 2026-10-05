@@ -208,7 +208,8 @@ EOF
     export U60S_GUARD_STOPREQ=$T/guardtmp/stop-requested U60S_KMSG=$T/kmsg U60S_AGENT_URL=http://agent.test:9090 U60S_TO_DOCTOR=3
     unset U60S_CRASH_AT U60S_DIR U60S_LOG U60S_TEST_LOG U60S_MIN_FREE_KB U60S_TO_INITD U60S_UID_STATE
     export DT_UPTIME=$T/uptime DT_PIDFILE=$T/trial.pid DT_CURL=$T/bin/curl DT_PIDOF=$T/bin/pidof
-    export DT_LOGREAD="cat $T/uidlog" DT_KILL=$T/bin/kill DT_SLEEP=$T/bin/sleep DT_DATE=$T/bin/date DT_SETSID=$T/bin/setsid
+    unset DT_LOGREAD # the default reader: <log>.old, then <log>
+    export DT_UID_LOG=$T/uidlog DT_KILL=$T/bin/kill DT_SLEEP=$T/bin/sleep DT_DATE=$T/bin/date DT_SETSID=$T/bin/setsid
     export DT_RC=$T/rc.local DT_INITD=$T/bin/none
     export U60R_ROOT=$R
     unset U60R_DIR U60R_BOOT_ID
@@ -382,6 +383,65 @@ grep -qx phase=check $R/data/u60-ship/txn && [ ! -f $T/once ] && { touch $T/once
 EOF
 run $TT
 check "$CASE: rolled back" '[ "$(phase)" = rolledback ] && reason | grep -q "界面异常（u60-uid：giving up"'
+teardown
+
+# u60-guard moves /tmp/u60-uid.log to .old at 64 KB (mv); u60-uid then
+# starts a new file with its next line
+setup
+CASE="touch: u60-uid gives up just before its log is rotated"
+upload_touch
+stage $TT
+cat >"$T/hook" <<EOF
+grep -qx phase=check $R/data/u60-ship/txn && [ ! -f $T/once ] && { touch $T/once; echo "giving up: 2 launches did not stay up" >>$T/uidlog; mv -f $T/uidlog $T/uidlog.old; }
+:
+EOF
+run $TT
+check "$CASE: rolled back all the same" '[ "$(phase)" = rolledback ] && reason | grep -q "界面异常（u60-uid：giving up"'
+teardown
+
+setup
+CASE="touch: the uid log rotates during the check, nothing bad in it"
+echo "giving up: an old one, before this ship" >"$T/uidlog.old"
+upload_touch
+stage $TT
+cat >"$T/hook" <<EOF
+grep -qx phase=check $R/data/u60-ship/txn && [ ! -f $T/once ] && { touch $T/once; echo "launched u60pro-devui pid 1 (attempt 1 of 2 before giving up)" >>$T/uidlog; mv -f $T/uidlog $T/uidlog.old; }
+:
+EOF
+run $TT
+check "$CASE: done (an old .old replaced is not a new bad line)" '[ "$(phase)" = done ] && [ -f "$T/uidlog.old" ]'
+teardown
+
+setup
+CASE="touch: u60-uid gives up just before a rotation that replaces an old .old with a bad line"
+echo "giving up: an old one, before this ship" >"$T/uidlog.old"
+upload_touch
+stage $TT
+cat >"$T/hook" <<EOF
+grep -qx phase=check $R/data/u60-ship/txn && [ ! -f $T/once ] && { touch $T/once; echo "giving up: 2 launches did not stay up" >>$T/uidlog; mv -f $T/uidlog $T/uidlog.old; }
+:
+EOF
+run $TT
+check "$CASE: rolled back" '[ "$(phase)" = rolledback ] && reason | grep -q "界面异常（u60-uid：giving up: 2 launches"'
+teardown
+
+setup
+CASE="touch: an old .old with a bad line deleted during the check, then rotated twice"
+echo "giving up: an old one, before this ship" >"$T/uidlog.old"
+echo "u60pro-devui pid 1 ended: exit 1 (an old one)" >>"$T/uidlog"
+upload_touch
+stage $TT
+cat >"$T/hook" <<EOF
+if grep -qx phase=check $R/data/u60-ship/txn; then
+    if [ ! -f $T/once ]; then touch $T/once; rm -f $T/uidlog.old
+    elif [ ! -f $T/twice ]; then touch $T/twice; mv -f $T/uidlog $T/uidlog.old; echo "launched u60pro-devui pid 1 (attempt 1 of 2 before giving up)" >>$T/uidlog
+    elif [ ! -f $T/thrice ]; then touch $T/thrice; mv -f $T/uidlog $T/uidlog.old
+    fi
+fi
+:
+EOF
+run $TT
+check "$CASE: done (nothing new)" '[ "$(phase)" = done ] && [ -f "$T/thrice" ]'
 teardown
 
 setup
@@ -816,6 +876,7 @@ teardown
 # ═══ T15 guard ══════════════════════════════════════════════════════════════
 TG=20261001-120000-guard
 GFILES="alert-lib.sh u60-guard.sh supervise.sh agent-auth.sh chaos.sh doctor.sh config-backup.sh power-sample.sh wan-sources.sh wifi-ab.sh u60-fallback.sh zte-agent.init zwrt-datad.init u60-guard.init"
+GINITS="u60-guard zte-agent zwrt-datad u60-uid" # /etc/init.d (u60-ship.sh GUARD_INITS)
 doctor_src() { # doctor_src <OLD|NEW>: a doctor that prints $T/tsv-<v> and passes --ledger-selftest
     cat <<EOF
 #!/bin/sh
@@ -840,12 +901,17 @@ guard_old() {
             *) printf '#!/bin/sh\n# OLD %s\n:\n' "$f" >"$GD/$f" ;;
         esac
     done
-    printf '#!/bin/sh /etc/rc.common\n# OLD init\n' >"$R/etc/init.d/u60-guard"
-    chmod 755 "$R/etc/init.d/u60-guard"
+    mkdir -p "$T/init-old" "$T/init-new"
+    for n in $GINITS; do
+        printf '#!/bin/sh /etc/rc.common\n# OLD init %s\n' "$n" >"$R/etc/init.d/$n"
+        chmod 755 "$R/etc/init.d/$n"
+        cp "$R/etc/init.d/$n" "$T/init-old/$n"
+    done
     for f in ledger lan-ipv6-off standby.baseline u60-guard.sh.pre-lanv6-20260924; do echo keep >"$GD/$f"; done
     GI_OLD=$(md5 "$R/etc/init.d/u60-guard") GS_OLD=$(md5 "$GD/u60-guard.sh")
     "$T/bin/guard-initd" start
     : >"$T/guard-initd.log"
+    : >"$T/uid-initd.log"
     : >"$T/kmsg"
     "$T/bin/proc_new" 7400 /bin/sh cat "$T/kmsg"
     "$T/bin/proc_new" 7401 /bin/sh sh -c 'cat "$1" | awk "$3" >>"$2"' sh "$T/kmsg" /data/crashcap/x '!/ audit: /'
@@ -857,10 +923,13 @@ upload_guard() { # upload_guard [txn] [variant: ok|broken]
     _s=$R/data/u60-ship/stage/$_t
     mkdir -p "$_s"
     _m=
-    for f in $GFILES u60-guard; do
+    for f in $GFILES $GINITS; do
         case "$f" in
             doctor.sh) doctor_src NEW >"$_s/$f" ;;
-            u60-guard) printf '#!/bin/sh /etc/rc.common\n# NEW init %s\n' "$_t" >"$_s/$f" ;;
+            u60-guard | zte-agent | zwrt-datad | u60-uid)
+                printf '#!/bin/sh /etc/rc.common\n# NEW init %s %s\n' "$f" "$_t" >"$_s/$f"
+                cp "$_s/$f" "$T/init-new/$f"
+                ;;
             u60-guard.sh) printf '#!/bin/sh\n# NEW %s %s\n:\n' "$f" "$_t" >"$_s/$f"; [ "$2" = broken ] && echo '# BROKEN' >>"$_s/$f" ;;
             *) printf '#!/bin/sh\n# NEW %s %s\n:\n' "$f" "$_t" >"$_s/$f" ;;
         esac
@@ -869,8 +938,19 @@ upload_guard() { # upload_guard [txn] [variant: ok|broken]
     GI_NEW=$(md5 "$_s/u60-guard") GS_NEW=$(md5 "$_s/u60-guard.sh") GW_NEW=$(md5 "$_s/wifi-ab.sh")
     meta "$_t" guard "$_m"
 }
+# inits_are <old|new>: all four /etc/init.d scripts are that version (a
+# missing init-old copy = it was not there before: it must be gone)
+inits_are() {
+    for n in $GINITS; do
+        if [ -f "$T/init-$1/$n" ]; then cmp -s "$T/init-$1/$n" "$R/etc/init.d/$n" || return 1
+        else [ ! -e "$R/etc/init.d/$n" ] || return 1; fi
+    done
+}
+# rec_md5 <name>: the md5 of the manifest's last kind=record line for name
+rec_md5() { grep '"kind":"record"' "$U60S_MANIFEST" 2>/dev/null | grep "\"name\":\"$1\"" | tail -n 1 | sed -n 's/.*"md5":"\([^"]*\)".*/\1/p'; }
 gold() { # every guard file is the old one again, the new one gone
     check "$CASE: all files old again, wifi-ab.sh (new) deleted" '[ "$(md5 "$GD/u60-guard.sh")" = "$GS_OLD" ] && [ "$(md5 "$R/etc/init.d/u60-guard")" = "$GI_OLD" ] && [ ! -e "$GD/wifi-ab.sh" ] && grep -q OLD "$GD/doctor.sh"'
+    check "$CASE: all four init scripts old again" 'inits_are old'
 }
 
 setup
@@ -882,7 +962,12 @@ check "$CASE: staged as v=2 (new file, /etc path)" '[ "$RC" = 0 ] && [ "$(txnv)"
 run $TG
 check "$CASE: done" '[ "$RC" = 0 ] && [ "$(phase)" = done ]'
 check "$CASE: every file new, the new one in place" '[ "$(md5 "$GD/u60-guard.sh")" = "$GS_NEW" ] && [ "$(md5 "$R/etc/init.d/u60-guard")" = "$GI_NEW" ] && [ "$(md5 "$GD/wifi-ab.sh")" = "$GW_NEW" ] && [ -x "$GD/wifi-ab.sh" ]'
-check "$CASE: the init script's .prev in u60-ship/prev, nothing extra in /etc/init.d" '[ "$(md5 "$R/data/u60-ship/prev/etc.init.d.u60-guard.prev-$TG")" = "$GI_OLD" ] && [ "$(ls "$R/etc/init.d")" = u60-guard ]'
+check "$CASE: the init script's .prev in u60-ship/prev, nothing extra in /etc/init.d" '[ "$(md5 "$R/data/u60-ship/prev/etc.init.d.u60-guard.prev-$TG")" = "$GI_OLD" ] && [ "$(ls "$R/etc/init.d" | tr "\n" " ")" = "u60-guard u60-uid zte-agent zwrt-datad " ]'
+check "$CASE: all four init scripts new, 755, each .prev in u60-ship/prev" '_g=1; for n in $GINITS; do [ -x "$R/etc/init.d/$n" ] && cmp -s "$T/init-old/$n" "$R/data/u60-ship/prev/etc.init.d.$n.prev-$TG" || _g=0; done; [ $_g = 1 ] && inits_are new'
+check "$CASE: agent, datad and u60-uid not restarted (u60-uid init.d never called)" '[ ! -s "$T/uid-initd.log" ]'
+check "$CASE: manifest: a record line per init with its new md5, before the ship line, one write" '_g=1; for n in $GINITS; do [ "$(rec_md5 init.d/$n)" = "$(md5 "$T/init-new/$n")" ] || _g=0; done; [ $_g = 1 ] && [ "$(grep -c "\"why\":\"ship $TG\"" "$U60S_MANIFEST")" = 4 ] && tail -n 1 "$U60S_MANIFEST" | grep -q "\"kind\":\"ship\""'
+check "$CASE: manifest: the other three inits with their prev" "grep -q '\"path\":\"$R/etc/init.d/zwrt-datad\",\"md5\":\"$(md5 "$T/init-new/zwrt-datad")\",\"prev\":\"$R/data/u60-ship/prev/etc.init.d.zwrt-datad.prev-$TG\"' '$U60S_MANIFEST'"
+check "$CASE: doctor's view: every manifest row matches the files" '_g=1; for n in $GINITS; do [ "$(rec_md5 init.d/$n)" = "$(md5 "$R/etc/init.d/$n")" ] || _g=0; done; [ $_g = 1 ]'
 check "$CASE: old doctor asked before, stop-requested written, stop then start" '[ -f "$T/tmp/doctor-before.tsv" ] && [ "$(cat "$T/guardtmp/stop-requested")" = "u60-ship $TG" ] && [ "$(cut -d" " -f1 "$T/guard-initd.log" | tr "\n" " ")" = "stop start " ]'
 check "$CASE: the 300 s check ran" "logged 'guard 检查，窗口 300s' && logged 'doctor --ledger-selftest 通过' && logged 'doctor --tsv 和换之前比没有变坏'"
 check "$CASE: logs, ledger and hand-made files untouched" '[ "$(cat "$GD/ledger")" = keep ] && [ -f "$GD/lan-ipv6-off" ] && [ -f "$GD/u60-guard.sh.pre-lanv6-20260924" ]'
@@ -949,6 +1034,30 @@ upload_guard "" broken
 stage $TG
 run $TG
 check "$CASE: rolled back, the old guard running" '[ "$(phase)" = rolledback ] && reason | grep -q "^新版起不来：guard 没起来" && [ -d "$T/proc/7300" ]'
+check "$CASE: no side file left in /etc/init.d" '[ "$(ls "$R/etc/init.d" | tr "\n" " ")" = "u60-guard u60-uid zte-agent zwrt-datad " ]'
+check "$CASE: manifest untouched (no ship, no record lines)" '! grep -q "\"kind\":\"record\"" "$U60S_MANIFEST" 2>/dev/null && ! grep -q "$TG" "$U60S_MANIFEST" 2>/dev/null'
+gold
+teardown
+
+setup
+CASE="guard: an init script not there before (zwrt-datad)"
+guard_old
+rm -f "$R/etc/init.d/zwrt-datad" "$T/init-old/zwrt-datad"
+upload_guard
+stage $TG
+check "$CASE: staged, the init as a new file" '[ "$RC" = 0 ] && grep -qx "file=$R/etc/init.d/zwrt-datad|-|$(md5 "$T/init-new/zwrt-datad")" "$R/data/u60-ship/txn"'
+run $TG
+check "$CASE: done, placed 755, no prev" '[ "$(phase)" = done ] && cmp -s "$T/init-new/zwrt-datad" "$R/etc/init.d/zwrt-datad" && [ -x "$R/etc/init.d/zwrt-datad" ] && [ ! -e "$R/data/u60-ship/prev/etc.init.d.zwrt-datad.prev-$TG" ]'
+teardown
+
+setup
+CASE="guard: an init script not there before, the new guard will not start"
+guard_old
+rm -f "$R/etc/init.d/zwrt-datad" "$T/init-old/zwrt-datad"
+upload_guard "" broken
+stage $TG
+run $TG
+check "$CASE: rolled back, the init that was not there deleted again" '[ "$(phase)" = rolledback ] && [ ! -e "$R/etc/init.d/zwrt-datad" ]'
 gold
 teardown
 
@@ -1021,7 +1130,7 @@ stage $TG
 check "$CASE: stage refused" '[ "$RC" = 1 ] && grep -q "没有 file=wifi-ab.sh" "$T/out"'
 teardown
 
-for p in promote:moved:alert-lib.sh promote:moved:wifi-ab.sh promote:prev-synced:u60-guard promote:moved:u60-guard check:begin rollback:files:u60-guard; do
+for p in promote:moved:alert-lib.sh promote:moved:wifi-ab.sh promote:prev-synced:u60-guard promote:moved:u60-guard promote:moved:zwrt-datad promote:prev-synced:u60-uid promote:moved:u60-uid check:begin rollback:files:u60-guard; do
     setup
     CASE="guard: power cut at $p"
     guard_old
@@ -1065,6 +1174,22 @@ check "$CASE: prepared; the added file stays as it is" "[ \$RC = 0 ] && grep -qx
 stage 20261001-130000-guard
 run 20261001-130000-guard
 check "$CASE: back to the old files (init from u60-ship/prev)" '[ "$(phase)" = done ] && [ "$(md5 "$R/etc/init.d/u60-guard")" = "$GI_OLD" ] && [ "$(md5 "$GD/u60-guard.sh")" = "$GS_OLD" ]'
+check "$CASE: all four inits old again; their record lines say so" '_g=1; for n in $GINITS; do [ "$(rec_md5 init.d/$n)" = "$(md5 "$T/init-old/$n")" ] || _g=0; done; [ $_g = 1 ] && inits_are old'
+teardown
+
+setup
+CASE="guard: prepare-rollback when the last ship had only u60-guard's init (before GUARD_INITS)"
+guard_old
+upload_guard
+stage $TG
+run $TG
+# that ship as the old u60-ship.sh wrote it: no zte-agent / zwrt-datad / u60-uid
+for n in zte-agent zwrt-datad u60-uid; do
+    sed -i "s#,{\"path\":\"$R/etc/init.d/$n\",\"md5\":\"[0-9a-f]*\",\"prev\":\"[^\"]*\"}##" "$U60S_MANIFEST"
+done
+sh "$SHIP" prepare-rollback guard 20261001-130000-guard 1790000100 >"$T/out" 2>&1
+RC=$?
+check "$CASE: prepared; those three stay as they are, u60-guard's from its prev" "[ \$RC = 0 ] && ! grep '\"kind\":\"ship\"' '$U60S_MANIFEST' | grep -q '\"path\":\"$R/etc/init.d/zte-agent\"' && grep -qx \"file=zte-agent \$(md5 \"\$T/init-new/zte-agent\")\" '$R/data/u60-ship/stage/20261001-130000-guard/meta' && grep -qx \"file=u60-guard $GI_OLD\" '$R/data/u60-ship/stage/20261001-130000-guard/meta' && logged '$R/etc/init.d/zte-agent 在那次上机以前没有，保持现在的版本'"
 teardown
 
 setup

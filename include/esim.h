@@ -53,6 +53,9 @@ typedef struct {
     int  armed;     /* first tap landed on this one; a second tap within the
                       * confirm window switches to it */
     int  going;     /* a switch to this profile is in flight */
+    int  card_busy; /* the last switch to this profile failed with catBusy:
+                     * the card needs a restart of the device (or to be taken
+                     * out and put back) before it switches */
 } esim_profile_t;
 
 void esim_get_profile(int index, esim_profile_t *out);
@@ -61,6 +64,10 @@ void esim_get_profile(int index, esim_profile_t *out);
  * another client, or the agent isn't responding) — mirrors esim_list_html()'s
  * "ro" vs clickable distinction. */
 int esim_locked(void);
+
+/* A switch started on this screen is waiting for its answer (esim_locked()
+ * also covers another client's job, e.g. the agent sending notifications). */
+int esim_switching(void);
 
 /* A profile list has been read from the card at least once: an empty list
  * then means "no eSIM profiles", not "still reading". */

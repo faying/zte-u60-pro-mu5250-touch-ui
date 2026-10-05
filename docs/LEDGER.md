@@ -13,7 +13,7 @@ u60-guard 在设备上记一本跨重启的事件账：整机重启、基带崩�
   doctor 校准，以后的 agent、触屏、网页）每个事件写一个暂存文件，账本任务收进来（第 5 节）。
 - **账本工作绝不拖累 guard 的本职。** 账本任务在后台子 shell 里跑，guard 主循环不等它；上一个任务还在，
   这一轮就不起新的，记一段覆盖缺口。子 shell 里出了致命错误（比如算术碰到坏数字），只死子 shell。
-- **kmsg 落盘管道不动。** 崩溃由单独的观察循环读落盘文件发现（第 9 节）。
+- **观察循环不碰 kmsg 落盘管道。** 崩溃由单独的观察循环读落盘文件发现（第 9 节）；落盘读取进程退出后由 guard 主循环有限次地重起（第 2 节 `crashcap-starts`）。
 - **先落盘，后推进。** 任何「读到哪了」「补记到哪了」「暂存删不删」，都等对应的账本行完整写进去并 fsync 之后才推进；
   中途被杀，下次靠事件编号去重（第 5 节）。
 - **没覆盖就是没测。** 数据源没在工作的时段不算「0 次」，报告写「没测」并列出缺口。
@@ -44,7 +44,7 @@ u60-guard 在设备上记一本跨重启的事件账：整机重启、基带崩�
 - `/tmp/u60-guard/ledger/`：`seq`（本次开机的序号）、`n`（行号）、`seg`（当前段）、`writer.lock`、`job.pid`、`boot.done`、
   `net`（网络缓存，账本任务写：一行 `<开机秒数> <rat> <band> <nrband> <服务网 MCC-MNC> <SIM 归属 MCC-MNC>`，不知道的写 `-`）、
   `acc.*`（每小时累计）、`cov`（覆盖记录）、`procs`（datad/agent/u60-uid 的 pid 和启动时间）、`fp`（被测程序的 md5 缓存，第 12 节）、
-  `budget`（当天已写字节）、`cl.new`（这一轮有新 crashlog 的程序）、`uid.pos`（u60-uid 日志读到第几行）、
+  `budget`（当天已写字节）、`cl.new`（这一轮有新 crashlog 的程序）、`uid.pos`（`<当前 u60-uid 日志读到第几行> <之前的日志一共几行>`；日志读完且超过 64 KB 就改名成 `.old`，从新文件接着数）、
   `datad.ep`（开着的降级 `<since> <开始的开机秒数>`）、`datad.seen`（本次开机开始过的 since）、`clock.last`（上次记的时钟结论）、
   `datad.read`（最近一次读到 datad `/state` 的开机秒数，第 8 节的 `datad` 数据源）、`rounds`（主循环每轮一行，第 6 节）、
   `acc`（本小时累计，第 6 节）、`cov`（没在工作的数据源和开始时刻）、`cpumax.<policy>`（本次开机见过的最高 `scaling_max_freq`）、
@@ -57,10 +57,11 @@ u60-guard 在设备上记一本跨重启的事件账：整机重启、基带崩�
   - `w.link`：`<默认路由 0|1> <本次开机见过默认路由 0|1>`；`w.pk`：`<开机秒数> <包数> <每分钟包数>`；`w.cnt`：`<link 计数> <sleep 计数>`。
   - `w.slept`：有证据的休眠 `<from> <to> <pm|stats>`，每小时摘要的 `asleep` 只数这些（C14）。
 - `/tmp/u60-guard/crashcap-cuts`：guard 原地截短落盘文件的次数（第 9 节）。
+- `/tmp/u60-guard/crashcap-starts`、`crashcap-started`：这次开机 kmsg 落盘读取进程启动过几次、最近一次在开机第几秒。读取进程退出（如 `cat /dev/kmsg` 读得太慢被内核覆盖、返回 EPIPE）后，guard 主循环过 300 秒再起一次，一次开机最多再起 5 次（`crashcap_keep`）；新起的只追加文件里还没有的记录（按 kmsg 序号），续行跟着它的记录走。
 - `/tmp/u60-guard/clock-ok`：时钟结论，guard 和 doctor 共用（第 7 节）。
 - `/tmp/ledger-spool/`：丢了无妨的暂存事件。
 
-**保留**：总量（段 + spool + state）≤ 16 MB、≤ 30 天，从最老的开机整段删；绝不改写或删除本次开机正在写的段。每小时换小时时查一次；
+**保留**：总量（段 + spool + state）≤ 16 MB、≤ 30 天，从最老的开机整段删；更早的开机删完还超（一次开机连着跑了几周），就从本次开机最老的段删起；绝不改写或删除本次开机正在写的段（也不删本次开机编号最大的段）。每小时换小时时查一次；
 「30 天」按那次开机最后一行的墙钟 `t` 算（null 的只在超量时删）。
 **预算**：每天写入 ≤ 1 MB（只算账本段；`state/acc.last` 每轮重写一次、约 1–2 KB、一天约 1440 次，是状态不是账本行，不计入）。超了以后只写关键事件（第 4 节标 fsync 的）和每小时的 `hour*` 三行（`hour` 里 `budget:1`），其余丢弃。
 **空间**：`/data` 剩余不到 100 MB：账本只写 `boot` 行；生产方改写 `/tmp/ledger-spool/`（事件里带 `lowspace:1`）；`/data/ledger/spool/`
@@ -107,7 +108,7 @@ u60-guard 在设备上记一本跨重启的事件账：整机重启、基带崩�
 | `thermal` | 观察循环 | kmsg 里原厂过热等级变化 | `th-<boot8>-<kmsg 序号>` | `level`（如 `0x3`）；`line`。每次开机约 150 秒时原厂会设一次初始等级，读的一方只数比本次开机第一条更高的 | |
 | `svc_exit` | 账本任务 | crashlog 目录里出现新文件 | `cl-<文件 md5 前 12 位>` | `prog`；`file`；`status`（文件第 2 行）；`found`：`round` / `boot_init`；`crash_up` 文件名里的开机秒数 | ✔ |
 | `proc_restart` | 账本任务 | datad、agent、u60-uid 的 pid 或进程启动时间变了（不在了先不记，回来时记） | `pr-<boot8>-<新 pid>-<启动时间>` | `prog`；`old`、`new` pid；`crashlog`（这一轮看到过它的新 crashlog 没有，0/1）；`ship`（1 = 上机事务重启的：`/data/u60-ship/txn` 是本次开机、对应组件（u60-uid 对应 touch 或 uid）、还在跑或结束不到 10 分钟；10-04 加，旧行没有） | ✔ |
-| `uid` | 账本任务 | u60-uid 日志里的放弃（`giving up`）、交还（`starting the vendor UI`）、人为请求（`request:`、`corner long-press:`，记作 `other`） | `uid-<boot8>-<日志行号>` | `what`：`handback` / `gave_up` / `other`；`detail`（那一行原文） | ✔ |
+| `uid` | 账本任务 | u60-uid 日志里的放弃（`giving up`）、交还（`starting the vendor UI`）、人为请求（`request:`、`corner long-press:`，记作 `other`） | `uid-<boot8>-<日志行号>`（本次开机累计的行号：日志改名成 `.old` 以后接着往下数，不从 1 重来） | `what`：`handback` / `gave_up` / `other`；`detail`（那一行原文） | ✔ |
 | `datad_degraded` | 账本任务 | 一次降级开始、结束（第 11 节） | 开始 `dds-<boot8>-<since>`，结束 `dde-<开始那次开机的 boot8>-<since>` | `state`：`start` / `end`；`since` 标记第一行；`reason`；`dur_s`（`end` 时，按本次开机的开机秒数算；不知道写 null）；`how`（`end` 时：`gone` / `new_episode` / `stale` / `reboot`） | ✔ |
 | `gap` | 账本任务 | 醒着时 watcher、capture、uidlog、crashlog、datad 某个数据源没在工作，恢复时写（第 8 节） | — | `src`；`from`（最后一次还在工作的那一轮）、`to` 开机秒数 | |
 | `calib` | doctor（暂存） | `--calibrate-standby` 写了新基线 | `calib-<boot8>-<开机秒数>` | `rows` | ✔ |
@@ -197,7 +198,7 @@ u60-guard 在设备上记一本跨重启的事件账：整机重启、基带崩�
   | `job` | 账本任务没有被跳过（每跳过一轮计一轮的秒数） |
   | `watcher` | 观察循环进程在，并且它的心跳 `w.up` 离现在 ≤ 10 秒 |
   | `capture` | kmsg 落盘读取进程的 pid 在（不看文件有没有变大） |
-  | `uidlog` | `/tmp/u60-uid.log` 最后一行能解析（以时间开头） |
+  | `uidlog` | `/tmp/u60-uid.log` 最后一行能解析（以时间开头）；它刚被改名或截短、是空的时看 `.old` 的最后一行 |
   | `crashlog` | crashlog 目录在、能读 |
   | `datad` | 这一轮 `/state` 读到了 |
 

@@ -384,5 +384,24 @@ int main(void)
     }
 
     printf("passed %d, failed %d\n", pass, fail);
+    /* ---- two-tap confirm ---- */
+    {
+        ui_arm_t a = { 0, 0 };
+        CHECK("arm: first tap arms", ui_arm_tap(&a, 1, 1000, 5000) == 0 && ui_arm_live(&a, 1, 1000, 5000));
+        CHECK("arm: second tap in time confirms", ui_arm_tap(&a, 1, 5999, 5000) == 1 && !ui_arm_live(&a, -1, 5999, 5000));
+        ui_arm_tap(&a, 1, 1000, 5000);
+        CHECK("arm: second tap too late re-arms", ui_arm_tap(&a, 1, 6000, 5000) == 0 && a.at == 6000);
+        CHECK("arm: another id re-arms instead", ui_arm_tap(&a, 2, 6001, 5000) == 0 && a.id == 2);
+        CHECK("arm: live any id", ui_arm_live(&a, -1, 6002, 5000) && !ui_arm_live(&a, 1, 6002, 5000));
+        CHECK("arm: tick 0 still arms", ui_arm_tap(&a, 3, 0, 4000) == 0 && a.at == 1);
+        CHECK("arm: not lapsed yet", ui_arm_expire(&a, 4000, 4000) == 0 && a.at);
+        CHECK("arm: lapses once", ui_arm_expire(&a, 4001, 4000) == 1 && ui_arm_expire(&a, 4002, 4000) == 0);
+        ui_arm_tap(&a, 3, 10, 4000);
+        ui_arm_clear(&a);
+        CHECK("arm: cleared", !ui_arm_live(&a, -1, 11, 4000));
+        a.at = 0xfffffff0u; a.id = 4;   /* tick wraps */
+        CHECK("arm: survives tick wrap", ui_arm_live(&a, 4, 0x10u, 5000));
+    }
+
     return fail ? 1 : 0;
 }

@@ -38,7 +38,10 @@ static void esim_row_cb(lv_event_t *e)
         net_flash(&s_es_flash, T->accT, 3000, "%s", TR("这张就是正在用的"));
         break;
     case ESIM_SEL_BUSY:
-        net_flash(&s_es_flash, T->t2, 3000, "%s", TR("正在切换，等它做完"));
+        /* 不一定是切换：也可能是网页端在下载、或 agent 切换后在发通知；
+         * 状态行只有一行，直接写在忙什么 */
+        if (esim_switching()) net_flash(&s_es_flash, T->t2, 3000, "%s", TR("正在切换，等它做完"));
+        else net_flash(&s_es_flash, T->t2, 3000, "%s", esim_state());
         break;
     case ESIM_SEL_COOLDOWN:
     case ESIM_SEL_FAIL:

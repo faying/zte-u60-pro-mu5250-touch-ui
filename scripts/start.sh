@@ -161,7 +161,7 @@ start_datad_legacy() {
         ZWRT_DATAD_OTA_DISABLE_AUTO=1 \
         "$DATAD_BIN" -i 1000 \
         --lan-bind "$DATAD_LAN_BIND" --lan-port "$DATAD_LAN_PORT" \
-        --auth-token-file "$DATAD_TOKEN_FILE" >/tmp/zwrt-datad.log 2>&1 </dev/null &
+        --auth-token-file "$DATAD_TOKEN_FILE" >>/tmp/zwrt-datad.log 2>&1 </dev/null &
     sleep 1
 }
 
@@ -206,7 +206,7 @@ case "$MODE" in
         start_datad_legacy
         start_corner_wake
         if [ -x "$DEVUI_BIN" ]; then
-            nohup "$DEVUI_BIN" >/tmp/u60pro-devui.log 2>&1 </dev/null &
+            nohup "$DEVUI_BIN" >>/tmp/u60pro-devui.log 2>&1 </dev/null &
             # Startup guard, added 2026-09-21 while the LVGL UI is on trial.
             # If the UI is gone 15s after boot, put the fallback binary back
             # and start that instead: a UI that dies on every boot otherwise
@@ -218,7 +218,7 @@ case "$MODE" in
                   pidof u60pro-devui >/dev/null 2>&1 && exit 0
                   cp -f "$DEVUI_DIR/u60pro-devui.fallback" "$DEVUI_BIN.tmp" \
                       && mv -f "$DEVUI_BIN.tmp" "$DEVUI_BIN"
-                  nohup "$DEVUI_BIN" >/tmp/u60pro-devui.log 2>&1 </dev/null &
+                  nohup "$DEVUI_BIN" >>/tmp/u60pro-devui.log 2>&1 </dev/null &
                   echo "$(date '+%Y-%m-%d %H:%M:%S') startup-guard: UI died, restored fallback" \
                       >> "$DEVUI_DIR/boot-trace.log"
                 ) >/dev/null 2>&1 &

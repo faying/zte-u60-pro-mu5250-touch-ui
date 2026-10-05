@@ -48,7 +48,11 @@ EOF
     cat >"$T/bin/uci" <<EOF
 #!/bin/sh
 echo "\$*" >>$T/uci.log
-case "\$*" in *time_from_utc*) cat $T/tz 2>/dev/null ;; esac
+case "\$*" in
+    *time_from_utc*) cat $T/tz 2>/dev/null ;;
+    *"get wireless.zte_mbb.wifi_onoff") cat $T/onoff 2>/dev/null ;; # absent = key missing
+    *"get wireless.zte_mbb.lbd") cat $T/lbd 2>/dev/null ;;
+esac
 EOF
     cat >"$T/bin/ubus" <<EOF
 #!/bin/sh
@@ -57,7 +61,9 @@ echo "\$*" >>$T/ubus.log
 case "\$2 \$3" in
     "zwrt_web device_info") cat $T/device_info 2>/dev/null ;;
     "zwrt_bsp.pm list") cat $T/pm 2>/dev/null ;;
-    "zwrt_wlan reload") [ -f $T/reload-works ] && echo 8 >$T/hostapd ;;
+    # the APs only come up while the vendor master switch (\$T/onoff) is not "0"
+    "zwrt_wlan reload") [ -f $T/reload-works ] && [ "\$(cat $T/onoff 2>/dev/null)" != 0 ] && echo 8 >$T/hostapd ;;
+    "zwrt_wlan set") case "\$4" in *'"zte_mbb":{"wifi_onoff":"1"'*) echo 1 >$T/onoff ;; esac ;;
     "zwrt_wms zte_libwms_send_sms") cat $T/sms-resp 2>/dev/null || echo '{"result":3}' ;;
     "zwrt_wms zte_libwms_get_sms_data") case "\$4" in *'"mem_store":1'*) cat $T/sent-box 2>/dev/null ;; esac ;;
 esac
@@ -302,6 +308,85 @@ touch "$T/reload-works" "$T/datad-control"
 printf '{"action":"wifi.apply","error":{"code":"unknown_action","message":"unsupported control action"},"ok":false}' >"$T/control-reply"
 round
 check "datad from before T7 (unknown action): writes directly as before" 'grep -q "set wireless.main_2g.disabled=0" $T/uci.log && [ "$(restores)" = 1 ]'
+teardown
+
+echo "vendor master switch off (stock web/touch screen turned Wi-Fi off)"
+VSET='zwrt_wlan set {"zte_mbb":{"wifi_onoff":"1"}}'
+setup
+up 1000
+touch "$T/reload-works"
+echo 0 >"$T/onoff"
+round
+check "agent gone, wifi_onoff=0, no datad: vendor switch on directly, then the APs" 'grep -q -F "call $VSET" $T/ubus.log && [ "$(grep -n -F "$VSET" $T/ubus.log | cut -d: -f1)" -lt "$(grep -n "zwrt_wlan reload" $T/ubus.log | cut -d: -f1)" ]'
+check "…and Wi-Fi really comes back" '[ "$(cat $T/hostapd)" = 8 ] && [ "$(cat $T/onoff)" = 1 ] && grep -q "Wi-Fi restored" $T/guard.log'
+check "…the APs' disabled restore still runs" 'grep -q "set wireless.main_2g.disabled=0" $T/uci.log'
+teardown
+setup
+up 1000
+touch "$T/reload-works"
+echo 0 >"$T/onoff"
+echo 1 >"$T/lbd"
+round
+check "direct: band steering sent along as it stands (stock body)" 'grep -q -x -F "call zwrt_wlan set {\"zte_mbb\":{\"wifi_onoff\":\"1\",\"lbd\":\"1\"}}" $T/ubus.log && [ "$(cat $T/hostapd)" = 8 ]'
+teardown
+setup
+up 1000
+touch "$T/reload-works"
+echo 0 >"$T/onoff"
+printf '1"}}; x\n' >"$T/lbd"
+round
+check "direct: lbd not 0/1: left out, nothing of it in the call" 'grep -q -x -F "call $VSET" $T/ubus.log && ! grep -q lbd $T/ubus.log'
+teardown
+setup
+up 1000
+touch "$T/reload-works"
+round
+check "wifi_onoff key missing (= on): no vendor call, Wi-Fi comes up as before" '[ "$(cat $T/hostapd)" = 8 ] && ! grep -q "zwrt_wlan set" $T/ubus.log'
+teardown
+setup
+up 1000
+touch "$T/reload-works" "$T/datad-control"
+echo 0 >"$T/onoff"
+round
+check "through datad: wifi.set_module enabled 1 as guard, before wifi.apply" 'grep -q -x -F "{\"action\":\"wifi.set_module\",\"source\":\"guard\",\"params\":{\"enabled\":1}}" $T/control.log && [ "$(grep -n "wifi.set_module" $T/control.log | cut -d: -f1)" -lt "$(grep -n "wifi.apply" $T/control.log | cut -d: -f1)" ]'
+check "…and no direct ubus set" '! grep -q "zwrt_wlan set" $T/ubus.log'
+teardown
+setup
+up 1000
+touch "$T/reload-works" "$T/datad-control"
+echo 0 >"$T/onoff"
+printf '{"action":"wifi.set_module","error":{"code":"failed","message":"zwrt_wlan set: timeout"},"ok":false}' >"$T/control-reply"
+round
+check "datad refuses the vendor switch: logged, no direct write, the restore is still asked" 'grep -q "refused or did not answer the vendor Wi-Fi switch" $T/guard.log && ! grep -q "zwrt_wlan set" $T/ubus.log && grep -q "\"action\":\"wifi.apply\"" $T/control.log'
+teardown
+setup
+up 1000
+touch "$T/reload-works" "$T/datad-control"
+echo 0 >"$T/onoff"
+printf '{"action":"x","error":{"code":"unknown_action","message":"unsupported control action"},"ok":false}' >"$T/control-reply"
+round
+check "datad too old for both: vendor switch and APs written directly" 'grep -q -F "call $VSET" $T/ubus.log && grep -q "set wireless.main_5g.disabled=0" $T/uci.log && [ "$(cat $T/hostapd)" = 8 ]'
+teardown
+setup
+up 1000
+touch "$T/reload-works" "$T/datad-control"
+echo 1 >"$T/onoff"
+round
+check "wifi_onoff=1: no vendor call at all" '! grep -q "wifi.set_module" $T/control.log && ! grep -q "zwrt_wlan set" $T/ubus.log && ! grep -q "vendor Wi-Fi switch" $T/guard.log'
+teardown
+setup
+up 2000
+hb 1990
+echo 0 >"$T/onoff"
+round
+check "wifi_onoff=0 but the agent is alive: left alone (deliberate off is the agent's/user's)" '! grep -q "zwrt_wlan" $T/ubus.log && [ ! -f $T/marker ] && ! grep -q "set wireless" $T/uci.log'
+teardown
+setup
+up 1000
+echo 0 >"$T/onoff"
+echo 8 >"$T/hostapd"
+round
+check "wifi_onoff=0, agent gone, but something beacons: no rescue" '! grep -q "zwrt_wlan" $T/ubus.log && [ ! -f $T/marker ]'
 teardown
 
 echo "agent dies while Wi-Fi is up"
@@ -673,6 +758,31 @@ rm -rf "$T/proc/700"
 unset GUARD_CAP_LOGS GUARD_CAP_BYTES
 teardown
 
+echo "## log cap: the /tmp list has its own, smaller cap"
+setup
+export GUARD_CAP_LOGS="$T/ts.log" GUARD_CAP_BYTES=100 GUARD_CAP_TMP_LOGS="$T/agent.log $T/devui.log" GUARD_CAP_TMP_BYTES=60
+head -c 80 /dev/zero | tr '\0' 'a' >"$T/ts.log"
+head -c 80 /dev/zero | tr '\0' 'b' >"$T/agent.log"
+round
+check "tmp list over its cap: capped, .old kept" '[ ! -s "$T/agent.log" ] && [ "$(wc -c <"$T/agent.log.old")" -eq 80 ]'
+check "same size under the other list's cap: untouched" '[ "$(wc -c <"$T/ts.log")" -eq 80 ] && [ ! -e "$T/ts.log.old" ]'
+# one log refused (a non-append writer) does not hold the others back
+head -c 150 /dev/zero | tr '\0' 'c' >"$T/ts.log"
+mkdir -p "$T/proc/701/fd" "$T/proc/701/fdinfo"; ln -s "$T/ts.log" "$T/proc/701/fd/1"
+printf 'pos:\t150\nflags:\t0100001\n' >"$T/proc/701/fdinfo/1"
+round
+check "refused log: not truncated" '[ "$(wc -c <"$T/ts.log")" -eq 150 ]'
+head -c 70 /dev/zero | tr '\0' 'd' >"$T/devui.log"
+# an append writer on devui.log (O_APPEND 02000 set)
+mkdir -p "$T/proc/702/fd" "$T/proc/702/fdinfo"; ln -s "$T/devui.log" "$T/proc/702/fd/1"
+printf 'pos:\t70\nflags:\t0102001\n' >"$T/proc/702/fdinfo/1"
+round
+check "within the hour of another log's refusal: this one still capped" '[ ! -s "$T/devui.log" ] && [ "$(wc -c <"$T/devui.log.old")" -eq 70 ]'
+check "refused log: logged once" '[ "$(grep -c "not capping" "$T/guard.log")" = 1 ]'
+rm -rf "$T/proc/701" "$T/proc/702"
+unset GUARD_CAP_LOGS GUARD_CAP_BYTES GUARD_CAP_TMP_LOGS GUARD_CAP_TMP_BYTES
+teardown
+
 echo "## standby sentinel records"
 setup
 export GUARD_NETDEV=$T/netdev GUARD_BACKLIGHT=$T/bl GUARD_STANDBY_STAT=$T/standby.stat
@@ -1008,6 +1118,21 @@ check "keeps only the newest KEEP boots incl. this one" '[ "$(ls $T/crashcap | t
 check "remembers the reader pid" '[ -s $T/state/crashcap-pid ]'
 head -c 150 /dev/zero | tr "\0" a >>"$T/crashcap/kmsg-deadbeef.log"; round
 check "round cuts a file over MAX to its second half" '[ "$(wc -c <$T/crashcap/kmsg-deadbeef.log)" -le 50 ] && grep -q "cut " $T/guard.log'
+# the reader ends (cat /dev/kmsg gets EPIPE once records it had not read are
+# overwritten): the main loop starts it again, without what the file already has
+C=$T/crashcap/kmsg-deadbeef.log
+capwait() { _i=0; while [ $_i -lt 25 ] && ! grep -q "$1" "$C"; do busybox sleep 0.2; _i=$((_i + 1)); done; }
+check "a round soon after the start: the ended reader is left alone (CRASHCAP_RESPAWN)" '[ "$(cat $T/state/crashcap-starts)" = 1 ] && ! grep -q "starting it again" $T/guard.log'
+printf '6,1,100,-;boot line\n3,3,300,-;fatal error received\n6,9876,900,-;seen record\n' >"$C"
+printf '6,9000,800,-;old record\n SUBSYSTEM=old\n4,10000,1000,-;usb 1-1: new device\n SUBSYSTEM=usb\n' >>"$T/kmsg"
+up 500; round; capwait "new device"
+check "ended reader started again: only records newer than the file's last (numbers, not text: 9000 < 9876 < 10000), continuation lines with their record" '[ "$(grep -c "boot line" $C)" = 1 ] && [ "$(grep -c "fatal error" $C)" = 1 ] && ! grep -q "old" $C && grep -q "usb 1-1: new device" $C && grep -q "^ SUBSYSTEM=usb" $C && grep -q "capture (pid [0-9]*) ended: starting it again" $T/guard.log && [ "$(cat $T/state/crashcap-starts)" = 2 ]'
+up 600; round
+check "not again within CRASHCAP_RESPAWN of that start" '[ "$(cat $T/state/crashcap-starts)" = 2 ]'
+export GUARD_CRASHCAP_RESTARTS=1
+up 900; round; up 1300; round
+check "at most CRASHCAP_RESTARTS restarts a boot; the give-up logged once" '[ "$(cat $T/state/crashcap-starts)" = 2 ] && [ "$(grep -c "not again" $T/guard.log)" = 1 ]'
+unset GUARD_CRASHCAP_RESTARTS
 unset GUARD_KMSG GUARD_CRASHCAP_DIR GUARD_BOOT_ID_FILE GUARD_CRASHCAP_KEEP GUARD_CRASHCAP_MAX
 teardown
 
@@ -1114,6 +1239,21 @@ lround 2080
 check "give-up, hand-back, the owner's request: one uid line each, numbered by log line" '[ "$(lines | grep -c "\"k\":\"uid\"")" = 3 ] && lines | grep -q "\"k\":\"uid\",\"id\":\"uid-feedc0de-3\",\"what\":\"gave_up\",\"detail\":\"2026-09-28T10:05:00 giving up: 3 launches" && lines | grep -q "\"what\":\"handback\"" && lines | grep -q "\"what\":\"other\""'
 lround 2140
 check "read once: the next round adds none" '[ "$(lines | grep -c "\"k\":\"uid\"")" = 3 ]'
+# over UID_LOG_CAP once read: renamed to .old, and the numbering goes on past it
+GUARD_UID_LOG_CAP=100 lround 2200
+check "read and over the cap: renamed to .old; uid.pos keeps the count (0 read, 5 before)" '[ ! -e $T/uid.log ] && [ "$(grep -c . $T/uid.log.old)" = 5 ] && [ "$(cat $T/state/ledger/uid.pos)" = "0 5" ] && grep -q "u60-uid log over 100 bytes" $T/guard.log'
+printf '%s\n' "2026-09-28T11:00:00 giving up: again" "2026-09-28T11:00:01 launched u60pro-devui pid 900 (attempt 1 of 3 before giving up)" \
+    "2026-09-28T11:00:02 starting the vendor UI" >"$T/uid.log"
+lround 2260
+check "the new file numbers on from 6: no id is used twice" 'lines | grep -q "\"id\":\"uid-feedc0de-6\",\"what\":\"gave_up\"" && lines | grep -q "\"id\":\"uid-feedc0de-8\",\"what\":\"handback\"" && [ "$(lines | grep -c "\"k\":\"uid\"")" = 5 ]'
+# cut under the job (the logcap backstop: copy to .old, empty the file) with a line it had not read yet
+echo "2026-09-28T11:01:00 request: vendor UI" >>"$T/uid.log"
+cp "$T/uid.log" "$T/uid.log.old"
+echo "2026-09-28T11:02:00 corner long-press: back to our UI" >"$T/uid.log"
+lround 2320
+check "cut by someone else: the unread rest of .old first (9), then the new file (10)" 'lines | grep -q "\"id\":\"uid-feedc0de-9\",\"what\":\"other\",\"detail\":\"2026-09-28T11:01:00 request" && lines | grep -q "\"id\":\"uid-feedc0de-10\",\"what\":\"other\",\"detail\":\"2026-09-28T11:02:00 corner" && [ "$(cat $T/state/ledger/uid.pos)" = "1 9" ]'
+lround 2380
+check "and nothing twice after that" '[ "$(lines | grep -c "\"k\":\"uid\"")" = 7 ]'
 check "all of it is flat JSON" 'jsonok'
 teardown
 
@@ -1306,8 +1446,10 @@ wround 3840
 echo "2026-09-28T10:30:00 request: vendor UI" >"$T/uid.log"
 wround 3900
 check "a source that stops: one gap event, from the last round it worked to the round it works again" 'lines | grep -q "\"k\":\"gap\",\"src\":\"uidlog\",\"from\":3720,\"to\":3900" && [ "$(lines | grep -c "\"k\":\"gap\"")" = 1 ] && [ "$(acc g_uidlog)" = 120 ]'
+mv "$T/uid.log" "$T/uid.log.old" # the ledger job renamed it; u60-uid has not written since
 echo "3930 skipped" >>"$L/rounds" # a round whose ledger job was skipped
 wround 3960
+check "u60-uid's log just renamed to .old: its last line counts, no uidlog gap" '[ "$(acc g_uidlog)" = 120 ] && [ "$(lines | grep -c "\"k\":\"gap\"")" = 1 ]'
 check "a skipped ledger job: its interval counted for the job source" '[ "$(acc g_job)" = 60 ]'
 wround 4380
 check "the main loop 420 s late, awake: 360 s counted for the guard source" '[ "$(acc g_guard)" = 360 ]'
@@ -1440,6 +1582,31 @@ check "a boot that ended more than 30 days ago is removed; newer ones and this o
 old 2 1789000000 3000000 # boot 2 grew big
 GUARD_LEDGER_TOTAL_MAX=2000000 hround 7200
 check "over the size limit: the oldest boot goes, and only until under it; this boot kept" '[ ! -f $T/ledger/boot-000002-00000002-001.jsonl ] && [ -f $T/ledger/boot-000003-00000003-001.jsonl ] && ls $T/ledger/boot-000004-* >/dev/null'
+teardown
+
+hsetup # retention: up for weeks, no older boot left and still over: this boot's oldest segments go, never the one being written
+mkdir -p "$T/ledger"
+pad() { # pad <file> <bytes>: that many bytes more of well-formed lines
+    awk -v n="$2" 'BEGIN { s = "x"; while (length(s) < 200) s = s s; for (i = 0; i < n; i += 200) print substr(s, 1, ((n - i < 200) ? n - i : 200)) }' | sed 's/^/{"v":1,"seq":1,"n":1,"up":1,"t":null,"k":"x","pad":"/; s/$/"}/' >>"$1"
+}
+old 1 null 2000
+printf '1 a 1\n' >"$T/ledger/bootmap"
+echo 1 >"$T/ledger/seq"
+hround 3000
+cur=$(cat $T/state/ledger/seg) # part 001 of this boot
+for p in 001 002 003 004; do pad "${cur%-*}-$p.jsonl" 400000; done # four full parts, ~530 KB each (rotation itself is tested above)
+cur=${cur%-*}-005.jsonl
+: >"$cur"
+echo "$cur" >$T/state/ledger/seg # 005 is the one being written
+check "set up: five parts of this boot, the last one being written" '[ "$(ls $T/ledger/boot-000002-*.jsonl | wc -l)" = 5 ]'
+GUARD_LEDGER_TOTAL_MAX=1300000 hround 3600
+kb=$(du -sk $T/ledger | awk "{ print \$1 }")
+check "the older boot goes first" '[ ! -f $T/ledger/boot-000001-00000001-001.jsonl ]'
+check "then this boot's oldest parts, only until under the limit" '[ ! -f ${cur%-*}-001.jsonl ] && [ ! -f ${cur%-*}-002.jsonl ] && [ -f ${cur%-*}-003.jsonl ] && [ $((kb * 1024)) -le 1300000 ]'
+check "the part being written stays, with this hour's lines in it" '[ "$(cat $T/state/ledger/seg)" = "$cur" ] && grep -q "\"k\":\"hour\"," $cur'
+check "the trims are logged" 'grep -q "no older boot left; boot-000002-.*-001.jsonl removed" $T/guard.log'
+GUARD_LEDGER_TOTAL_MAX=1 hround 7200 # a cap nothing fits under
+check "a cap nothing fits under: every older part goes, never the segment being written" '[ "$(ls $T/ledger/boot-000002-*.jsonl)" = "$cur" ]'
 teardown
 
 echo "## crash watcher (docs/LEDGER.md §9)"

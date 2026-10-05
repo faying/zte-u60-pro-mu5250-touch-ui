@@ -23,7 +23,7 @@ static uk_hero_t s_dg_hero;
 static lv_obj_t *s_dg_scroll, *s_dg_card, *s_dg_btn, *s_dg_btn_lbl, *s_dg_note, *s_dg_fb, *s_dg_fb_lbl,
                 *s_dg_yes, *s_dg_no, *s_dg_hdr, *s_dg_hdr_lbl;
 static int       s_dg_pending;               /* the start tap painted "正在检查…", the reply not in yet */
-static uint32_t  s_dg_arm;                   /* roaming: first tap on 加测速度 */
+static ui_arm_t  s_dg_arm;                   /* roaming: first tap on 加测速度 */
 static uint32_t  s_dg_note_at;
 static uint32_t  s_dg_speed_t0;              /* when our speed request went out (for "3 s") */
 static int       s_dg_fb_local = -1;         /* tapped 对/不对 for this run id */
@@ -61,7 +61,7 @@ static int dg_going(const diag_run_t *r) { return r->state == DG_WAITING || r->s
 static void dg_start(void)
 {
     s_dg_pending = 1;
-    s_dg_arm = 0;
+    ui_arm_clear(&s_dg_arm);
     dg_note("", T->t3);
     diag_paint();
     lv_refr_now(NULL);
@@ -87,7 +87,7 @@ static void diag_on_open(void)
     diagnose_kick();
     diagnose_poll(1);
     dg_note("", T->t3);
-    s_dg_arm = 0;
+    ui_arm_clear(&s_dg_arm);
     if (diagnose_idle() && !diagnose_agent_err()) dg_start();
     else diag_paint();
 }
@@ -100,12 +100,11 @@ static void dg_speed_cb(lv_event_t *e)
     if (r->state != DG_DONE) { dg_note(TR("正在查，稍等"), T->t2); diag_paint(); return; }
     if (r->has_speed && r->speed.level == DG_RUNNING) { dg_note(TR("正在测，稍等"), T->t2); diag_paint(); return; }
     uint32_t now = lv_tick_get();
-    if (s_net_roam && !(s_dg_arm && now - s_dg_arm < DG_ARM_MS)) {
-        s_dg_arm = (now ? now : 1);                                       /* first tap while roaming */
+    if (s_net_roam && !ui_arm_tap(&s_dg_arm, 0, now, DG_ARM_MS)) {   /* first tap while roaming */
         diag_paint();
         return;
     }
-    s_dg_arm = 0;
+    ui_arm_clear(&s_dg_arm);
     s_dg_speed_t0 = (now ? now : 1);
     dg_note(TR("已发送，测速约 5 秒"), T->t2);
     diag_paint();
@@ -268,7 +267,7 @@ static void diag_paint(void)
     const diag_run_t *r = diagnose_run();
     int err = diagnose_agent_err();
     uint32_t now = lv_tick_get();
-    if (s_dg_arm && now - s_dg_arm >= DG_ARM_MS) s_dg_arm = 0;
+    ui_arm_expire(&s_dg_arm, now, DG_ARM_MS);
     if (s_dg_note_at && now - s_dg_note_at >= DG_NOTE_MS) dg_note("", T->t3);
 
     /* rows: what the run has; before the first reply, the layers it will have */
@@ -362,7 +361,7 @@ static void diag_paint(void)
     if (show_btn) {
         uk_btn_kind_t kind = UK_BTN_PLAIN;
         if (err) { kind = UK_BTN_PRIMARY; set_label_fmt(s_dg_btn_lbl, c_btn, sizeof c_btn, "%s", TR("重试")); }
-        else if (s_dg_arm) { kind = UK_BTN_ARMED; set_label_fmt(s_dg_btn_lbl, c_btn, sizeof c_btn, "%s", TR("走漫游流量，再按一次")); }
+        else if (s_dg_arm.at) { kind = UK_BTN_ARMED; set_label_fmt(s_dg_btn_lbl, c_btn, sizeof c_btn, "%s", TR("走漫游流量，再按一次")); }
         else if (r->has_speed && r->speed.level == DG_RUNNING)
             set_label_fmt(s_dg_btn_lbl, c_btn, sizeof c_btn, "%s", TR("测速中…"));
         else set_label_fmt(s_dg_btn_lbl, c_btn, sizeof c_btn, "%s", TR("加测速度 · 约 5 秒、最多 30 MB"));
