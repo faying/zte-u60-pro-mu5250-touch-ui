@@ -3,7 +3,7 @@
 # Lists that must agree with files outside scripts/ (docs/SHIP.md「第二期」):
 #   1. u60-ship.sh's GUARD_FILES = the install kit's guard list
 #      (manager onboard/build-kit.sh) minus u60-ship.sh, datad-trial.sh,
-#      u60-recover.sh, exactly (wifi-ab.sh too: manager 8ef099a).
+#      u60-recover.sh, exactly.
 #   2. the touch trial starts the test build the way u60-uid starts the UI
 #      (src/uid.c: chdir(DEVUI_DIR), execl(DEVUI_BIN)).
 #   3. every ship/<comp>/state-files (three repos) is within u60-ship.sh's
@@ -116,8 +116,8 @@ DESIGN=$MANAGER/docs/DESIGN.md
 GLOSS=$MANAGER/docs/ui-glossary.md
 TSV=$REPO/ui/lang/en.tsv
 INC=$REPO/src/lang_en.inc
-SCREEN_RS=$DATAD/rust/src/screen.rs
-SCREEN_T=$DATAD/rust/src/screen/tests.rs
+SCREEN_RS=$DATAD/rust/src/project/screen.rs
+SCREEN_T=$DATAD/rust/src/project/screen/tests.rs
 OPS_UI=$DATAD/rust/src/ops/ui.rs
 AGENT=$MANAGER/zte-agent/src
 WEB_EN=$MANAGER/web/src/lib/i18n/en.ts

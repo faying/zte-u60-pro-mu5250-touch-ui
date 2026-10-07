@@ -26,14 +26,10 @@
 #define NET_BTN_H    52
 #define NET_NBR_HDR  40
 #define NET_NBR_H    28
-#define NET_NOTE_H   64
-#define NET_CL_H     50
-static lv_obj_t *s_net_cl_state, *s_net_cl_row[NI_MAX_CLIENTS], *s_net_cl_name[NI_MAX_CLIENTS],
-                *s_net_cl_tot[NI_MAX_CLIENTS], *s_net_cl_sub[NI_MAX_CLIENTS];
 #define NET_SCENE_ROWS (1 + NI_MAX_SCENES + 1)   /* 自动 + 各情景 + 1 行备用 */
 #define NET_SC_NOTE_H  44
 
-static lv_obj_t *s_net_sec[6], *s_net_card[6];
+static lv_obj_t *s_net_sec[5], *s_net_card[5];
 static lv_obj_t *s_net_sc_row[NET_SCENE_ROWS], *s_net_sc_name[NET_SCENE_ROWS], *s_net_sc_tag[NET_SCENE_ROWS];
 static lv_obj_t *s_net_sc_note;
 static uint32_t  s_net_arm_sc;
@@ -240,22 +236,22 @@ static void net_sc_cb(lv_event_t *e)
 
 static void net_reflow(int err_h, int scene_rows, int exits, int ops, int cells);
 
-/* 原「情景 · 网络」页的六块，2026-09-25 起各回各家（k_net_host）：情景 → 情景页，
- * 出口 IP → 出口标签，运营商 + 手动选网 → 运营商选择页，邻小区 → 小区信息页，
- * 设备流量 → Wi-Fi 标签。数据和画法没变（netinfo + net_paint），只是卡片挂在
- * 不同的页上，net_reflow 按页各自排。 */
+/* 原「情景 · 网络」页的几块，2026-09-25 起各回各家（k_net_host）：情景 → 情景页，
+ * 出口 IP → 出口标签，运营商 + 手动选网 → 运营商选择页，邻小区 → 小区信息页。
+ * 设备流量并进了 Wi-Fi 标签的设备列表（refresh_wifi），这里不再建。数据和画法没变
+ * （netinfo + net_paint），只是卡片挂在不同的页上，net_reflow 按页各自排。 */
 static void build_sub_net(lv_obj_t *t)
 {
-    static const char *const k_sec[6] = { N_("选择"), N_("出口 IP"), N_("运营商"), N_("手动选网"), N_("邻小区"), N_("已连接设备流量") };
+    static const char *const k_sec[5] = { N_("选择"), N_("出口 IP"), N_("运营商"), N_("手动选网"), N_("邻小区") };
     static const char *const k_op_cap[4] = { N_("原始运营商"), N_("注册运营商"), N_("漫游"), N_("选网") };
-    lv_obj_t *c, *host[6];
+    lv_obj_t *c, *host[5];
 
     t = s_net_scroll = s_nh_scroll[NH_OPER] = uk_scroll(t, 0, UI_SUB_VIEW, 1400);
     s_nh_scroll[NH_SCENE] = uk_scroll(s_sub_page[SUB_SCENE], 0, UI_SUB_VIEW, 600);
     s_nh_base[NH_SCENE] = s_nh_base[NH_OPER] = 4;
-    for (int i = 0; i < 6; i++) host[i] = s_nh_scroll[k_net_host[i]];
+    for (int i = 0; i < 5; i++) host[i] = s_nh_scroll[k_net_host[i]];
     s_net_err = uk_label_w(t, UF.cj13, T->badT, UK_MARGIN + 6, 4, UK_CARD_W - 12, 1, "");
-    for (int i = 0; i < 6; i++) s_net_sec[i] = uk_section(host[i], 0, TR(k_sec[i]));
+    for (int i = 0; i < 5; i++) s_net_sec[i] = uk_section(host[i], 0, TR(k_sec[i]));
 
     c = s_net_card[0] = uk_card(host[0], UK_MARGIN, 0, UK_CARD_W, UK_ROW_H + NET_SC_NOTE_H);
     for (int i = 0; i < NET_SCENE_ROWS; i++) {
@@ -327,27 +323,11 @@ static void build_sub_net(lv_obj_t *t)
         uk_show(r, 0);
     }
 
-    /* 每台 Wi-Fi 设备：名字、连上以来的总流量、此刻的速率和信号 */
-    c = s_net_card[5] = uk_card(host[5], UK_MARGIN, 0, UK_CARD_W, NET_NOTE_H);
-    s_net_cl_state = uk_label_w(c, UF.cj13, T->t3, UK_PAD, 11, UK_CARD_W - 2 * UK_PAD, 1, TR("读取中…"));
-    for (int i = 0; i < NI_MAX_CLIENTS; i++) {
-        lv_obj_t *r = s_net_cl_row[i] = uk_box(c, 0, i * NET_CL_H, UK_CARD_W, NET_CL_H, T->card, 0);
-        lv_obj_set_style_bg_opa(r, LV_OPA_TRANSP, 0);
-        if (i) uk_sep(r, 0);
-        s_net_cl_name[i] = uk_label_w(r, UF.cj14, T->t1, UK_PAD, 7, 130, 0, "");
-        s_net_cl_tot[i]  = uk_label_r(r, UF.n12, T->t2, UK_CARD_W - UK_PAD, 9, "");
-        s_net_cl_sub[i]  = uk_label_w(r, UF.n12, T->t3, UK_PAD, 29, UK_CARD_W - 2 * UK_PAD, 0, "");
-        uk_show(r, 0);
-    }
-    /* 设备流量已并进 Wi-Fi 标签的设备列表（refresh_wifi 按 MAC/IP 对上）：这块不显示 */
-    uk_show(s_net_sec[5], 0);
-    uk_show(s_net_card[5], 0);
     net_reflow(0, UK_ROW_H, 1, 0, 0);
     lv_obj_scroll_to_y(t, 0, LV_ANIM_OFF);
 }
 
 /* Cards move with the lists above them: lay each page out from its base. */
-static int s_net_ncl;   /* 设备流量卡里显示几行（net_paint 定） */
 static int s_nr_last[5] = { 0, UK_ROW_H, 1, 0, 0 };
 /* scene_px：情景各行加起来的高度（行高不一样，2026-09-25 起按像素传） */
 static void net_reflow(int err_h, int scene_rows, int exits, int ops, int cells)
@@ -357,15 +337,14 @@ static void net_reflow(int err_h, int scene_rows, int exits, int ops, int cells)
     int y[NH_N];
     for (int k = 0; k < NH_N; k++) y[k] = s_nh_base[k];
     y[NH_OPER] += err_h;
-    int h[6] = {
+    int h[5] = {
         scene_rows + NET_SC_NOTE_H,
         exits * NET_EXIT_H,
         4 * UK_ROW_H,
         NET_STAT_H + ops * NET_OP_H + NET_BTN_H,
         NET_NBR_HDR + cells * NET_NBR_H + (cells ? 6 : 0),
-        s_net_ncl ? s_net_ncl * NET_CL_H : NET_NOTE_H,
     };
-    for (int i = 0; i < 6; i++) {
+    for (int i = 0; i < 5; i++) {
         if (lv_obj_has_flag(s_net_card[i], LV_OBJ_FLAG_HIDDEN)) continue;
         int *yy = &y[k_net_host[i]];
         lv_obj_set_y(s_net_sec[i], *yy);
@@ -387,13 +366,6 @@ static void net_relayout(void)
 {
     if (!s_net_card[0]) return;   /* 还没建好 */
     net_reflow(s_nr_last[0], s_nr_last[1], s_nr_last[2], s_nr_last[3], s_nr_last[4]);
-}
-
-/* 首页出口卡 → 出口标签（出口 IP 在最上面） */
-static void nh_card_cb(lv_event_t *e)
-{
-    LV_UNUSED(e);
-    tab_go(TAB_EXIT);
 }
 
 /* 搜网结果的 m_rat：按原厂网页（mobile_network.js）的表，不是 27.007——13 算 4G、9 算 5G。

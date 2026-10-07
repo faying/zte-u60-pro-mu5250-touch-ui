@@ -140,6 +140,10 @@ static void fill_data(devui_data_t *d)
     d->month_rx_bytes = 48589732137L; d->month_tx_bytes = 15347738524L;
     d->qci = 9; d->ambr_dl = 1668.64; d->ambr_ul = 1008.64;
     cp(d->usb_mode, sizeof d->usb_mode, "user");
+    d->usb_cc = rt_usb_phone ? 1 : 0;
+    d->powerbank = 0;
+    cp(d->usb_power_role, sizeof d->usb_power_role, rt_usb_phone ? "source" : "sink");
+    cp(d->usb_data_role, sizeof d->usb_data_role, rt_usb_phone == 2 ? "device" : "host");
 
     d->uptime = 32455; d->cpu_temp = 42; d->cpu_usage = 15; d->mem_used_pct = 74;
     d->mem_total = 1667600384L; d->mem_avail = 425123840L;
@@ -294,6 +298,7 @@ int data_refresh(devui_data_t *d)
         memset(d, 0, sizeof *d);
         d->cpu_usage = -1;
         d->dps_mode = d->cell_data = d->cell_roam = -1;
+        d->usb_cc = d->powerbank = -1;
         return 0;
     }
     fill_data(d);
@@ -496,6 +501,7 @@ int  data_control_notice(data_notice_t *out, uint32_t max_age_ms)
     }
     return 1;
 }
+int  rt_usb_phone;
 int  rt_control_calls;
 char rt_control_last[48], rt_control_params[160];
 int  data_control(const char *a, const char *p, const char *fb)
@@ -525,12 +531,9 @@ int sms_mark_read_id(long id) { (void)id; return 0; }
 int sms_mark_all_read(void) { return 0; }
 int sms_delete_id(long id) { (void)id; return 0; }
 
-int devui_restore_stock(void) { return 0; }
-int devui_rotate180(void) { return 0; }
 
 /* -------------------------------------------------------------- tailscale */
 int tailscale_poll(int active) { (void)active; return 1; }
-const char *tailscale_card_html(int locked) { (void)locked; return ""; }
 void tailscale_get_status(tailscale_status_t *o)
 {
     memset(o, 0, sizeof *o);
@@ -581,7 +584,6 @@ int esim_poll(int active) { (void)active; return 1; }
 const char *esim_current(void) { return EMPTY ? "" : "中国联通 · 主号"; }
 const char *esim_state(void) { return IS(RT_LOADING) ? "" : TR("就绪"); }
 int esim_ready(void) { return !IS(RT_LOADING); }
-const char *esim_list_html(void) { return ""; }
 int esim_select(int i) { if (i == 0) return ESIM_SEL_CURRENT; s_esim_armed = i; return ESIM_SEL_ARMED; }   /* profile 0 is the enabled one */
 int agent_post(const char *p) { (void)p; return 200; }
 int agent_request(const char *m, const char *p, const char *j) { (void)m; (void)p; (void)j; return 200; }
@@ -597,7 +599,6 @@ void esim_get_profile(int i, esim_profile_t *o)
     o->enabled = i == 0;
     o->armed = i == s_esim_armed;
 }
-int esim_locked(void) { return 0; }
 int esim_switching(void) { return 0; }
 int esim_loaded(void) { return !IS(RT_LOADING); }
 const char *esim_enabled_iccid(void) { return EMPTY ? "" : "89860000000000000001"; }

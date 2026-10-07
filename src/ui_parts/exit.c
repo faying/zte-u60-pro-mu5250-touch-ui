@@ -84,15 +84,7 @@ static void build_sub_cell(lv_obj_t *t)
     lv_obj_set_style_text_font(s_sg_net[3], UF.cj14, 0);
     y += 4 * UK_ROW_H + 10;
 
-    /* 支持频段不在这页列（2026-09-25）：锁频页的频段按钮就是同一份清单。
-     * 标签还建着、挂在隐藏的父对象下，刷新代码不用改。 */
-    {
-        lv_obj_t *gone = lv_obj_create(t);
-        lv_obj_remove_style_all(gone);
-        lv_obj_add_flag(gone, LV_OBJ_FLAG_HIDDEN);
-        s_sg_nrb = uk_label(gone, UF.n12, T->t1, 0, 0, "");
-        s_sg_lteb = uk_label(gone, UF.n12, T->t1, 0, 0, "");
-    }
+    /* 支持频段不在这页列（2026-09-25）：锁频页的频段按钮就是同一份清单 */
 
     /* 邻小区一块由 build_sub_net 挂在这下面（net_reflow 定位置和滚动范围） */
     s_nh_scroll[NH_CELL] = t;

@@ -62,7 +62,6 @@ static long     s_poll_gap = ES_IDLE_MS;
 static unsigned s_sig;
 
 static char s_statebuf[192];
-static char s_listhtml[8192];
 
 static long now_ms(void)
 {
@@ -324,20 +323,6 @@ int esim_poll(int active)
 
 /* ---- 显示 ---- */
 
-static void es_esc(char *dst, size_t cap, const char *src)
-{
-    size_t o = 0;
-    for (const char *s = src; *s && o + 7 < cap; s++) {
-        const char *r = NULL;
-        if      (*s == '&') r = "&amp;";
-        else if (*s == '<') r = "&lt;";
-        else if (*s == '>') r = "&gt;";
-        if (r) { size_t L = strlen(r); memcpy(dst + o, r, L); o += L; }
-        else dst[o++] = *s;
-    }
-    dst[o] = 0;
-}
-
 const char *esim_enabled_iccid(void)
 {
     for (int i = 0; i < s_count; i++)
@@ -363,12 +348,11 @@ const char *esim_current(void)
     return "-";
 }
 
+/* LVGL 标签显示原文，不做 HTML 转义（旧 litehtml 界面的遗留，会把 & 显示成 &amp;） */
 const char *esim_state(void)
 {
-    char tmp[192];
-
     if (s_my_job)
-        snprintf(tmp, sizeof tmp, TR("切换中 · 已 %ld 秒"),
+        snprintf(s_statebuf, sizeof s_statebuf, TR("切换中 · 已 %ld 秒"),
                  (now_ms() - s_t0) / 1000);   /* 切换中 · 已 N 秒 */
     else if (s_busy) {
         /* whole sentences, so the English can put the verb where it goes */
@@ -378,12 +362,11 @@ const char *esim_state(void)
                         /* 切换成功后 agent 自己发通知，网页端点「发送通知」也是这个 */
                         !strcmp(s_busy_kind, "notifications") ? TR("正在发送 eSIM 通知") :
                                                            TR("网页端正在操作");
-        snprintf(tmp, sizeof tmp, "%s", k);
+        snprintf(s_statebuf, sizeof s_statebuf, "%s", k);
     }
-    else if (s_err[0]) snprintf(tmp, sizeof tmp, "%s", s_err);
-    else if (s_msg[0]) snprintf(tmp, sizeof tmp, "%s", s_msg);
-    else snprintf(tmp, sizeof tmp, "%s", TR("就绪"));
-    es_esc(s_statebuf, sizeof s_statebuf, tmp);
+    else if (s_err[0]) snprintf(s_statebuf, sizeof s_statebuf, "%s", s_err);
+    else if (s_msg[0]) snprintf(s_statebuf, sizeof s_statebuf, "%s", s_msg);
+    else snprintf(s_statebuf, sizeof s_statebuf, "%s", TR("就绪"));
     return s_statebuf;
 }
 
@@ -392,60 +375,7 @@ int esim_ready(void)
     return !s_my_job && !s_busy && !s_err[0] && !s_msg[0];
 }
 
-const char *esim_list_html(void)
-{
-    long t = now_ms();
-    int armed_live = s_arm_iccid[0] && t - s_arm_ms <= ES_ARM_MS;
-    int locked = s_busy || s_my_job || s_offline;
-    int o = 0;
-
-    s_listhtml[0] = 0;
-    if (s_my_job) {
-        char nm[192];
-        es_esc(nm, sizeof nm, s_target_name);
-        o += snprintf(s_listhtml + o, sizeof s_listhtml - (size_t)o,
-                      "<div class='es-note'>正在切换到 %s，"
-                      "网络会中断片刻；"
-                      "不成功会自动重启"
-                      "设备</div>", nm);   /* 正在切换到 X，网络会中断片刻；不成功会自动重启设备 */
-    }
-    if (!s_count) {
-        snprintf(s_listhtml + o, sizeof s_listhtml - (size_t)o, "<div class='es-empty'>%s</div>",
-                 s_err[0] ? s_err : "读取中…");
-        return s_listhtml;
-    }
-    for (int i = 0; i < s_count && o < (int)sizeof s_listhtml - 800; i++) {
-        const es_prof_t *e = &s_prof[i];
-        int going = s_my_job && !strcmp(s_target_iccid, e->iccid);
-        int armed = armed_live && !strcmp(s_arm_iccid, e->iccid);
-        const char *cls = going ? " go" : armed ? " armed" : e->enabled ? " cur" : "";
-        const char *tag = going   ? "切换中…" :
-                          armed   ? "再点一次" :
-                          e->enabled ? "使用中" : "";
-        char nm[192], sub[384];
-
-        es_esc(nm, sizeof nm, e->name);
-        es_esc(sub, sizeof sub, e->sub);
-        if (locked)                     /* 有操作在跑：只展示，不给点 */
-            o += snprintf(s_listhtml + o, sizeof s_listhtml - (size_t)o,
-                          "<div class='es-prof ro%s'><span class='es-nm'>%s</span>"
-                          "<span class='es-tag'>%s</span><span class='es-sub'>%s</span></div>",
-                          cls, nm, tag, sub);
-        else
-            o += snprintf(s_listhtml + o, sizeof s_listhtml - (size_t)o,
-                          "<a href='act:esim:%d' class='es-prof%s'><span class='es-nm'>%s</span>"
-                          "<span class='es-tag'>%s</span><span class='es-sub'>%s</span></a>",
-                          i, cls, nm, tag, sub);
-    }
-    return s_listhtml;
-}
-
 int esim_profile_count(void) { return s_count; }
-
-int esim_locked(void)
-{
-    return s_busy || s_my_job || s_offline;
-}
 
 void esim_get_profile(int index, esim_profile_t *out)
 {

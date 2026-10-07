@@ -8,7 +8,7 @@
  * SPDX-License-Identifier: MIT
  */
 /* ---- Home: 信号 / 邻区 / Tailscale ----
- * Mirrors ui/01-signal.html section for section. The headline is the
+ * Mirrors the old litehtml signal page section for section. The headline is the
  * aggregate line ("5G SA · 3 NR 载波 · 240 MHz"): mode, carrier count and
  * TOTAL aggregated bandwidth. An earlier pass showed only the primary
  * carrier ("SA · n78 · 100") and the user immediately flagged the page as
@@ -16,7 +16,6 @@
  * spectrum is currently aggregated, not which band the PCC happens to be. */
 static void home_reflow(void);
 
-#define NET_EXIT_ROW_H 50
 /* One 40 px row inside the status card; the box carries its labels so the
  * whole row moves with one lv_obj_set_y. cb = tappable with a chevron. */
 static void home_row(home_row_t *r, lv_obj_t *c, const char *key, lv_event_cb_t cb, void *user)
@@ -30,15 +29,6 @@ static void home_row(home_row_t *r, lv_obj_t *c, const char *key, lv_event_cb_t 
         uk_chevron(r->box, 0);
         uk_tappable(r->box, cb, user);
     }
-}
-
-/* 磁贴底部的说明：最多两行，放不下末尾「…」（节点名可以很长） */
-static lv_obj_t *home_tile_note(lv_obj_t *tile)
-{
-    lv_obj_t *l = uk_label_w(tile, UF.cj12, T->t2, 12, 52, HOME_TILE_W - 24, 1, "");
-    lv_obj_set_height(l, 34);
-    lv_label_set_long_mode(l, LV_LABEL_LONG_MODE_DOTS);
-    return l;
 }
 
 /* 「国家 省 市」只留国家和最后一段（城市）；两段以内原样。英文
@@ -211,33 +201,6 @@ static void build_home(lv_obj_t *t)
     uk_tappable(s_sc_card, sc_card_cb, NULL);
     uk_show(s_sc_card, 0);
 
-    /* 出口: the public IP and where it is; Tailscale's one-line summary */
-    s_nh_card = uk_card(t, UK_MARGIN, 0, UK_CARD_W, NET_EXIT_ROW_H);
-    {
-        lv_obj_t *r = uk_box(s_nh_card, 0, 0, UK_CARD_W, NET_EXIT_ROW_H, T->card, 0);
-        lv_obj_set_style_bg_opa(r, LV_OPA_TRANSP, 0);
-        uk_label(r, UF.cj14, T->t2, UK_PAD, 7, TR("出口"));
-        s_nh_ip  = uk_label_r(r, UF.n15, T->t1, UK_CARD_W - UK_PAD - 16, 6, "");
-        s_nh_geo = uk_label_w(r, UF.cj12, T->t3, UK_PAD, 29, UK_CARD_W - 2 * UK_PAD - 16, 0, "");
-        uk_label_r(r, UF.cj15, T->t3, UK_CARD_W - UK_PAD, 14, "›");
-        uk_tappable(r, nh_card_cb, NULL);
-        r = s_nh_tsrow = uk_box(s_nh_card, 0, NET_EXIT_ROW_H, UK_CARD_W, UK_ROW_H, T->card, 0);
-        lv_obj_set_style_bg_opa(r, LV_OPA_TRANSP, 0);
-        uk_sep(r, 0);
-        uk_label(r, UF.cj14, T->t2, UK_PAD, 11, "Tailscale");
-        s_nh_tsval = uk_label_r(r, UF.n15, T->t1, UK_CARD_W - UK_PAD - 16, 10, "");
-        uk_chevron(r, 0);
-        uk_tappable(r, tile_click_cb, (void *)(intptr_t)SUB_TS);
-        uk_show(r, 0);
-    }
-
-    {
-        lv_obj_t *gone = lv_obj_create(t);
-        lv_obj_remove_style_all(gone);
-        lv_obj_add_flag(gone, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_set_parent(s_nh_card, gone);
-    }
-
     /* 载波明细: every carrier row (moved to the top of 蜂窝 by build_cellular) */
     s_ca_card = uk_card(t, UK_MARGIN, 0, UK_CARD_W, CA_CARD_TOP + 40);
     uk_show(s_ca_card, 0);
@@ -354,7 +317,6 @@ static void home_signal_down(void)
     uk_text_color(s_hr_exit.val, T->t3);
     uk_text_color(s_hr_ca.val, T->t3);
     uk_text_color(s_cc_hero.r1, T->t3);
-    uk_text_color(s_nh_ip, T->t3);
     home_reflow();
 }
 

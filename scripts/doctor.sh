@@ -64,7 +64,7 @@ KMSG=${DOC_KMSG:-/dev/kmsg}
 BOOT_ID_FILE=${DOC_BOOT_ID_FILE:-/proc/sys/kernel/random/boot_id}
 LEDGER_TMP=${DOC_LEDGER_TMP:-/tmp/u60-guard/ledger}
 JSONFILTER=${DOC_JSONFILTER:-jsonfilter}
-DATAD_URL=${DOC_DATAD_URL:-http://127.0.0.1:9460/state}
+DATAD_URL=${DOC_DATAD_URL:-http://127.0.0.1:9460/v2/state}
 SELFTEST_WAIT=${DOC_SELFTEST_WAIT:-6}
 WAN_IF=${DOC_WAN_IF:-rmnet_data0}
 ROUTE=${DOC_ROUTE:-/proc/net/route}
@@ -704,8 +704,8 @@ selftest() {
         *) st FAIL "jsonfilter 多个 -e（中间一个路径不存在）" "网络缓存读不全" ;;
     esac
     case "$($WGET -q -T 2 -O - "$DATAD_URL" 2>/dev/null | head -c 1)" in
-        "{") st PASS "wget -T 2 读 datad /state" ;;
-        *) st FAIL "wget -T 2 读 datad /state" "网络缓存没有来源（datad 没在跑也会这样）" ;;
+        "{") st PASS "wget -T 2 读 datad /v2/state" ;;
+        *) st FAIL "wget -T 2 读 datad /v2/state" "网络缓存没有来源（datad 没在跑也会这样）" ;;
     esac
     rm -rf "$_st"
     # what the crash watcher calls the link up (S2b): an IPv4 address and the main table's default route
@@ -780,7 +780,7 @@ record_list() {
     echo "tuning.env $TS_TUNING"
     echo "tailscaled $TS_DIR/tailscaled"
     echo "tailscaled-nofight $TS_DIR/nofight/tailscaled"
-    for _s in zte-agent zwrt-datad u60-guard u60-uid; do echo "init.d/$_s $INITD/$_s"; done
+    for _s in zte-agent zwrt-datad u60-guard u60-uid tailscale; do echo "init.d/$_s $INITD/$_s"; done
     echo "rc.local $RC"
     echo "u60-recover.sh ${SHIP_TXN%/*}/u60-recover.sh"
     # directories (third word "tree"): compared by their fingerprint
@@ -835,7 +835,9 @@ md5c() {
 treec() {
     [ -e "$1" ] || [ -L "$1" ] || { echo -; return; }
     if [ -z "$TREE_FRESH" ]; then
-        _tk=$( (cd "$1" 2>/dev/null && find . -exec stat -c '%n|%s|%i|%y|%z' {} + 2>/dev/null) | LC_ALL=C sort | md5sum | cut -d' ' -f1)
+        # xargs, not "-exec … {} +": the device's busybox find runs one stat per
+        # file for "+" (741 processes a minute for /data/admin, u60-ledger.md §13)
+        _tk=$( (cd "$1" 2>/dev/null && find . -print0 | xargs -0 stat -c '%n|%s|%i|%y|%z' 2>/dev/null) | LC_ALL=C sort | md5sum | cut -d' ' -f1)
         _th=$(awk -v p="tree:$1" -v k="$_tk" '$1 == p && $2 == k { print $3; exit }' "$MD5_CACHE" 2>/dev/null)
         if [ -n "$_th" ]; then echo "$_th"; return; fi
     fi
@@ -1198,10 +1200,10 @@ if $WGET -q -T 5 -O /dev/null http://127.0.0.1:9090/ 2>/dev/null; then
 else
     report bad agent-http "管理网页 :9090" "打不开" "Web admin :9090" "Not reachable"
 fi
-if $WGET -q -T 5 -O /dev/null http://127.0.0.1:9460/state 2>/dev/null; then
+if $WGET -q -T 5 -O /dev/null "$DATAD_URL" 2>/dev/null; then
     report ok datad-http "数据服务 :9460" "能访问" "Data service :9460" "Reachable"
 else
-    report bad datad-http "数据服务 :9460" "读不到 /state（屏幕会没有数据）" "Data service :9460" "Can't read /state (the screen will have no data)"
+    report bad datad-http "数据服务 :9460" "读不到 /v2/state（屏幕会没有数据）" "Data service :9460" "Can't read /v2/state (the screen will have no data)"
 fi
 
 # ── Wi-Fi safety net ────────────────────────────────────────────────────────

@@ -85,6 +85,13 @@ typedef struct {
     int    qci;
     double ambr_dl, ambr_ul;   /* Mbps */
     char   usb_mode[16];       /* "user" = adb off, "debug" = adb on */
+    /* datad typec / powerbank blocks (插线时的 USB 用法): the USB-C port's
+     * cc_attch_state (1 = something plugged in), power_role ("source" when
+     * the U60 powers it), data_role ("host"; "device" once switched to
+     * charge + internet); powerbank = the 18 W power bank state. -1 / "" =
+     * block stale or datad too old. */
+    int  usb_cc, powerbank;
+    char usb_power_role[12], usb_data_role[12];
 
     /* system */
     long uptime, cpu_temp, cpu_usage, mem_used_pct, mem_total, mem_avail;

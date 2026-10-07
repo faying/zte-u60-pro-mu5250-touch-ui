@@ -234,7 +234,7 @@ static pid_t find_comm(const char *prefix)
     return found;
 }
 
-/* Does any process hold the DRM device open? (drm_owner.c's scan.) */
+/* Does any process hold the DRM device open? (scans /proc/<pid>/fd.) */
 static int drm_held(void)
 {
     DIR *proc = opendir("/proc");

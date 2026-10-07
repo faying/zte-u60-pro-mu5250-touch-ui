@@ -570,38 +570,6 @@ static void net_paint(int changed)
         set_label_fmt(s_net_nbr_r[i], c_nr[i], sizeof c_nr[i], "%s%s", cl->rsrp[0] ? cl->rsrp : "-", cl->rsrp[0] ? " dBm" : "");
     }
 
-    /* 已连接设备流量 */
-    {
-        static char c_cls[96], c_cn[NI_MAX_CLIENTS][48], c_ct[NI_MAX_CLIENTS][40], c_cs[NI_MAX_CLIENTS][96];
-        int k = n->nclients;
-        s_net_ncl = k;
-        uk_show(s_net_cl_state, k == 0);
-        set_label_fmt(s_net_cl_state, c_cls, sizeof c_cls, "%s",
-                      !n->clients_known ? TR("读取中…") : TR("现在没有 Wi-Fi 设备连着（网线和 USB 连的设备不在这里）"));
-        for (int i = 0; i < NI_MAX_CLIENTS; i++) {
-            const ni_client_t *cl = &n->clients[i];
-            char a[16], b[16], ra[16], rb[16];
-            if (i >= k) { uk_show(s_net_cl_row[i], 0); continue; }
-            uk_show(s_net_cl_row[i], 1);
-            set_label_fmt(s_net_cl_name[i], c_cn[i], sizeof c_cn[i], "%s", cl->name[0] ? cl->name : cl->ip[0] ? cl->ip : cl->mac);
-            fmt_bytes_total(a, sizeof a, (long)cl->down);
-            fmt_bytes_total(b, sizeof b, (long)cl->up);
-            set_label_fmt(s_net_cl_tot[i], c_ct[i], sizeof c_ct[i], "↓%s ↑%s", a, b);
-            if (cl->down_rate >= 0) fmt_rate_top(ra, sizeof ra, cl->down_rate, s_cf_speed_bits, 0); else snprintf(ra, sizeof ra, "-");
-            if (cl->up_rate >= 0)   fmt_rate_top(rb, sizeof rb, cl->up_rate, s_cf_speed_bits, 0);   else snprintf(rb, sizeof rb, "-");
-            /* 「5 GHz · ↓12K/s ↑3K/s · 信号很好」：频段在前（2.4 还是 5，2026-09-25 用户要的），
-             * 信号说成话；Wi-Fi 几代和协商速率放不下，管理网页的已连设备页有 */
-            char band[16] = "", sig[48] = "";
-            if (cl->band[0]) snprintf(band, sizeof band, "%s · ", cl->band);
-            if (wifi_sig_word(cl->signal_tier))
-                snprintf(sig, sizeof sig, " · %s", wifi_sig_word(cl->signal_tier));
-            if (cl->down_rate < 0 && cl->up_rate < 0)
-                set_label_fmt(s_net_cl_sub[i], c_cs[i], sizeof c_cs[i], TR("%s速率稍后显示%s"), band, sig);
-            else
-                set_label_fmt(s_net_cl_sub[i], c_cs[i], sizeof c_cs[i], "%s↓%s/s ↑%s/s%s", band, ra, rb, sig);
-        }
-    }
-
     net_reflow(n->err[0] ? 22 : 0, scene_px, two ? 2 : 1, ops, n->ncells);
 }
 

@@ -529,3 +529,12 @@ journal	journal-cell	上次改动
 journal	journal-cell	10-03 14:32 · 网页
 op-notice	home	自动退回已开：切模式没通会退回
 op-notice	home	知道了
+# USB attach mode (usbmode.c, 10-07)
+*	system	插入手机等设备时
+*	system	每次询问
+*	usb-attach	插入的设备怎么用
+*	usb-attach	充电 + 上网
+*	usb-attach	快速充电宝
+*	usb-attach	网口配件
+*	usb-attach	记住选择，以后自动这样做
+*	usb-attach	确定

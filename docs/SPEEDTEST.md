@@ -1,29 +1,12 @@
-# Speed test (optional backend)
+# Speed test
 
 **English** · [中文](SPEEDTEST.zh-CN.md)
 
-The touch UI does not ship a speed test program; it only shows the speed test entry when `better-speedtest` is installed on the device (`src/speedtest.c`). Remove the backend and the entry disappears automatically.
+The touch UI's speed test page drives zte-agent's own speed test engine (manager repo, `zte-agent/src/speedtest.rs`, the same one the admin web page uses); the screen side is `src/speedtest.c` and `src/ui_parts/speedtest.c`. Nothing extra is installed on the device.
 
-## Paths on the device
+- Start / stop: `POST /api/speedtest/start`, `POST /api/speedtest/stop` (zte-agent runs the test in a background thread).
+- Progress: `GET /api/speedtest/progress`, polled about once a second while the page is open.
+- Servers: `GET /api/speedtest/servers` (zte-agent caches the list for 5 minutes); the first row is 自动 (zte-agent picks the best server).
+- Every request carries zte-agent's Bearer token (`src/agent_client.c`). When zte-agent cannot be reached, the page says so instead of starting.
 
-- Binary: `/data/plugins/better-speedtest/better-speedtest`
-- Log: `/tmp/better-speedtest.log`
-- UI preferences: `st_src` / `st_dir` / `st_dur` in `/data/plugins/u60pro-devui/devui.conf` (the UI does not modify `better-speedtest`'s own `config.json`)
-- Loop test markers: `/tmp/better-speedtest.loop`, `/tmp/better-speedtest.loop.pid`
-
-## Behavior
-
-- Starting a test runs `better-speedtest test --json`, with arguments from the selected source (`auto` / `cnspeed` / `ookla` / `cdn`), direction (both / download / upload) and duration (10 / 15 / 20 seconds, or 0 = loop until stopped manually).
-- Stopping ends the process and resets the state.
-
-## Install and uninstall
-
-```sh
-mkdir -p /data/plugins/better-speedtest
-cat > /data/plugins/better-speedtest/better-speedtest    # piped in from the computer over ssh
-chmod +x /data/plugins/better-speedtest/better-speedtest
-```
-
-Uninstall: `rm -f /data/plugins/better-speedtest/better-speedtest /tmp/better-speedtest.log`.
-
-`better-speedtest` is a separate plugin, not in this repo; `zwrt-datad` takes no part in speed tests either.
+The old optional `better-speedtest` plugin (litehtml era) was never installed on real devices and is no longer supported; see tag `legacy-litehtml`.

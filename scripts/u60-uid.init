@@ -2,8 +2,8 @@
 # procd service for u60-uid, the screen-owner daemon (src/uid.c): the only
 # thing that starts/stops u60pro-devui and hands the panel to the vendor UI.
 # Install to /etc/init.d/u60-uid; start from /etc/rc.local with
-# `/etc/init.d/u60-uid start`, replacing the start.sh line (start.sh then
-# leaves the UI alone, see uid_in_charge there).
+# `/etc/init.d/u60-uid start`, replacing the start.sh line (start.sh only
+# does boot chores: u60-uid runs `start.sh prep`).
 #
 # Runs in power-off charging too: the UI has its own charging screen there,
 # exactly as start.sh used to launch it.

@@ -9,7 +9,7 @@
  * never allocates: the UI is single-threaded, so a slow peer costs at most
  * the timeout per step, exactly as before.
  *
- * data.c (datad /state, /events, /control) keeps its own code on purpose: its
+ * data.c (datad /v2/state, /v2/events, /control) keeps its own code on purpose: its
  * SSE stream and "park /control until the answer is readable" behaviour are a
  * frozen contract (see data.c).
  *

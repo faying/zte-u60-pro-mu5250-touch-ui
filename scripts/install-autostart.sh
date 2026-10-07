@@ -1,12 +1,12 @@
 #!/bin/sh
-# Device-side installer: restores the known-good boot path: vendor
-# zte_topsw_devui stays enabled for early panel/touch bring-up, and rc.local
-# later runs /data/plugins/u60pro-devui/start.sh to hand over to our DevUI.
+# Device-side installer, run by the install kit (manager onboard/device/install.sh)
+# before it hands the screen to u60-uid: cleans up older installs, keeps the
+# vendor zte_topsw_devui enabled for early panel/touch bring-up, and puts the
+# start.sh hook (marker # u60pro_devui) in rc.local, which the kit then
+# replaces in place with /etc/init.d/u60-uid start. start.sh itself only does
+# boot chores now; it starts no UI.
 #
 # Expects the binaries + start.sh already copied into the plugin dirs.
-#   adb push u60pro-devui scripts/start.sh /data/plugins/u60pro-devui/
-#   adb push zwrt-datad /data/plugins/zwrt-datad/
-#   adb push scripts/install-autostart.sh /tmp/ && adb shell sh /tmp/install-autostart.sh
 #
 # SPDX-License-Identifier: MIT
 DEVUI_DIR=/data/plugins/u60pro-devui
@@ -16,21 +16,6 @@ LEGACY_DIR=/data/u60pro
 LEGACY_UI_DIR=/data/ui
 RC=${AUTOSTART_RC:-/etc/rc.local}
 HOOK="[ -x $DEVUI_DIR/start.sh ] && sh $DEVUI_DIR/start.sh >/tmp/u60pro-boot.log 2>&1 & # u60pro_devui"
-
-count_ui_pages() {
-    find "$1" -maxdepth 1 -type f -name '*.html' 2>/dev/null | wc -l | tr -d ' '
-}
-
-migrate_legacy_ui() {
-    [ -d "$LEGACY_UI_DIR" ] || return 0
-    [ -f "$LEGACY_UI_DIR/.lockpin" ] && [ ! -f "$UI_DIR/.lockpin" ] \
-        && cp -af "$LEGACY_UI_DIR/.lockpin" "$UI_DIR/.lockpin" 2>/dev/null
-    old_count=$(count_ui_pages "$LEGACY_UI_DIR")
-    new_count=$(count_ui_pages "$UI_DIR")
-    if [ "$new_count" -le 0 ] && [ "$old_count" -gt 0 ]; then
-        cp -af "$LEGACY_UI_DIR"/. "$UI_DIR"/ 2>/dev/null || true
-    fi
-}
 
 # rc.local: drop the old start.sh hooks and put ours before the first exit 0,
 # in one candidate written next to rc.local (/tmp is RAM: a mv from there is a
@@ -68,7 +53,6 @@ update_rc_hook() {
 
 mkdir -p "$DEVUI_DIR" "$DATAD_DIR" "$UI_DIR"
 [ -f "$LEGACY_DIR/devui.conf" ] && [ ! -f "$DEVUI_DIR/devui.conf" ] && cp -f "$LEGACY_DIR/devui.conf" "$DEVUI_DIR/devui.conf"
-migrate_legacy_ui
 chmod 755 "$DEVUI_DIR/start.sh" "$DEVUI_DIR/u60pro-devui" "$DATAD_DIR/zwrt-datad" 2>/dev/null
 rm -f "$DATAD_DIR/u60-datad" "$DEVUI_DIR"/*.new "$DATAD_DIR"/*.new \
       "$DEVUI_DIR/ui.tar.gz" "$DEVUI_DIR/u60pro_ui.tar.gz" "$DEVUI_DIR/boot-trace.log.tmp" 2>/dev/null

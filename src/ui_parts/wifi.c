@@ -8,7 +8,7 @@
  * SPDX-License-Identifier: MIT
  */
 /* ---- WiFi subpage ----
- * Content mirrors ui/subpages/wifi.html: credentials, the radio switches,
+ * Content mirrors the old litehtml Wi-Fi subpage: credentials, the radio switches,
  * the client list, DHCP. The QR code that used to be here is gone — the
  * backend never exposes the passphrase, so it could only ever encode a
  * "join this open network" code that fails to authenticate, and nobody
@@ -123,7 +123,7 @@ static void build_wifi(lv_obj_t *t)
     s_w_pool = uk_row(s_w_dhcp_card, UK_ROW_H, TR("地址池"), 0);
     s_w_lease = uk_row(s_w_dhcp_card, 2 * UK_ROW_H, TR("租期"), 0);
     s_nh_scroll[NH_WIFI] = t;
-    s_nh_base[NH_WIFI] = y + 3 * UK_ROW_H + 10;   /* 设备流量（build_sub_net）从这里起 */
+    s_nh_base[NH_WIFI] = y + 3 * UK_ROW_H + 10;   /* 页面到这里为止（net_reflow 按它定滚动范围） */
     lv_obj_scroll_to_y(t, 0, LV_ANIM_OFF);
 }
 

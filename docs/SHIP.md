@@ -272,9 +272,10 @@ init.d 超过 25 秒就 kill -9 并当作失败（之后照常按「停不下来
 | `guard` | `/data/u60-guard/` 下 `GUARD_FILES` 每个文件 + `/etc/init.d/<名>`（`GUARD_INITS`） | `git show X:scripts/<名>`；init.d 的 = `scripts/<名>.init` | direct，停止标记 + 只重启 guard | — / 300 s | 2（有 `/etc` 路径，总是） |
 
 - `GUARD_FILES`（u60-ship.sh 里一张表，build-kit 的 guard 清单去掉下面三个后和它一致，测试比对）：`alert-lib.sh u60-guard.sh supervise.sh
-  agent-auth.sh chaos.sh doctor.sh config-backup.sh power-sample.sh wan-sources.sh wifi-ab.sh u60-fallback.sh zte-agent.init zwrt-datad.init u60-guard.init`（`u60-fallback.sh` 是 E4 的应急直写脚本，触屏和 zte-agent 都调 `/data/u60-guard/u60-fallback.sh`），
+  agent-auth.sh chaos.sh doctor.sh config-backup.sh wan-sources.sh u60-fallback.sh zte-agent.init zwrt-datad.init u60-guard.init`（`u60-fallback.sh` 是 E4 的应急直写脚本，触屏和 zte-agent 都调 `/data/u60-guard/u60-fallback.sh`），
   加 `/etc/init.d/` 下的 `GUARD_INITS="u60-guard zte-agent zwrt-datad u60-uid"`（内容 = 同一提交的 `scripts/<名>.init`；u60-ship.sh 和 tools/u60 各一张同样的表，
   上传顺序 = `GUARD_FILES` 再 `GUARD_INITS`）。设备目录里其余文件（日志、账本、`lan-ipv6-off`、`standby.baseline`、手工备份）一律不碰。
+  从清单里拿掉的文件 ship 不会删（10-06 拿掉了耗电测试用的 `power-sample.sh`、`wifi-ab.sh`），留在设备上没人调用，要删手工删。
 - **init 脚本归 guard**（10-04 起；之前只换 `/etc/init.d/u60-guard`，另外三个改了要手工换再 `u60 record`）：agent、datad、uid 带不了自己的——
   产物按正式文件的文件名命名，`/data/zte-agent` 和 `/etc/init.d/zte-agent` 同名（datad、uid 一样）。guard 只重启 guard：
   新的 `zte-agent`、`zwrt-datad`、`u60-uid` 脚本要等那个服务下次启动（ship 那个组件、手工 restart 或重启设备）才生效；
@@ -319,7 +320,7 @@ v=1 的所有规则不变，另加：
 ```
 v=2
 dir=/data/admin|<旧指纹>|<新指纹>
-file=/data/u60-guard/wifi-ab.sh|-|<新 md5>     程序文件原来不存在（v=1 不允许）：退回时删掉
+file=/data/u60-guard/<新文件>|-|<新 md5>     程序文件原来不存在（v=1 不允许）：退回时删掉
 file=/etc/init.d/u60-guard|<旧>|<新>
 ```
 

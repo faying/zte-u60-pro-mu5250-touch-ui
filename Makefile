@@ -22,7 +22,7 @@ LVGL_APPLY = cd / && git apply --directory=$(patsubst /%,%,$(CURDIR)) $(1) $(CUR
 
 # 只编 LVGL 路径实际用到的文件（main.c/ui.c 及其依赖），排除旧 litehtml
 # 渲染器专属的 htmlmain.c/devui_ext.c（已删除，见 tag legacy-litehtml），
-# 以及独立工具 fbdump.c/fbserver.c/drm_test.c/touchsim.c（各带自己的 main()）。
+# 以及独立工具 touchsim.c（自带 main()，单独编）。
 # tailscale.c/esim.c 都已接入 LVGL 版，直接用各自的 getter，不走 HTML。
 APP_SRCS  := src/main.c src/ui.c src/ui_logic.c src/ui_theme.c src/ui_kit.c src/ui_exec.c src/drm_disp.c src/touch_input.c src/backlight.c src/data.c src/key_input.c src/json.c src/http.c src/agent_client.c src/net_view.c src/op_view.c src/screen_feed.c src/tailscale.c src/esim.c src/speedtest.c src/scenario.c src/alerts.c src/netinfo.c src/estimate.c src/battery_est.c src/lang.c src/diag_view.c src/diagnose.c
 LVGL_SRCS := $(shell find $(LVGL_DIR)/src -name '*.c' 2>/dev/null)
@@ -76,39 +76,9 @@ src/lang_en.inc: ui/lang/en.tsv scripts/lang-gen.sh
 	sh scripts/lang-gen.sh ui/lang/en.tsv > $@.tmp && mv $@.tmp $@
 src/lang.o: src/lang_en.inc
 
-# Standalone helper: corner long-press listener that hands the screen back to
-# the DevUI while the vendor UI is on screen. Links only touch_input.c + libc,
-# so it builds without LVGL or FreeType.
-CORNER_TARGET := corner-wake
-CORNER_SRCS   := src/corner_wake.c src/touch_input.c
-CORNER_CFLAGS := -std=c11 -Os -ffunction-sections -fdata-sections \
-                 -Wall -Wextra -Wno-unused-parameter \
-                 -D_GNU_SOURCE -I$(ROOT) -Iinclude
-
-$(CORNER_TARGET): $(CORNER_SRCS)
-	$(CC) $(CORNER_CFLAGS) $(CORNER_SRCS) -o $@ -static -Wl,--gc-sections
-	@echo "built $(CORNER_TARGET):"
-	@$(CROSS_COMPILE)size $(CORNER_TARGET) 2>/dev/null || true
-
-# Standalone helper: one-shot query of which process holds the DRM device
-# (default /dev/dri/card0). Pure libc, no LVGL/FreeType/touch_input deps.
-# Feasibility of the underlying /proc/<pid>/fd scan confirmed 2026-09-17 via
-# a manual SSH probe on the device (root can read other processes' fd tables
-# on this kernel); this target is the standalone tool built from that.
-DRMOWNER_TARGET := drm-owner
-DRMOWNER_SRCS   := src/drm_owner.c
-DRMOWNER_CFLAGS := -std=c11 -Os -ffunction-sections -fdata-sections \
-                   -Wall -Wextra -Wno-unused-parameter \
-                   -D_GNU_SOURCE -I$(ROOT) -Iinclude
-
-$(DRMOWNER_TARGET): $(DRMOWNER_SRCS)
-	$(CC) $(DRMOWNER_CFLAGS) $(DRMOWNER_SRCS) -o $@ -static -Wl,--gc-sections
-	@echo "built $(DRMOWNER_TARGET):"
-	@$(CROSS_COMPILE)size $(DRMOWNER_TARGET) 2>/dev/null || true
-
 # u60-uid: the screen-owner daemon (starts/stops u60pro-devui, hands the panel
-# to the vendor UI, corner long-press back). Replaces corner-wake. libc +
-# touch_input.c only, like corner-wake. Decisions live in uid_core.c so they
+# to the vendor UI, corner long-press back). Replaced corner-wake. libc +
+# touch_input.c only. Decisions live in uid_core.c so they
 # can be unit-tested: `make uid-test` → tests/uid_core_test (static, runs in an
 # arm64 busybox container via scripts/test/docker.sh).
 UID_TARGET := u60-uid
@@ -148,4 +118,4 @@ render-golden:
 	sh scripts/test/render/render.sh --write-golden
 
 clean:
-	rm -f $(OBJS) $(TARGET) $(CORNER_TARGET) $(DRMOWNER_TARGET) $(UID_TARGET) scripts/test/uid/uid_core_test scripts/test/ui_logic/ui_logic_test scripts/test/ui_exec/ui_exec_test $(RENDER_BIN)
+	rm -f $(OBJS) $(TARGET) $(UID_TARGET) scripts/test/uid/uid_core_test scripts/test/ui_logic/ui_logic_test scripts/test/ui_exec/ui_exec_test $(RENDER_BIN)

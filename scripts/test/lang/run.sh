@@ -9,7 +9,7 @@
 #      buffers they are printed into were sized for that (10-01 review)
 # Host script (docker for 1 and 3). SPDX-License-Identifier: MIT
 ROOT=$(cd "$(dirname "$0")/../../.." && pwd)
-exec docker run --rm -v "$ROOT":/src:ro -w /src rust:1-slim sh -c '
+exec docker run --rm -v "$ROOT":/src:ro -w /src rust:1.99.0-slim@sha256:24e632c09342c20abf8312cf4f61430a911c01ed3a5e4c02b87292b1c39c5273 sh -c '
 rc=0
 sh scripts/lang-gen.sh ui/lang/en.tsv > /tmp/inc || rc=1
 if cmp -s /tmp/inc src/lang_en.inc; then echo "  ok   src/lang_en.inc is current"

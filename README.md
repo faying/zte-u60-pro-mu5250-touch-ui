@@ -20,7 +20,7 @@ The on-screen text is Chinese only for now; an English option is planned.
 |---|---|
 | [manager](https://github.com/faying/zte-u60-pro-mu5250-manager) | `zte-agent` (:9090), admin web, install kit |
 | **[touch-ui](https://github.com/faying/zte-u60-pro-mu5250-touch-ui)** (this repo) | Front-panel touch UI, screen owner daemon, supervision and Wi-Fi fallback scripts |
-| [data-service](https://github.com/faying/zte-u60-pro-mu5250-data-service) | `zwrt-datad`: local data service (`/state` + SSE on `127.0.0.1:9460`) |
+| [data-service](https://github.com/faying/zte-u60-pro-mu5250-data-service) | `zwrt-datad`: local data service (`/v2/state` + SSE `/v2/events` on `127.0.0.1:9460`) |
 
 ```
 zwrt-datad :9460 ──▶ touch UI ──(eSIM page)──▶ zte-agent :9090 ──▶ lpac ──▶ eUICC card
@@ -35,6 +35,7 @@ The touch UI reads live data from `zwrt-datad` and hands eSIM, APN and similar a
 - Cellular: carriers, signal, network mode, APN, SIM and eSIM switching (via zte-agent, which drives lpac).
 - Exit: public exit IP and its location; Tailscale. No proxy features; if you want one, see [docs/PROXY.md](https://github.com/faying/zte-u60-pro-mu5250-manager/blob/main/docs/PROXY.md) in the manager repo.
 - System: brightness, screen timeout, light / dark / auto theme, battery and load, alert details.
+- Phone plugged into the USB-C port: like the stock screen, it asks what it is for — charge + internet (the phone gets a USB network), 18 W fast charging, or an Ethernet adapter — and can remember the answer (System › When a phone is plugged in).
 - Every tap gets immediate feedback; actions that need confirming take two taps.
 - **u60-uid**: the single owner of the screen. It starts or takes over the UI, restarts it after a crash and records an alert. If the UI fails to start twice in a row it hands the screen back to the stock UI (so the firmware does not escalate to a full reboot); long-press the bottom-right corner for 3 seconds to come back.
 - `scripts/`: procd supervision (`supervise.sh` + `*.init`), the Wi-Fi fallback watchdog and alert SMS sender (`u60-guard.sh`), a read-only health check (`doctor.sh`), config backup (`config-backup.sh`) and more. The contract is in the manager repo's [docs/RELIABILITY.md](https://github.com/faying/zte-u60-pro-mu5250-manager/blob/main/docs/RELIABILITY.md).

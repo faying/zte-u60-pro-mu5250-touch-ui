@@ -147,7 +147,7 @@ STOP_REQ=${GUARD_STOP_REQ:-$STATE/stop-requested}  # "<who> <why>": the next gua
 FSYNC_LOG=${GUARD_FSYNC_LOG:-}
 UID_LOG=${GUARD_UID_LOG:-/tmp/u60-uid.log}         # u60-uid's own log: hand-backs and give-ups
 UID_LOG_CAP=${GUARD_UID_LOG_CAP:-65536}             # read and over this: renamed to .old by the ledger job (ledger_uid)
-DATAD_URL=${GUARD_DATAD_URL:-http://127.0.0.1:9460/state} # the loopback listener needs no token
+DATAD_URL=${GUARD_DATAD_URL:-http://127.0.0.1:9460/v2/state} # the loopback listener needs no token
 DATAD_CONTROL=${GUARD_DATAD_CONTROL:-http://127.0.0.1:9460/control} # writes go through datad when it is there (E4 T7c)
 WGET=${GUARD_WGET:-wget}
 LEDGER_READ_BUDGET=${GUARD_LEDGER_READ_BUDGET:-3} # seconds of outside reads per ledger round (§6)
@@ -1582,7 +1582,7 @@ ledger_net() {
     _nf=$LTMP/state.json
     rm -f "$_nf"
     if [ "$(uptime_s)" -ge "$LEDGER_DEADLINE" ]; then
-        log "ledger: no time left this round for datad /state"
+        log "ledger: no time left this round for datad /v2/state"
         return 0
     fi
     $WGET -q -T 2 -O "$_nf" "$DATAD_URL" 2>/dev/null && [ -s "$_nf" ] || { rm -f "$_nf"; return 0; }
@@ -1591,10 +1591,18 @@ ledger_net() {
     N_NR=
     N_MCC=
     N_MNC=
-    eval "$($JSONFILTER -e 'N_TYPE=@.net.type' -e 'N_BAND=@.net.band' -e 'N_NR=@.net.nr_band' \
-        -e 'N_MCC=@.net.mcc' -e 'N_MNC=@.net.mnc' 2>/dev/null <"$_nf")"
-    _hi=$($JSONFILTER -e '@.sim.imsi' 2>/dev/null <"$_nf" | cut -c1-6)
+    N_SST=
+    N_IST=
+    eval "$($JSONFILTER -e 'N_SST=@.blocks.signal.stale' -e 'N_TYPE=@.blocks.signal.data.type' \
+        -e 'N_BAND=@.blocks.signal.data.band' -e 'N_NR=@.blocks.signal.data.nr_band' \
+        -e 'N_MCC=@.blocks.signal.data.mcc' -e 'N_MNC=@.blocks.signal.data.mnc' \
+        -e 'N_IST=@.blocks.sim.stale' 2>/dev/null <"$_nf")"
+    _hi=$($JSONFILTER -e '@.blocks.sim.data.imsi' 2>/dev/null <"$_nf" | cut -c1-6)
     rm -f "$_nf"
+    # /v2 keeps a stale block's last value; read it as a failed read, the way
+    # the old /state did (STATE_V2.md V2-29). jsonfilter prints false as 0.
+    case $N_SST in 0 | false) ;; *) N_TYPE= N_BAND= N_NR= N_MCC= N_MNC= ;; esac
+    case $N_IST in 0 | false) ;; *) _hi= ;; esac
     uptime_s >"$LTMP/datad.read" # the datad source was readable this round (§8)
     _net=
     if isint "$N_MCC" && isint "$N_MNC" && [ "$N_MCC" -gt 0 ]; then

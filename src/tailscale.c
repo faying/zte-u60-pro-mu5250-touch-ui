@@ -44,7 +44,6 @@ static char s_ip6[48], s_os[16], s_version[24], s_tailnet[64], s_key_expiry[16];
 static int      s_was_active;
 static long     s_poll_ms;
 static unsigned s_sig;
-static char     s_card[2048];
 
 static long now_ms(void)
 {
@@ -319,90 +318,4 @@ void tailscale_get_status(tailscale_status_t *out)
     snprintf(out->version, sizeof out->version, "%s", s_version);
     snprintf(out->tailnet, sizeof out->tailnet, "%s", s_tailnet);
     snprintf(out->key_expiry, sizeof out->key_expiry, "%s", s_key_expiry);
-}
-
-/* ---- 卡片 ---- */
-
-static void ts_esc(char *dst, size_t cap, const char *src)
-{
-    size_t o = 0;
-    for (const char *s = src; *s && o + 7 < cap; s++) {
-        const char *r = NULL;
-        if      (*s == '&') r = "&amp;";
-        else if (*s == '<') r = "&lt;";
-        else if (*s == '>') r = "&gt;";
-        if (r) { size_t L = strlen(r); memcpy(dst + o, r, L); o += L; }
-        else dst[o++] = *s;
-    }
-    dst[o] = 0;
-}
-
-#define CARD_APPEND(...) do { \
-        if (o < (int)sizeof s_card) { \
-            int w_ = snprintf(s_card + o, sizeof s_card - (size_t)o, __VA_ARGS__); \
-            if (w_ > 0) o += w_; \
-        } \
-    } while (0)
-
-const char *tailscale_card_html(int locked)
-{
-    const char *st, *cls;
-    char name[192], a[192], b[192];
-    int running = s_ok && !strcmp(s_state, "Running");
-    int o = 0;
-
-    if (!s_sock) return "";
-    if (!s_ok)                                   { st = "未运行";   cls = "q-off"; }
-    else if (running)                            { st = s_self_online ? "已连接" : "离线";
-                                                   cls = s_self_online ? "q-good" : "q-bad"; }
-    else if (!strcmp(s_state, "Starting"))       { st = "连接中";   cls = "q-mid"; }
-    else if (!strcmp(s_state, "NeedsLogin"))     { st = "需要登录"; cls = "q-mid"; }
-    else if (!strcmp(s_state, "NeedsMachineAuth")) { st = "等待批准"; cls = "q-mid"; }
-    else if (!strcmp(s_state, "Stopped"))        { st = "已停止";   cls = "q-off"; }
-    else                                         { st = s_state[0] ? s_state : "-"; cls = "q-off"; }
-
-    /* 锁屏预览只露状态和在线数：机器名、地址、子网都藏起来 */
-    ts_esc(name, sizeof name, s_name);
-    CARD_APPEND("<div class='card'><div class='title'>Tailscale");
-    if (!locked && name[0]) CARD_APPEND(" <span class='sub'>%s</span>", name);
-    CARD_APPEND("<span class='r ts-st %s'>%s</span></div>", cls, st);
-
-    if (!s_ok) {
-        CARD_APPEND("<div class='sec'>tailscaled 没有响应</div></div>");
-        return s_card;
-    }
-    if (running) {
-        if (!locked && (s_ip[0] || s_relay[0])) {
-            ts_esc(a, sizeof a, s_ip);
-            ts_esc(b, sizeof b, s_relay);
-            CARD_APPEND("<div class='sec'>%s%s%s%s</div>", a,
-                        a[0] && b[0] ? " · " : "", b[0] ? "DERP " : "", b);
-        }
-        CARD_APPEND("<table>");
-        if (!locked && s_routes[0]) {
-            ts_esc(a, sizeof a, s_routes);
-            CARD_APPEND("<tr><td class='kv-l'>子网路由</td><td class='val'>%s</td></tr>", a);
-        }
-        CARD_APPEND("<tr><td class='kv-l'>在线设备</td><td class='val'>%d / %d</td></tr>",
-                    s_peers_online, s_peers);
-        if (!locked) {
-            if (s_active)
-                CARD_APPEND("<tr><td class='kv-l'>活跃连接</td><td class='val'>%d · 直连 %d · 中继 %d</td></tr>",
-                            s_active, s_direct, s_active - s_direct);
-            else
-                CARD_APPEND("<tr><td class='kv-l'>活跃连接</td><td class='val'>无</td></tr>");
-            if (s_exit[0]) {
-                ts_esc(a, sizeof a, s_exit);
-                CARD_APPEND("<tr><td class='kv-l'>出口节点</td><td class='val'>%s%s</td></tr>",
-                            a, s_exit_online ? "" : " · 离线");
-            }
-        }
-        CARD_APPEND("</table>");
-    }
-    if (!locked && s_health[0]) {
-        ts_esc(a, sizeof a, s_health);
-        CARD_APPEND("<div class='ts-warn'>%s</div>", a);
-    }
-    CARD_APPEND("</div>");
-    return s_card;
 }

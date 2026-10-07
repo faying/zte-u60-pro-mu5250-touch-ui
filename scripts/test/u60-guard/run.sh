@@ -127,6 +127,8 @@ function val(p,   c, k, x) {
     if (c == "\"") { f[p] = str(); return }
     x = ""
     while (i <= n && substr(s, i, 1) !~ /[],} \t\r\n]/) { x = x substr(s, i, 1); i++ }
+    if (x == "true") x = 1          # the device jsonfilter prints booleans as 1 / 0
+    else if (x == "false") x = 0
     f[p] = x
 }
 { s = s $0 "\n" }
@@ -1313,7 +1315,7 @@ check "revoked: a clock line with a null offset" 'lines | grep -q "\"k\":\"clock
 teardown
 
 setup
-cp "$SCRIPTS/test/u60-guard/state.json" "$T/state.json" # data-service's golden /state (made-up SIM)
+cp "$SCRIPTS/test/u60-guard/state-v2.json" "$T/state.json" # /v2/state built from data-service's golden /state (made-up SIM)
 cat >"$T/bin/uci" <<EOF
 #!/bin/sh
 echo "\$*" >>$T/uci.log
@@ -1345,6 +1347,11 @@ check "datad not answering: the cache stays as it was, the round goes on" '[ "$(
 rm -f "$T/datad-down"
 GUARD_LEDGER_READ_BUDGET=0 lround 1420
 check "no read time left this round: datad not asked, said in the log" '[ "$(cat $T/state/ledger/datad.read)" = 1300 ] && grep -q "no time left this round for datad" $T/guard.log'
+cp "$T/state.json" "$T/state.fresh"
+sed -i 's/"signal":{"revision":1,"observed_at":1790500000,"stale":false/"signal":{"revision":2,"observed_at":1790500000,"stale":true/' "$T/state.json"
+lround 1480
+check "signal block stale: read as a failed read, not its kept value (V2-29)" '[ "$(cut -d" " -f2-5 $T/state/ledger/net)" = "- - - -" ] && [ "$(lines | grep -c "\"k\":\"net_change\"")" = 4 ]'
+mv -f "$T/state.fresh" "$T/state.json"
 check "all of it is flat JSON" 'jsonok'
 teardown
 
@@ -1428,7 +1435,7 @@ L=$T/state/ledger
 export GUARD_CRASHLOG_DIR=$T/crashlog GUARD_UID_LOG=$T/uid.log GUARD_ROUTE=$T/route GUARD_RC_LOCAL=$T/rc.local
 mkdir -p "$T/crashlog" "$L"
 verdict() { :; }
-cp "$SCRIPTS/test/u60-guard/state.json" "$T/state.json"
+cp "$SCRIPTS/test/u60-guard/state-v2.json" "$T/state.json"
 echo "2026-09-28T10:00:00 starting (pid 1)" >"$T/uid.log"
 printf 'Iface\tDestination\tGateway\tFlags\nrmnet_data0\t00000000\t00000000\t0001\n' >"$T/route"
 echo "sh /data/tailscale/start.sh &" >"$T/rc.local"

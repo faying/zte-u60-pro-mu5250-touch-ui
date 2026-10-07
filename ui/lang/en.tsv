@@ -206,7 +206,6 @@ zte-agent 登录失败	zte-agent login failed
 已经在用「%s」	Already using \"%s\"
 已连接	Connected
 已连接设备	Connected devices
-已连接设备流量	Device traffic
 已锁定	Locked
 常亮	Never
 干扰%s	Noise %s
@@ -220,7 +219,6 @@ zte-agent 登录失败	zte-agent login failed
 开放	Open
 开机后%ld分	%ld min after boot
 开机后要连续两次扫描确认位置	Needs two scans after boot to confirm location
-归属地查询中…	Looking up location…
 当前	Current
 当前配置	Current profile
 性能测试	Performance Test
@@ -273,7 +271,6 @@ zte-agent 登录失败	zte-agent login failed
 本机	This device
 本机暂时读不到邻区	Can't read neighbor cells here
 条件变了，1–2 分钟内跟着换	Follows within 1–2 min when they change
-查不到归属地	Location unknown
 查询中…	Looking up…
 正在关机…	Powering off…
 正在切换到「%s」…%s	Switching to \"%s\"… %s
@@ -331,7 +328,6 @@ zte-agent 登录失败	zte-agent login failed
 现在已经是自动选择	Already automatic
 现在已经是自动选网，不用恢复	Already on automatic selection
 现在插的是普通 SIM 卡，没有 eSIM 配置。换成 eSIM 卡后可以在这里切换。	This is a regular SIM with no eSIM profiles; insert an eSIM card to switch profiles here
-现在没有 Wi-Fi 设备连着（网线和 USB 连的设备不在这里）	No Wi-Fi devices connected (wired and USB devices aren't listed here)
 现在：%s	Now: %s
 电池	Battery
 电池与负载	Battery & load
@@ -527,3 +523,31 @@ zte-agent 登录失败	zte-agent login failed
 撤销	Undo
 # DD18：自动退回打开那天首页提示一次（write-op-layer.md 打开自动退回，10-04）
 自动退回已开：切模式没通会退回	Auto revert on: reverts a mode change that can't connect
+# 插线时的 USB 用法（manager docs/designs/usb-attach-mode.md，10-07）
+充电 + 上网	Charge + internet
+快速充电宝	Fast charging
+网口配件	Ethernet adapter
+手机经 U60 上网，同时充电	Internet via the U60, while charging
+18W 给手机快充，不上网	18 W fast charging, no internet
+USB 转网口等配件；手机只充电	For USB Ethernet; phones only charge
+插入的设备怎么用	Use the plugged-in device for
+记住选择，以后自动这样做	Remember, do this every time
+选一项，再点「确定」	Pick one, then tap OK
+现在就是这样 · 点「确定」也可以记住它	Already in use · tap OK to remember it
+点「确定」切换	Tap OK to switch
+确定	OK
+先选一项	Pick one first
+设备已拔掉	Unplugged
+已生效	Done
+数据服务不可用 · 没切	Data service unavailable · not switched
+已按记住的方式：%s	As remembered: %s
+数据服务不可用 · 没按记住的方式切	Data service unavailable · remembered choice not applied
+没切成 · 可以再试一次	Didn't switch · try again
+没按记住的方式切成 · 插着网口转接头？	Remembered choice not applied · Ethernet adapter attached?
+没有生效 · 可以再试一次	Didn't take effect · try again
+没插设备	Nothing plugged in
+只充电，没有网络	Charging only, no internet
+U60 在充电	U60 charging
+没插设备 · 插上后可以在这里改用法	Nothing plugged in · plug in to change how it's used
+插入手机等设备时	When a phone is plugged in
+每次询问	Ask every time

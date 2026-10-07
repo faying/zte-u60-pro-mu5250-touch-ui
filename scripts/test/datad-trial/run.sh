@@ -7,7 +7,7 @@
 #
 # Time is fake: $T/uptime is /proc/uptime and the stub `sleep` advances it,
 # then runs $T/hook, which each case uses to break one thing at a set time.
-# /state's ts moves with the fake clock unless $T/frozen exists.
+# /v2/state's live.observed_at moves with the fake clock unless $T/frozen exists.
 # SPDX-License-Identifier: MIT
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -65,14 +65,14 @@ EOF
 #!/bin/sh
 cat $T/pids/"\$1" 2>/dev/null | grep . || exit 1
 EOF
-    # /state: ts follows the clock unless frozen; wan_status unless no-wan.
+    # /v2/state: live.observed_at follows the clock unless frozen; wan_status unless no-wan.
     cat >"$T/bin/curl" <<EOF
 #!/bin/sh
 [ -f $T/curl-fail ] && exit 7
 if [ -f $T/frozen ]; then ts=\$(cat $T/frozen-ts); else ts=\$(cut -d. -f1 $T/uptime | tr -dc 0-9); echo \$ts >$T/frozen-ts; fi
 if [ -f $T/state-body ]; then sed "s/@TS@/\$ts/" $T/state-body
-elif [ -f $T/no-wan ]; then echo "{\"ts\":\$ts,\"datad\":{\"name\":\"zwrt-datad\"},\"net\":{\"wan_dns\":\"1.1.1.1\"}}"
-else echo "{\"ts\":\$ts,\"datad\":{\"name\":\"zwrt-datad\"},\"net\":{\"wan_status\":\"ipv4_ipv6_connected\"}}"; fi
+elif [ -f $T/no-wan ]; then echo "{\"epoch\":\"e\",\"seq\":3,\"blocks\":{\"live\":{\"revision\":1,\"observed_at\":\$ts,\"stale\":false,\"data\":{}},\"signal\":{\"revision\":1,\"observed_at\":\$ts,\"stale\":false,\"data\":{\"wan_dns\":\"1.1.1.1\"}}}}"
+else echo "{\"epoch\":\"e\",\"seq\":3,\"blocks\":{\"live\":{\"revision\":1,\"observed_at\":\$ts,\"stale\":false,\"data\":{}},\"signal\":{\"revision\":1,\"observed_at\":\$ts,\"stale\":false,\"data\":{\"wan_status\":\"ipv4_ipv6_connected\"}}}}"; fi
 EOF
     cat >"$T/bin/logread" <<EOF
 #!/bin/sh
@@ -97,7 +97,7 @@ EOF
     cat >"$T/bin/initd" <<EOF
 #!/bin/sh
 echo "\$*" >>$T/initd.log
-# a started production datad answers /state (clears curl-fail)
+# a started production datad answers /v2/state (clears curl-fail)
 [ "\$1" = start ] && [ ! -f $T/prod-broken ] && echo 5555 >$T/pids/zwrt-datad && rm -f $T/curl-fail
 [ "\$1" = stop ] && [ ! -f $T/prod-stuck ] && rm -f $T/pids/zwrt-datad
 exit 0
@@ -230,7 +230,7 @@ setup
 hook_at 1030 "touch $T/no-wan"
 trial
 aborted "netwatch (own count)" "zte-agent netwatch 报错上升（0 → 1"
-check "netwatch (own count): signal logged once" '[ "$(grep -c "netwatch 信号：自己读 /state" "$T/data/trial.log")" = 1 ]'
+check "netwatch (own count): signal logged once" '[ "$(grep -c "netwatch 信号：自己读 /v2/state" "$T/data/trial.log")" = 1 ]'
 rm -rf "$T"
 
 # zte-agent's counter file is the default signal
@@ -274,8 +274,8 @@ setup
 echo 'oops' >"$T/netwatch.errors"
 hook_at 1030 "touch $T/no-wan"
 trial
-aborted "netwatch file garbage" "zte-agent netwatch 报错上升（0 → 1；来源：自己读 /state"
-check "netwatch file garbage: fallback logged" "logged 'netwatch 信号：自己读 /state'"
+aborted "netwatch file garbage" "zte-agent netwatch 报错上升（0 → 1；来源：自己读 /v2/state"
+check "netwatch file garbage: fallback logged" "logged 'netwatch 信号：自己读 /v2/state'"
 rm -rf "$T"
 
 # the file appears mid-trial: switch signal, baseline from it, no abort
@@ -377,28 +377,34 @@ trial
 aborted "leading zeros" "zte-agent netwatch 报错上升（8 → 9"
 rm -rf "$T"
 
-# "ts" not first in /state, spaces around ":"; wan_status with spaces
+# live not the first block, spaces around ":"; wan_status with spaces
 setup
 export DT_WINDOW=100
-echo '{"datad":{"name":"zwrt-datad"},"ts" : @TS@,"net":{"wan_status" : "connected"}}' >"$T/state-body"
+echo '{"epoch":"e","seq":3,"blocks":{"signal":{"revision":1,"stale" : false,"data":{"wan_status" : "connected"}},"live" : {"revision":2, "observed_at" : @TS@,"stale":false,"data":{}}}}' >"$T/state-body"
 trial
-check "ts not first: passes" '[ "$RC" = 0 ] && logged "通过："'
-check "ts not first: ts read" "logged 'ts=1000'"
+check "live not first: passes" '[ "$RC" = 0 ] && logged "通过："'
+check "live not first: observed_at read" "logged 'observed_at=1000'"
 check "wan_status spaced: no netwatch abort" "! logged '中止：'"
 rm -rf "$T"
 
 # wan_status null (no SIM / dialling) is not a netwatch error
 setup
 export DT_WINDOW=100
-echo '{"ts":@TS@,"net":{"wan_status":null}}' >"$T/state-body"
+echo '{"blocks":{"live":{"observed_at":@TS@,"stale":false,"data":{}},"signal":{"stale":false,"data":{"wan_status":null}}}}' >"$T/state-body"
 trial
 check "wan_status null: passes" '[ "$RC" = 0 ] && logged "通过：" && ! logged "中止："'
 rm -rf "$T"
 # but a reply without wan_status still counts
 setup
-echo '{"ts":@TS@,"net":{"wan_dns":"1.1.1.1"}}' >"$T/state-body"
+echo '{"blocks":{"live":{"observed_at":@TS@,"stale":false,"data":{}},"signal":{"stale":false,"data":{"wan_dns":"1.1.1.1"}}}}' >"$T/state-body"
 trial
 aborted "wan_status missing" "zte-agent netwatch 报错上升"
+rm -rf "$T"
+# a stale signal block keeps its old wan_status: still counts (V2-29)
+setup
+echo '{"blocks":{"live":{"observed_at":@TS@,"stale":false,"data":{}},"signal":{"stale":true,"data":{"wan_status":"connected"}}}}' >"$T/state-body"
+trial
+aborted "signal stale" "zte-agent netwatch 报错上升"
 rm -rf "$T"
 export DT_WINDOW=3600
 
@@ -480,13 +486,13 @@ check "launch broken: no watcher" "! grep -q 'datad-trial.sh run' '$T/setsid.log
 check "launch broken: tells the user" 'grep -q "已恢复正式版" "$T/out"'
 rm -rf "$T"
 
-# up but /state never answers: same
+# up but /v2/state never answers: same
 launch_setup
 touch "$T/curl-fail"
 launch
-check "launch no /state: exit 1, production back" '[ "$RC" = 1 ] && logged "正式版已恢复" && logged "（/state 没有 ts）"'
-check "launch no /state: test build killed" "grep -q 4242 '$T/kill.log' && [ ! -f '$T/pids/zwrt-datad.test' ]"
-check "launch no /state: no watcher" "! grep -q 'datad-trial.sh run' '$T/setsid.log'"
+check "launch no /v2/state: exit 1, production back" '[ "$RC" = 1 ] && logged "正式版已恢复" && logged "（/v2/state 没有 live 块）"'
+check "launch no /v2/state: test build killed" "grep -q 4242 '$T/kill.log' && [ ! -f '$T/pids/zwrt-datad.test' ]"
+check "launch no /v2/state: no watcher" "! grep -q 'datad-trial.sh run' '$T/setsid.log'"
 rm -rf "$T"
 
 # production will not stop: never start the test build

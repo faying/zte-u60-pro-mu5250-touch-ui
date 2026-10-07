@@ -31,9 +31,8 @@ static volatile sig_atomic_t g_run = 1;
 static void on_signal(int sig) { (void)sig; g_run = 0; }
 
 /* Manual screen-capture hook for debugging: `touch /tmp/u60-dumpfb` on the
- * device dumps the current scanout buffer as raw RGB565 to /tmp/fb.dump.
- * Mirrors htmlmain.c's maybe_dump_fb() so the same pull-and-decode tooling
- * works against either renderer. */
+ * device dumps the current scanout buffer as raw RGB565 (320x480) to
+ * /tmp/fb.dump; pull it with `ssh u60 'cat /tmp/fb.dump'`. */
 static void maybe_dump_fb(drm_disp_t *d)
 {
     if (access("/tmp/u60-dumpfb", F_OK) != 0) return;

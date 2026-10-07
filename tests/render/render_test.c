@@ -849,6 +849,54 @@ int main(int argc, char **argv)
     texts_clear(); collect(s_power_menu); shot("power-menu", 0); page_done("power-menu");
     power_menu_set(0);
 
+    /* 插线时的 USB 用法 (usbmode.c): plugging a phone in asks; 选中 + 确定 sends;
+     * the blocks showing it closes the sheet; a remembered choice is done
+     * 3 s after the plug-in, marked remembered (datad then spares an adapter) */
+    if (rt_scene == RT_GOOD) {
+        int n = rt_control_calls;
+        rt_usb_phone = 1;
+        settle(1100);
+        if (!usbmode_visible()) bad("usb: plugging a phone in did not open the sheet");
+        else if (!any_sheet_open()) bad("usb: the sheet does not hold the auto screen-off");
+        click(s_um_ok);
+        settle(100);
+        if (rt_control_calls != n) bad("usb: 确定 with nothing picked sent %s", rt_control_last);
+        click(s_um_row[0]);
+        settle(100);
+        texts_clear(); collect(s_um_sheet.scrim); shot("usb-attach", 0); page_done("usb-attach");
+        if (rt_control_calls != n) bad("usb: picking a row sent it (two steps: 选中 + 确定)");
+        click(s_um_ok);
+        settle(100);
+        if (rt_control_calls != n + 1 || strcmp(rt_control_last, "usb.attach_mode") ||
+            strcmp(rt_control_params, "{\"mode\":\"share\"}"))
+            bad("usb: 确定 did not send share (%d %s %s)", rt_control_calls - n, rt_control_last, rt_control_params);
+        rt_usb_phone = 2;
+        settle(1100);
+        if (!usbmode_visible()) bad("usb: the sheet closed before saying 已生效");
+        settle(2100);
+        if (usbmode_visible()) bad("usb: the sheet stayed after it took effect");
+        rt_usb_phone = 0;
+        settle(3100);
+        s_cf_usb = UI_USB_SHARE;
+        n = rt_control_calls;
+        rt_usb_phone = 1;
+        settle(1100);
+        if (usbmode_visible()) bad("usb: a remembered choice still asked");
+        if (rt_control_calls != n) bad("usb: the remembered choice ran before the 3 s grace");
+        settle(3100);
+        if (rt_control_calls != n + 1 || !strstr(rt_control_params, "\"remembered\":true"))
+            bad("usb: the remembered choice did not run (%d %s)", rt_control_calls - n, rt_control_params);
+        rt_usb_phone = 0;
+        settle(3100);
+        s_cf_usb = UI_USB_ASK;
+        rt_usb_phone = 1;
+        settle(1100);
+        rt_usb_phone = 0;
+        settle(3100);
+        if (usbmode_visible()) bad("usb: unplugging did not close the sheet");
+        else ok("");
+    }
+
     /* two-step confirms, first tap only (never the second) */
     to_tab(TAB_SYS);
     click(s_vendor_btn);

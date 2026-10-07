@@ -193,6 +193,7 @@ static void refresh_cb(lv_timer_t *t)
             net_view_placeholder(&nv, TR("读取中…"), "");
     }
     s_net_roam = nv.roam;
+    if (!datad_silent) usbmode_tick(&d);   /* 插线时的 USB 用法：插上手机就问（或按记住的做） */
     op_refresh();           /* E4: 事务行、事务页（/v2/screen 的 op） */
     if (sub_visible(SUB_PLACE)) place_paint(&d, !datad_silent);
     diag_refresh();
@@ -213,6 +214,8 @@ static void refresh_cb(lv_timer_t *t)
             banner_set(TR("数据服务忙 · 没改，稍后再试"));
         else
             banner_set(TR("没改成 · 数据服务回了错误"));
+    } else if (usbmode_banner()) {
+        banner_set(usbmode_banner());   /* 已按记住的方式：… */
     } else if (ah.lost_secs) {
         /* Same banner, lower priority than "data service down" above. */
         char msg[96];
@@ -520,18 +523,9 @@ static void refresh_cb(lv_timer_t *t)
      * IP 和归属地来自 zte-agent 的缓存（netinfo_poll 在首页 30 秒读一次）；
      * 运营商和漫游已经在状态卡顶行。 */
     if (tab_visible(TAB_HOME)) {
-        static char c_nip[48], c_ngeo[320];
         const netinfo_t *n = netinfo_get();
         int dead = s_cc_tone >= 2;      /* 没信号 / 没卡：出口是旧的 */
         char g[320];
-        set_label_fmt(s_nh_ip, c_nip, sizeof c_nip, "%s", n->direct.ip[0] ? n->direct.ip : "—");
-        uk_text_color(s_nh_ip, dead ? T->t3 : T->t1);
-        if (n->err[0]) snprintf(g, sizeof g, "%s", n->err);
-        else if (!n->direct.present) snprintf(g, sizeof g, "%s", TR("归属地查询中…"));
-        else if (!n->direct.ip[0]) snprintf(g, sizeof g, "%s", TR("查不到归属地"));
-        else snprintf(g, sizeof g, "%s%s%s", n->direct.geo[0] ? n->direct.geo : n->direct.ip,
-                      n->direct.isp[0] ? " · " : "", n->direct.isp);
-        set_label_fmt(s_nh_geo, c_ngeo, sizeof c_ngeo, "%s", g);
         /* 首页出口：直连 · 国家 城市；完整归属地在出口标签。 */
         static char c_hx[96], c_hx2[256];
         char sg[96], sub[256] = "";
@@ -594,8 +588,6 @@ static void refresh_cb(lv_timer_t *t)
             tailscale_get_status(&ts);
             if (!ts.available) {
                 lv_obj_add_flag(s_ts_card, LV_OBJ_FLAG_HIDDEN);
-                uk_show(s_nh_tsrow, 0);
-                lv_obj_set_height(s_nh_card, NET_EXIT_ROW_H);
             } else {
                 const char *state_txt, *note = "";
                 uint32_t state_col, dot_col;
@@ -612,19 +604,6 @@ static void refresh_cb(lv_timer_t *t)
                 else if (!strcmp(ts.state, "Stopped"))          { state_txt = TR("已停止");   state_col = T->t3; }
                 else                                            { state_txt = ts.state[0] ? ts.state : "-"; state_col = T->t3; }
                 dot_col = running && ts.self_online ? T->green : state_col == T->warnT ? T->orange : state_col == T->badT ? T->red : T->t3;
-                {
-                    /* 出口卡里的一行摘要；完整的节点、子网在下面的 Tailscale 卡 */
-                    static char c_nts[80];
-                    if (running && ts.ip[0])
-                        set_label_fmt(s_nh_tsval, c_nts, sizeof c_nts, "%s · %s", state_txt, ts.ip);
-                    else
-                        set_label_fmt(s_nh_tsval, c_nts, sizeof c_nts, "%s", state_txt);
-                    uk_text_color(s_nh_tsval, running && ts.self_online ? T->okT : state_col);
-                    if (lv_obj_has_flag(s_nh_tsrow, LV_OBJ_FLAG_HIDDEN)) {
-                        uk_show(s_nh_tsrow, 1);
-                        lv_obj_set_height(s_nh_card, NET_EXIT_ROW_H + UK_ROW_H);
-                    }
-                }
                 lv_label_set_text(s_ts_val[0], state_txt);
                 uk_text_color(s_ts_val[0], state_col);
                 uk_bg(s_ts_dot, dot_col);
@@ -1090,7 +1069,7 @@ static void refresh_cb(lv_timer_t *t)
 
     /* ---- 信令读取 subpage ---- */
     {
-        static char c_sg[6][64], c_sgn[4][48], c_nrb[160], c_lteb[200];
+        static char c_sg[6][64], c_sgn[4][48];
         set_label_fmt(s_sg_nr[0], c_sg[0], sizeof c_sg[0], "%s  %s MHz",
                       d.nr_band[0] ? d.nr_band : "-", d.nr_bw[0] ? d.nr_bw : "-");
         set_label_fmt(s_sg_nr[1], c_sg[1], sizeof c_sg[1], "%ld", d.nr_channel);
@@ -1136,11 +1115,6 @@ static void refresh_cb(lv_timer_t *t)
         set_label_fmt(s_sg_net[2], c_sgn[2], sizeof c_sgn[2], "%s", d.net_type);
         set_label_fmt(s_sg_net[3], c_sgn[3], sizeof c_sgn[3], "%s",
                       d.hsr ? TR("开启") : TR("关闭"));
-        char nrf[160], ltef[200];
-        fmt_band_list(nrf, sizeof nrf, d.sa_bands, 'n');
-        fmt_band_list(ltef, sizeof ltef, d.lte_bands, 'B');
-        set_label_fmt(s_sg_nrb, c_nrb, sizeof c_nrb, "%s", nrf[0] ? nrf : "-");
-        set_label_fmt(s_sg_lteb, c_lteb, sizeof c_lteb, "%s", ltef[0] ? ltef : "-");
     }
 
     /* ---- 锁频 subpage ---- */

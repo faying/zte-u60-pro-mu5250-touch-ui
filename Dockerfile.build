@@ -35,4 +35,9 @@ COPY scripts/_build_freetype.sh /opt/_build_freetype.sh
 RUN TC=/opt/aarch64--musl--stable-2025.08-1/bin FT=/opt/freetype OUT=/opt/freetype-musl BUILD=/tmp/ft-build \
       bash /opt/_build_freetype.sh | tail -1 && rm -rf /tmp/ft-build
 
+# ccache：scripts/build-docker.sh 把编译缓存放在 Docker 卷里，按源码内容命中，
+# 每次仍在干净目录里编。单独一层放最后，加它不会让上面的工具链和 FreeType 重做。
+RUN apt-get update && apt-get install -y --no-install-recommends ccache \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /src

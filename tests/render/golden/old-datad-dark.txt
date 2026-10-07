@@ -1,7 +1,7 @@
 charts-collecting.0 9ff05019ae25048f
 charts-collecting.1 7f0b37b4e89902f6
-charts-collecting.2 78389ff6e7cc048d
-charts-collecting.3 d2b19a930bca2838
+charts-collecting.2 7468a9474ab8115d
+charts-collecting.3 1bf19eec4b067d20
 home.0 19f032ee1cb5a091
 home.1 84a67ac78b9bd967
 cellular.0 ed0205d48738c427
@@ -12,8 +12,8 @@ wifi.2 856f105b87501444
 exit.0 ff0e8c81d8227514
 system.0 9ff05019ae25048f
 system.1 1807db5687721a49
-system.2 78389ff6e7cc048d
-system.3 d2b19a930bca2838
+system.2 7468a9474ab8115d
+system.3 1bf19eec4b067d20
 sms.0 9eed98c665f1c4f1
 sms.1 0e1d4b8b9192e00e
 sms.2 0e1d4b8b9192e00e
@@ -47,8 +47,8 @@ apn.1 49de8ff6ca67515b
 power-menu.0 d9cdf8c34b3c5b9b
 system-vendor-armed.0 9ff05019ae25048f
 system-vendor-armed.1 1807db5687721a49
-system-vendor-armed.2 cfc71fdd6ec0f3e7
-system-vendor-armed.3 00ec78207c56646e
+system-vendor-armed.2 7468a9474ab8115d
+system-vendor-armed.3 c96dbc96866c08a6
 lock-mode-armed.0 2e0933c30e26602b
 lock-mode-armed.1 04581e8297579e8a
 lock-mode-failed.0 ed0205d48738c427

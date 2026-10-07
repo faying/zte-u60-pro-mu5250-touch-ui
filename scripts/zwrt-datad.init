@@ -4,7 +4,7 @@
 # `/etc/init.d/zwrt-datad start`. start.sh then leaves datad alone (it checks
 # for this script AND that rc.local starts it, so neither can be half-done).
 #
-# Launch semantics are start.sh's start_datad_legacy, moved here unchanged:
+# Launch semantics are the old start.sh start_datad_legacy's, moved here unchanged:
 # normal boots only, token seeding, LAN listener arguments, modem stream
 # settings, and the data service's own auto-update kept off.
 #

@@ -246,6 +246,9 @@ static void build_system(lv_obj_t *t)
     s_sy_speedunit_sw = uk_toggle(c, UK_CARD_W - UK_PAD, UK_ROW_H + 7, speedunit_cb, NULL);
     y += 2 * UK_ROW_H + 10;
 
+    uk_section(t, y, TR("插入手机等设备时")); y += 20;
+    y += build_usbmode_card(t, y) + 10;
+
     uk_section(t, y, TR("调试")); y += 20;
     c = uk_card(t, UK_MARGIN, y, UK_CARD_W, UK_ROW_H);
     s_tile_sub[SUB_PERF] = uk_row_nav(c, 0, TR("性能测试"), 1, tile_click_cb, (void *)(intptr_t)SUB_PERF);
@@ -265,7 +268,7 @@ static void build_system(lv_obj_t *t)
 }
 
 /* ---- Charts page ----
- * The four series ui/05-charts.html plots. lv_chart with a fixed point count
+ * The four series the old litehtml charts page plotted. lv_chart with a fixed point count
  * and lv_chart_set_next_value(): the series buffer is allocated once, values
  * shift in place, so a page that updates every second allocates nothing. */
 /* Card-coloured backing so the chart's grid line does not run through the

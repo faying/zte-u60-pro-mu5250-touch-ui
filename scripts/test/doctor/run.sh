@@ -415,7 +415,7 @@ ssetup() {
     printf '2026-09-28 10:00:00 : reboot_reason_code=1150!!! \n' >"$T/key.log"
     echo enabled >"$T/recovery"
     printf '#!/bin/sh\necho "export X='"'"'1'"'"'; export Z='"'"'1'"'"'; "\n' >"$T/bin/jsonfilter"
-    printf '#!/bin/sh\ncase "$*" in *9460/state*) echo "{\\"ts\\":1}" ;; *public/status*) cat %s/public 2>/dev/null ;; esac\nexit 0\n' "$T" >"$T/bin/wget"
+    printf '#!/bin/sh\ncase "$*" in *9460/v2/state*) echo "{\\"epoch\\":\\"e\\",\\"seq\\":1,\\"blocks\\":{}}" ;; *public/status*) cat %s/public 2>/dev/null ;; esac\nexit 0\n' "$T" >"$T/bin/wget"
     printf '#!/bin/sh\necho "9: rmnet_data0    inet 10.1.2.3/30 scope global rmnet_data0"\n' >"$T/bin/ip"
     printf 'Iface\tDestination\tGateway\tFlags\nrmnet_data0\t00000000\t00000000\t0001\n' >"$T/route"
     chmod +x "$T/bin/jsonfilter" "$T/bin/wget" "$T/bin/ip"
@@ -579,7 +579,7 @@ printf 'v=1\ncomp=datad\nphase=failed\nreason=executor gone\nend=1\n' >"$T/txn";
 run
 check "takeover, stock UI asked for, no heartbeat, nothing reachable, disk full" '[ "$(en takeover)" = "warn|Wi-Fi watchdog|In control: scenarios paused; handed back after 10 min of stable admin backend" ] &&
     [ "$(en screen)" = "ok|Screen UI|Stock UI on, as asked" ] && [ "$(en heartbeat)" = "bad|Admin heartbeat|No heartbeat file (admin backend not running?)" ] &&
-    [ "$(en agent-http)" = "bad|Web admin :9090|Not reachable" ] && [ "$(en datad-http)" = "bad|Data service :9460|Can'"'"'t read /state (the screen will have no data)" ] &&
+    [ "$(en agent-http)" = "bad|Web admin :9090|Not reachable" ] && [ "$(en datad-http)" = "bad|Data service :9460|Can'"'"'t read /v2/state (the screen will have no data)" ] &&
     [ "$(en disk)" = "bad|/data space|Only 9 MB left" ]'
 check "an ASCII ship reason is kept in English" '[ "$(en manifest)" = "warn|Manifest|Last deploy stopped midway, needs attention: datad (executor gone)" ]'
 rm -f "$T/uid.want"; echo 2 >"$T/uid/attempts"

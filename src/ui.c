@@ -118,15 +118,8 @@ static int       s_cell_tail_y;
 static void cell_reflow(void);
 static lv_obj_t *s_ca_card, *s_ca_qos;          /* 载波明细卡 */
 #define CA_CARD_TOP 34
-#define HOME_TILE_W 145
-#define HOME_TILE_H 92
-#define SC_CARD_H   60          /* 情景卡：一行 40 + 小字一行 */
 /* 情景 — zte-agent 情景引擎的当前判定，只读。 */
 #define SC_CARD_H 72
-/* 网络：注册运营商 + 漫游（datad）、出口 IP 和归属地（zte-agent 缓存）。
- * 点开「情景 · 网络」页的网络部分。 */
-static lv_obj_t *s_nh_card, *s_nh_ip, *s_nh_geo, *s_nh_tsrow, *s_nh_tsval;
-static void nh_card_cb(lv_event_t *e);
 static lv_obj_t *s_sc_card, *s_sc_state, *s_sc_note;
 static int s_sc_force;          /* 情景卡片要按新状态重画 */
 /* Home Tailscale: a grouped list; rows past the first hide when not running. */
@@ -146,7 +139,7 @@ static lv_obj_t *s_ch_net_dn, *s_ch_net_up, *s_ch_cpu_v, *s_ch_cpu_t, *s_ch_mem_
 static lv_obj_t *s_net_scroll, *s_net_err;
 /* 网络各块挂在哪一页（build_sub_net 的注释） */
 enum { NH_SCENE, NH_EXIT, NH_OPER, NH_CELL, NH_WIFI, NH_N };
-static const int k_net_host[6] = { NH_SCENE, NH_EXIT, NH_OPER, NH_OPER, NH_CELL, NH_WIFI };
+static const int k_net_host[5] = { NH_SCENE, NH_EXIT, NH_OPER, NH_OPER, NH_CELL };
 static lv_obj_t *s_nh_scroll[NH_N];
 static int       s_nh_base[NH_N];              /* 那一页里网络部分从哪开始 */
 static void net_relayout(void);
@@ -189,7 +182,7 @@ static lv_obj_t *s_tp_sep[TS_PEER_MAX];
 static lv_obj_t *s_tp_self[TS_SELF_ROWS], *s_tp_card, *s_tp_row[TS_PEER_MAX],
                 *s_tp_name[TS_PEER_MAX], *s_tp_ip[TS_PEER_MAX], *s_tp_tag[TS_PEER_MAX], *s_tp_link[TS_PEER_MAX];
 /* 信令读取 subpage */
-static lv_obj_t *s_sg_nr[6], *s_sg_lt[6], *s_sg_lte_sec, *s_sg_nr_sec, *s_sg_net[4], *s_sg_nrb, *s_sg_lteb;
+static lv_obj_t *s_sg_nr[6], *s_sg_lt[6], *s_sg_lte_sec, *s_sg_nr_sec, *s_sg_net[4];
 /* 锁频 subpage */
 #define BAND_MAX 28
 #define BG_SA 0
@@ -340,28 +333,25 @@ static void fmt_rate_top(char *out, size_t n, long Bps, int bits, int shortf)
 }
 
 
-/* ---- persisted UI settings, shared file with htmlmain.c's load_conf()/
- * save_conf() (src/htmlmain.c:815-844) — same devui.conf, same key set, so
- * whichever binary runs doesn't clobber the other's settings. Acted on:
- * speed_bits, autooff (screen-off time: read at start, written when the
- * 系统 page changes it — before 10-04 it lived only in memory and every
- * restart came back as 常亮), bright, appearance*, lang; the rest
- * round-trip verbatim. */
+/* ---- persisted UI settings (devui.conf): speed_bits, autooff (screen-off
+ * time: read at start, written when the 系统 page changes it — before 10-04
+ * it lived only in memory and every restart came back as 常亮), bright,
+ * appearance*, lang, usb_attach. Saving writes exactly these keys; the litehtml UI's
+ * keys (theme, show_batpct, refresh_ms, sig_*, st_*) are no longer kept. */
 #ifndef DEVUI_CONF_FILE
 #define DEVUI_CONF_FILE "/data/plugins/u60pro-devui/devui.conf"
 #endif
-static int  s_cf_theme = 0, s_cf_speed_bits = 1, s_cf_show_batpct = 1,
-            s_cf_autooff_ms = 60000, s_cf_refresh_ms = 5000,
-            s_cf_sig_read = 0, s_cf_sig_parse = 0, s_cf_bright = 232, s_cf_st_dur = 15;
-static char s_cf_st_src[16] = "auto", s_cf_st_dir[16] = "both";
-/* appearance: new-UI only. theme= (litehtml: 0 = dark) is written back to the
- * theme actually shown, never read — an old theme=0 must not turn this UI
- * dark. The litehtml UI's own save drops these keys, which falls back to light. */
+static int  s_cf_speed_bits = 1, s_cf_autooff_ms = 60000, s_cf_bright = 232;
+/* appearance: an old litehtml theme=0 (dark) left in the file is ignored. */
 static ui_appear_t s_cf_appear = UI_APPEAR_LIGHT;
 static char s_cf_dark_from[8] = "19:00", s_cf_dark_to[8] = "07:00";
 /* lang=en → English (include/lang.h); u60-guard reads the same line for the
  * alert SMS. Chosen once per process, like the theme. */
 static int s_cf_lang_en = 0;
+/* usb_attach=ask|share|fast_charge|accessory: what to do when a phone is
+ * plugged in (ui_parts/usbmode.c). Only while this UI owns the screen; the
+ * vendor UI asks on its own. */
+static ui_usb_pref_t s_cf_usb = UI_USB_ASK;
 
 static void load_devui_conf(void)
 {
@@ -370,17 +360,9 @@ static void load_devui_conf(void)
     char line[64], sval[16];
     int v;
     while (fgets(line, sizeof line, fp)) {
-        if      (sscanf(line, "theme=%d", &v) == 1)       s_cf_theme = !!v;
-        else if (sscanf(line, "speed_bits=%d", &v) == 1)  s_cf_speed_bits = !!v;
-        else if (sscanf(line, "show_batpct=%d", &v) == 1) s_cf_show_batpct = !!v;
+        if      (sscanf(line, "speed_bits=%d", &v) == 1)  s_cf_speed_bits = !!v;
         else if (sscanf(line, "autooff=%d", &v) == 1)     s_cf_autooff_ms = v;
-        else if (sscanf(line, "refresh_ms=%d", &v) == 1)  s_cf_refresh_ms = v;
-        else if (sscanf(line, "sig_read=%d", &v) == 1)    s_cf_sig_read = !!v;
-        else if (sscanf(line, "sig_parse=%d", &v) == 1)   s_cf_sig_parse = !!v;
         else if (sscanf(line, "bright=%d", &v) == 1)      s_cf_bright = v;
-        else if (sscanf(line, "st_src=%15s", sval) == 1)  snprintf(s_cf_st_src, sizeof s_cf_st_src, "%s", sval);
-        else if (sscanf(line, "st_dir=%15s", sval) == 1)  snprintf(s_cf_st_dir, sizeof s_cf_st_dir, "%s", sval);
-        else if (sscanf(line, "st_dur=%d", &v) == 1)      s_cf_st_dur = v;
         else if (sscanf(line, "appearance=%15s", sval) == 1) {
             if (ui_appear_parse(sval, &s_cf_appear) != 0)
                 fprintf(stderr, "ui: devui.conf appearance=%s not understood, using light\n", sval);
@@ -388,6 +370,8 @@ static void load_devui_conf(void)
         else if (sscanf(line, "appearance_dark_from=%7s", sval) == 1) snprintf(s_cf_dark_from, sizeof s_cf_dark_from, "%.7s", sval);
         else if (sscanf(line, "appearance_dark_to=%7s", sval) == 1)   snprintf(s_cf_dark_to, sizeof s_cf_dark_to, "%.7s", sval);
         else if (!strncmp(line, "lang=", 5)) s_cf_lang_en = lang_parse(line + 5);
+        else if (!strncmp(line, "usb_attach=", 11) && ui_usb_pref_parse(line + 11, &s_cf_usb) != 0)
+            fprintf(stderr, "ui: devui.conf %.40s not understood, asking\n", line);
     }
     fclose(fp);
 }
@@ -397,11 +381,11 @@ static void save_devui_conf(void)
     FILE *fp = fopen(DEVUI_CONF_FILE, "w");
     if (!fp) return;
     fprintf(fp,
-            "theme=%d\nspeed_bits=%d\nshow_batpct=%d\nautooff=%d\nrefresh_ms=%d\nsig_read=%d\nsig_parse=%d\nbright=%d\nst_src=%s\nst_dir=%s\nst_dur=%d\n"
-            "appearance=%s\nappearance_dark_from=%s\nappearance_dark_to=%s\nlang=%s\n",
-            s_cf_theme, s_cf_speed_bits, s_cf_show_batpct, s_cf_autooff_ms, s_cf_refresh_ms,
-            s_cf_sig_read, s_cf_sig_parse, s_cf_bright, s_cf_st_src, s_cf_st_dir, s_cf_st_dur,
-            ui_appear_name(s_cf_appear), s_cf_dark_from, s_cf_dark_to, s_cf_lang_en ? "en" : "zh");
+            "speed_bits=%d\nautooff=%d\nbright=%d\n"
+            "appearance=%s\nappearance_dark_from=%s\nappearance_dark_to=%s\nlang=%s\nusb_attach=%s\n",
+            s_cf_speed_bits, s_cf_autooff_ms, s_cf_bright,
+            ui_appear_name(s_cf_appear), s_cf_dark_from, s_cf_dark_to, s_cf_lang_en ? "en" : "zh",
+            ui_usb_pref_name(s_cf_usb));
     fclose(fp);
 }
 
@@ -468,7 +452,6 @@ static int theme_exec(int automatic)
 static void appearance_set(ui_appear_t a)
 {
     ui_appear_t old = s_cf_appear;
-    int old_theme = s_cf_theme;
     if (a == old) return;
     int dark = appear_resolve(a);
     if (dark != s_dark && ui_busy()) {   /* the exec would cut a speed test or an eSIM switch short (L2 R12) */
@@ -477,11 +460,9 @@ static void appearance_set(ui_appear_t a)
         return;
     }
     s_cf_appear = a;
-    s_cf_theme = ui_legacy_theme_value(dark);
     save_devui_conf();
     if (dark != s_dark && theme_exec(0) != 0) {
         s_cf_appear = old;              /* stay as we are, and say so in the file too */
-        s_cf_theme = old_theme;
         save_devui_conf();
     }
     appearance_ui_sync();
@@ -588,13 +569,9 @@ static void appearance_tick(void)
     };
     switch (ui_auto_decide(&in)) {
     case UI_AUTO_EXEC:
-        s_cf_theme = ui_legacy_theme_value(!s_dark);
-        save_devui_conf();
         if (theme_exec(1) != 0) {
             /* e.g. the binary was replaced on disk: retrying every second
              * would only fill the log. Next boot (or a manual switch) again. */
-            s_cf_theme = ui_legacy_theme_value(s_dark);
-            save_devui_conf();
             s_auto_suspended = 1;
             fprintf(stderr, "ui: automatic appearance switch off until restart (exec failed)\n");
         }
@@ -621,28 +598,6 @@ static int32_t rate_scale(long bps)
     if (v < 0) v = 0;
     if (v > 100) v = 100;
     return (int32_t)v;
-}
-
-/* net.{lte_supported_bands,nr_sa_supported_bands,nr_nsa_supported_bands}
- * (aliased in this project's backend JSON as sa_bands/nsa_bands/lte_bands —
- * confirmed against a live /state response, not just the field names) are a
- * plain comma-separated capability list — what the modem *can* use, not
- * what's active right now (that's nrca/lteca, parsed separately above).
- * Reformat "1,2,3,5" into "n1 n2 n3 n5" (or "B1 B2..." for LTE) so it reads
- * as band numbers, not an opaque CSV blob — this is the actual content the
- * user asked to see ("哪些频段可用"), not decoration. */
-static void fmt_band_list(char *out, size_t out_sz, const char *csv, char prefix)
-{
-    size_t used = 0;
-    out[0] = '\0';
-    const char *p = csv;
-    while (*p && used + 8 < out_sz) {
-        long n = strtol(p, (char **)&p, 10);
-        int w = snprintf(out + used, out_sz - used, used ? " %c%ld" : "%c%ld", prefix, n);
-        if (w < 0) break;
-        used += (size_t)w;
-        while (*p == ',') p++;
-    }
 }
 
 /* lv_label_set_text() (and therefore _fmt, which funnels into it) *always*
@@ -699,9 +654,8 @@ static void set_label_fmt(lv_obj_t *label, char *cache, size_t cache_sz, const c
  * ui_create(). */
 
 /* DESIGN.md §4: a few dense cards, not one card per metric. Flat solid
- * panel, rounded corners, no border/shadow/glow/gradient — matches the
- * litehtml reference (`ui/01-signal.html`) that's actually live on the
- * device today. Group related fields into one card (cellular status, or
+ * panel, rounded corners, no border/shadow/glow/gradient (the look of the
+ * old litehtml signal page, git tag legacy-litehtml). Group related fields into one card (cellular status, or
  * battery+traffic+system) instead of fragmenting into single-metric cards. */
 
 /* Nested sub-card: a thin bordered box inside a regular card, for a list of
@@ -878,6 +832,12 @@ static int sub_visible(int id)
  * zero while keeping every field. */
 
 /* ---- the pages, one file each (src/ui_parts/, see the note at the top of each) ---- */
+/* ui_parts/usbmode.c (插线时的 USB 用法), used by parts included before it */
+static int usbmode_visible(void);
+static void usbmode_tick(const devui_data_t *d);
+static const char *usbmode_banner(void);
+static int build_usbmode_card(lv_obj_t *t, int y);
+static void usbmode_pref_paint(void);
 #include "ui_parts/home.c"
 #include "ui_parts/wifi.c"
 #include "ui_parts/esim.c"
@@ -892,6 +852,7 @@ static int sub_visible(int id)
 #include "ui_parts/diagnose.c"
 #include "ui_parts/refresh.c"
 #include "ui_parts/power.c"
+#include "ui_parts/usbmode.c"
 #include "ui_parts/op.c"
 
 /* ---- shared chrome: floating tab capsule ----
@@ -1155,10 +1116,6 @@ void ui_create(void)
     lang_set_en(s_cf_lang_en);          /* before the fonts and the first TR() */
     s_dark = appear_resolve(s_cf_appear);
     ui_theme_select(s_dark);
-    if (s_cf_theme != ui_legacy_theme_value(s_dark)) {
-        s_cf_theme = ui_legacy_theme_value(s_dark);   /* litehtml fallback shows the same theme */
-        save_devui_conf();
-    }
     backlight_init();
     /* an in-process exec (theme, language) carries the live value; a fresh
      * start (boot, u60-uid relaunch, crash) takes the saved one */
@@ -1317,6 +1274,7 @@ void ui_create(void)
     fflush(stderr);
 
     build_power_menu();
+    build_usbmode();
     key_input_init(&s_key);
     s_key_timer = lv_timer_create(key_poll_cb, 50, NULL);
 }

@@ -55,8 +55,6 @@ int ui_is_dark(ui_appear_t a, int now_min, int from_min, int to_min)
     return now_min >= from_min || now_min < to_min;                          /* crosses midnight */
 }
 
-int ui_legacy_theme_value(int dark) { return dark ? 0 : 1; }
-
 /* ---- exec guard ---- */
 ui_exec_verdict_t ui_exec_check(const ui_exec_hist_t *h, long now_s)
 {
@@ -407,3 +405,42 @@ int ui_arm_expire(ui_arm_t *a, unsigned now, unsigned ms)
 }
 
 void ui_arm_clear(ui_arm_t *a) { a->at = 0; }
+
+static const char *const k_usb_pref[4] = { "ask", "share", "fast_charge", "accessory" };
+
+const char *ui_usb_pref_name(ui_usb_pref_t p)
+{
+    return (unsigned)p < 4 ? k_usb_pref[p] : "ask";
+}
+
+int ui_usb_pref_parse(const char *s, ui_usb_pref_t *out)
+{
+    size_t n;
+    if (!s) return -1;
+    n = strcspn(s, " \t\r\n");
+    for (int i = 0; i < 4; i++)
+        if (strlen(k_usb_pref[i]) == n && !strncmp(s, k_usb_pref[i], n)) {
+            *out = (ui_usb_pref_t)i;
+            return 0;
+        }
+    return -1;
+}
+
+ui_usb_ev_t ui_usb_track(ui_usb_track_t *t, int cc, int phone, unsigned now_ms)
+{
+    if (cc == 0) {
+        if (!t->attached) { t->seen0 = 1; return UI_USB_EV_NONE; }
+        if (!t->off_since) { t->off_since = now_ms ? now_ms : 1; return UI_USB_EV_NONE; }
+        if (now_ms - t->off_since < UI_USB_UNPLUG_MS) return UI_USB_EV_NONE;
+        t->attached = 0;
+        t->off_since = 0;
+        t->seen0 = 1;
+        return UI_USB_EV_UNPLUGGED;
+    }
+    if (cc != 1) return UI_USB_EV_NONE;
+    t->off_since = 0;
+    if (t->attached || !t->seen0 || !phone) return UI_USB_EV_NONE;
+    t->attached = 1;
+    t->seen0 = 0;
+    return UI_USB_EV_PLUGGED;
+}

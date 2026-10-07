@@ -875,7 +875,7 @@ teardown
 
 # ═══ T15 guard ══════════════════════════════════════════════════════════════
 TG=20261001-120000-guard
-GFILES="alert-lib.sh u60-guard.sh supervise.sh agent-auth.sh chaos.sh doctor.sh config-backup.sh power-sample.sh wan-sources.sh wifi-ab.sh u60-fallback.sh zte-agent.init zwrt-datad.init u60-guard.init"
+GFILES="alert-lib.sh u60-guard.sh supervise.sh agent-auth.sh chaos.sh doctor.sh config-backup.sh wan-sources.sh u60-fallback.sh zte-agent.init zwrt-datad.init u60-guard.init"
 GINITS="u60-guard zte-agent zwrt-datad u60-uid" # /etc/init.d (u60-ship.sh GUARD_INITS)
 doctor_src() { # doctor_src <OLD|NEW>: a doctor that prints $T/tsv-<v> and passes --ledger-selftest
     cat <<EOF
@@ -895,7 +895,7 @@ tsv() { # tsv <OLD|NEW> <level:id> …
 }
 guard_old() {
     for f in $GFILES; do
-        [ "$f" = wifi-ab.sh ] && continue # not on the device yet: a new file
+        [ "$f" = u60-fallback.sh ] && continue # not on the device yet: a new file
         case "$f" in
             doctor.sh) doctor_src OLD >"$GD/$f" ;;
             *) printf '#!/bin/sh\n# OLD %s\n:\n' "$f" >"$GD/$f" ;;
@@ -935,7 +935,7 @@ upload_guard() { # upload_guard [txn] [variant: ok|broken]
         esac
         _m="$_m${_m:+$NL}file=$f $(md5 "$_s/$f")"
     done
-    GI_NEW=$(md5 "$_s/u60-guard") GS_NEW=$(md5 "$_s/u60-guard.sh") GW_NEW=$(md5 "$_s/wifi-ab.sh")
+    GI_NEW=$(md5 "$_s/u60-guard") GS_NEW=$(md5 "$_s/u60-guard.sh") GW_NEW=$(md5 "$_s/u60-fallback.sh")
     meta "$_t" guard "$_m"
 }
 # inits_are <old|new>: all four /etc/init.d scripts are that version (a
@@ -949,7 +949,7 @@ inits_are() {
 # rec_md5 <name>: the md5 of the manifest's last kind=record line for name
 rec_md5() { grep '"kind":"record"' "$U60S_MANIFEST" 2>/dev/null | grep "\"name\":\"$1\"" | tail -n 1 | sed -n 's/.*"md5":"\([^"]*\)".*/\1/p'; }
 gold() { # every guard file is the old one again, the new one gone
-    check "$CASE: all files old again, wifi-ab.sh (new) deleted" '[ "$(md5 "$GD/u60-guard.sh")" = "$GS_OLD" ] && [ "$(md5 "$R/etc/init.d/u60-guard")" = "$GI_OLD" ] && [ ! -e "$GD/wifi-ab.sh" ] && grep -q OLD "$GD/doctor.sh"'
+    check "$CASE: all files old again, u60-fallback.sh (new) deleted" '[ "$(md5 "$GD/u60-guard.sh")" = "$GS_OLD" ] && [ "$(md5 "$R/etc/init.d/u60-guard")" = "$GI_OLD" ] && [ ! -e "$GD/u60-fallback.sh" ] && grep -q OLD "$GD/doctor.sh"'
     check "$CASE: all four init scripts old again" 'inits_are old'
 }
 
@@ -958,10 +958,10 @@ CASE="ship guard"
 guard_old
 upload_guard
 stage $TG
-check "$CASE: staged as v=2 (new file, /etc path)" '[ "$RC" = 0 ] && [ "$(txnv)" = 2 ] && grep -qx "file=$GD/wifi-ab.sh|-|$GW_NEW" "$R/data/u60-ship/txn" && grep -qx "file=$R/etc/init.d/u60-guard|$GI_OLD|$GI_NEW" "$R/data/u60-ship/txn"'
+check "$CASE: staged as v=2 (new file, /etc path)" '[ "$RC" = 0 ] && [ "$(txnv)" = 2 ] && grep -qx "file=$GD/u60-fallback.sh|-|$GW_NEW" "$R/data/u60-ship/txn" && grep -qx "file=$R/etc/init.d/u60-guard|$GI_OLD|$GI_NEW" "$R/data/u60-ship/txn"'
 run $TG
 check "$CASE: done" '[ "$RC" = 0 ] && [ "$(phase)" = done ]'
-check "$CASE: every file new, the new one in place" '[ "$(md5 "$GD/u60-guard.sh")" = "$GS_NEW" ] && [ "$(md5 "$R/etc/init.d/u60-guard")" = "$GI_NEW" ] && [ "$(md5 "$GD/wifi-ab.sh")" = "$GW_NEW" ] && [ -x "$GD/wifi-ab.sh" ]'
+check "$CASE: every file new, the new one in place" '[ "$(md5 "$GD/u60-guard.sh")" = "$GS_NEW" ] && [ "$(md5 "$R/etc/init.d/u60-guard")" = "$GI_NEW" ] && [ "$(md5 "$GD/u60-fallback.sh")" = "$GW_NEW" ] && [ -x "$GD/u60-fallback.sh" ]'
 check "$CASE: the init script's .prev in u60-ship/prev, nothing extra in /etc/init.d" '[ "$(md5 "$R/data/u60-ship/prev/etc.init.d.u60-guard.prev-$TG")" = "$GI_OLD" ] && [ "$(ls "$R/etc/init.d" | tr "\n" " ")" = "u60-guard u60-uid zte-agent zwrt-datad " ]'
 check "$CASE: all four init scripts new, 755, each .prev in u60-ship/prev" '_g=1; for n in $GINITS; do [ -x "$R/etc/init.d/$n" ] && cmp -s "$T/init-old/$n" "$R/data/u60-ship/prev/etc.init.d.$n.prev-$TG" || _g=0; done; [ $_g = 1 ] && inits_are new'
 check "$CASE: agent, datad and u60-uid not restarted (u60-uid init.d never called)" '[ ! -s "$T/uid-initd.log" ]'
@@ -971,7 +971,7 @@ check "$CASE: doctor's view: every manifest row matches the files" '_g=1; for n 
 check "$CASE: old doctor asked before, stop-requested written, stop then start" '[ -f "$T/tmp/doctor-before.tsv" ] && [ "$(cat "$T/guardtmp/stop-requested")" = "u60-ship $TG" ] && [ "$(cut -d" " -f1 "$T/guard-initd.log" | tr "\n" " ")" = "stop start " ]'
 check "$CASE: the 300 s check ran" "logged 'guard 检查，窗口 300s' && logged 'doctor --ledger-selftest 通过' && logged 'doctor --tsv 和换之前比没有变坏'"
 check "$CASE: logs, ledger and hand-made files untouched" '[ "$(cat "$GD/ledger")" = keep ] && [ -f "$GD/lan-ipv6-off" ] && [ -f "$GD/u60-guard.sh.pre-lanv6-20260924" ]'
-check "$CASE: manifest: the new file without prev, the init with its prev" "grep -q '{\"path\":\"$GD/wifi-ab.sh\",\"md5\":\"$GW_NEW\"}' '$U60S_MANIFEST' && grep -q '\"path\":\"$R/etc/init.d/u60-guard\",\"md5\":\"$GI_NEW\",\"prev\":\"$R/data/u60-ship/prev/etc.init.d.u60-guard.prev-$TG\"' '$U60S_MANIFEST'"
+check "$CASE: manifest: the new file without prev, the init with its prev" "grep -q '{\"path\":\"$GD/u60-fallback.sh\",\"md5\":\"$GW_NEW\"}' '$U60S_MANIFEST' && grep -q '\"path\":\"$R/etc/init.d/u60-guard\",\"md5\":\"$GI_NEW\",\"prev\":\"$R/data/u60-ship/prev/etc.init.d.u60-guard.prev-$TG\"' '$U60S_MANIFEST'"
 teardown
 
 # T15: doctor --tsv before / after, row by row
@@ -1002,7 +1002,7 @@ touch "$T/doctor-hang-OLD"
 upload_guard
 stage $TG
 run $TG
-check "$CASE: aborted before anything was touched" '[ "$(phase)" = aborted ] && reason | grep -q "旧 doctor.sh --tsv 跑不完" && [ ! -s "$T/guard-initd.log" ] && [ "$(md5 "$GD/u60-guard.sh")" = "$GS_OLD" ] && [ ! -e "$GD/wifi-ab.sh" ] && [ ! -e "$GD/wifi-ab.sh.test" ]'
+check "$CASE: aborted before anything was touched" '[ "$(phase)" = aborted ] && reason | grep -q "旧 doctor.sh --tsv 跑不完" && [ ! -s "$T/guard-initd.log" ] && [ "$(md5 "$GD/u60-guard.sh")" = "$GS_OLD" ] && [ ! -e "$GD/u60-fallback.sh" ] && [ ! -e "$GD/u60-fallback.sh.test" ]'
 teardown
 
 setup
@@ -1108,7 +1108,7 @@ guard_old
 cp "$OLDREC" "$R/data/u60-ship/u60-recover.sh"
 upload_guard
 stage $TG
-check "$CASE: stage refused" '[ "$RC" = 1 ] && grep -q "先装新版 u60-recover.sh" "$T/out" && [ ! -e "$GD/wifi-ab.sh.test" ] && [ ! -e "$R/etc/init.d/u60-guard.test" ]'
+check "$CASE: stage refused" '[ "$RC" = 1 ] && grep -q "先装新版 u60-recover.sh" "$T/out" && [ ! -e "$GD/u60-fallback.sh.test" ] && [ ! -e "$R/etc/init.d/u60-guard.test" ]'
 teardown
 
 setup
@@ -1125,12 +1125,12 @@ setup
 CASE="guard: the meta lacks one file"
 guard_old
 upload_guard
-sed -i '/^file=wifi-ab.sh /d' "$R/data/u60-ship/stage/$TG/meta"
+sed -i '/^file=u60-fallback.sh /d' "$R/data/u60-ship/stage/$TG/meta"
 stage $TG
-check "$CASE: stage refused" '[ "$RC" = 1 ] && grep -q "没有 file=wifi-ab.sh" "$T/out"'
+check "$CASE: stage refused" '[ "$RC" = 1 ] && grep -q "没有 file=u60-fallback.sh" "$T/out"'
 teardown
 
-for p in promote:moved:alert-lib.sh promote:moved:wifi-ab.sh promote:prev-synced:u60-guard promote:moved:u60-guard promote:moved:zwrt-datad promote:prev-synced:u60-uid promote:moved:u60-uid check:begin rollback:files:u60-guard; do
+for p in promote:moved:alert-lib.sh promote:moved:u60-fallback.sh promote:prev-synced:u60-guard promote:moved:u60-guard promote:moved:zwrt-datad promote:prev-synced:u60-uid promote:moved:u60-uid check:begin rollback:files:u60-guard; do
     setup
     CASE="guard: power cut at $p"
     guard_old
@@ -1170,7 +1170,7 @@ stage $TG
 run $TG
 sh "$SHIP" prepare-rollback guard 20261001-130000-guard 1790000100 >"$T/out" 2>&1
 RC=$?
-check "$CASE: prepared; the added file stays as it is" "[ \$RC = 0 ] && grep -qx 'file=wifi-ab.sh $GW_NEW' '$R/data/u60-ship/stage/20261001-130000-guard/meta' && grep -qx \"file=u60-guard $GI_OLD\" '$R/data/u60-ship/stage/20261001-130000-guard/meta'"
+check "$CASE: prepared; the added file stays as it is" "[ \$RC = 0 ] && grep -qx 'file=u60-fallback.sh $GW_NEW' '$R/data/u60-ship/stage/20261001-130000-guard/meta' && grep -qx \"file=u60-guard $GI_OLD\" '$R/data/u60-ship/stage/20261001-130000-guard/meta'"
 stage 20261001-130000-guard
 run 20261001-130000-guard
 check "$CASE: back to the old files (init from u60-ship/prev)" '[ "$(phase)" = done ] && [ "$(md5 "$R/etc/init.d/u60-guard")" = "$GI_OLD" ] && [ "$(md5 "$GD/u60-guard.sh")" = "$GS_OLD" ]'
@@ -1209,7 +1209,7 @@ chmod 644 "$R/etc/init.d/u60-guard" "$GD/u60-guard.sh"
 upload_guard
 chmod 600 "$R/data/u60-ship/stage/$TG/u60-guard" "$R/data/u60-ship/stage/$TG/u60-guard.sh"
 stage $TG
-check "$CASE: /etc/init.d/u60-guard.test and u60-guard.sh.test are 755" '[ "$(stat -c %a "$R/etc/init.d/u60-guard.test")" = 755 ] && [ "$(stat -c %a "$GD/u60-guard.sh.test")" = 755 ] && [ "$(stat -c %a "$GD/wifi-ab.sh.test")" = 755 ]'
+check "$CASE: /etc/init.d/u60-guard.test and u60-guard.sh.test are 755" '[ "$(stat -c %a "$R/etc/init.d/u60-guard.test")" = 755 ] && [ "$(stat -c %a "$GD/u60-guard.sh.test")" = 755 ] && [ "$(stat -c %a "$GD/u60-fallback.sh.test")" = 755 ]'
 teardown
 
 setup
@@ -1217,7 +1217,7 @@ CASE="guard: record-kit with a file the kit does not install"
 guard_old
 sh "$SHIP" record-kit guard 20261001 abc1234 1 1790000000 >"$T/out" 2>&1
 RC=$?
-check "$CASE: recorded, the absent one as -" "[ \$RC = 0 ] && grep -q '{\"path\":\"$GD/wifi-ab.sh\",\"md5\":\"-\"}' '$U60S_MANIFEST'"
+check "$CASE: recorded, the absent one as -" "[ \$RC = 0 ] && grep -q '{\"path\":\"$GD/u60-fallback.sh\",\"md5\":\"-\"}' '$U60S_MANIFEST'"
 teardown
 
 # ═══ install-recover ════════════════════════════════════════════════════════

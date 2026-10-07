@@ -14,7 +14,7 @@
 #
 # ── datad trial (the part datad-trial.sh uses) ──────────────────────────────
 # Every 10 s it checks; the first failure aborts the trial:
-#   1. screen data stopped: /state's "ts" has not changed for 30 s
+#   1. screen data stopped: /v2/state's live block (observed_at) has not moved for 30 s
 #      (a failed or timed-out fetch counts as "not changed")
 #   2. test build crashed: `pidof zwrt-datad.test` is empty
 #   3. screen trouble: u60-uid logged a give-up / vendor-UI hand-over / an
@@ -24,12 +24,12 @@
 #      a. DT_NETWATCH_CMD, a command printing a counter (override);
 #      b. /tmp/netwatch.errors, zte-agent's own counter (one decimal line,
 #         only grows, back to 0 when the agent restarts);
-#      c. no usable file: our own count of /state replies that have a "ts"
+#      c. no usable file: our own count of /v2/state replies that have a live block
 #         but no "wan_status" (netwatch then sees connected=None, i.e. blind).
 #      A smaller counter means the agent restarted: new baseline, no abort.
 #      The signal in use is logged when it is first used or changes.
 # Abort: kill the test build, `/etc/init.d/zwrt-datad start`, reason into the
-# log. Production counts as back only when its /state answers with a ts. If
+# log. Production counts as back only when its /v2/state has a live block. If
 # the test build survives kill -9, production is NOT started (both would want
 # 9460): loud log line, exit non-0. An unexpected watcher exit (script error,
 # signal other than KILL) restores too (EXIT trap); launch fails and restores
@@ -56,7 +56,7 @@ RC=${DT_RC:-/etc/rc.local}
 LOG=${DT_LOG:-/data/u60-guard/datad-trial.log}
 PIDFILE=${DT_PIDFILE:-/tmp/datad-trial.pid}
 UPTIME_FILE=${DT_UPTIME:-/proc/uptime}
-STATE_URL=${DT_STATE_URL:-http://127.0.0.1:9460/state}
+STATE_URL=${DT_STATE_URL:-http://127.0.0.1:9460/v2/state}
 CURL=${DT_CURL:-/usr/bin/curl}
 PIDOF=${DT_PIDOF:-pidof}
 PS=${DT_PS:-ps w}
@@ -149,8 +149,8 @@ UID_UP=10                                 # s: uid-restart waits this long per s
 # The guard component: these files in /data/u60-guard plus GUARD_INITS in
 # /etc/init.d (below). GUARD_FILES must equal manager onboard/build-kit.sh's guard list
 # minus u60-ship.sh, datad-trial.sh, u60-recover.sh (those go up with every
-# ship / with install-recover); wifi-ab.sh is ours only (scripts/test/guard-files).
-GUARD_FILES="alert-lib.sh u60-guard.sh supervise.sh agent-auth.sh chaos.sh doctor.sh config-backup.sh power-sample.sh wan-sources.sh wifi-ab.sh u60-fallback.sh zte-agent.init zwrt-datad.init u60-guard.init"
+# ship / with install-recover).
+GUARD_FILES="alert-lib.sh u60-guard.sh supervise.sh agent-auth.sh chaos.sh doctor.sh config-backup.sh wan-sources.sh u60-fallback.sh zte-agent.init zwrt-datad.init u60-guard.init"
 # …and our four init scripts in /etc/init.d (<name> = scripts/<name>.init at
 # the same commit; the order is the upload's). Only u60-guard is restarted by
 # a guard ship: a new zte-agent / zwrt-datad / u60-uid script takes effect at
@@ -209,14 +209,25 @@ sync_hb() { step 0 $SYNC; }
 
 # ── checks ──────────────────────────────────────────────────────────────────
 
-# Fetch /state once; sets STATE (empty on failure).
+# Fetch /v2/state once; sets STATE (empty on failure).
 fetch_state() {
     STATE=$($CURL -s -m 3 --noproxy '*' "$STATE_URL" 2>/dev/null)
 }
 
-# First "ts": <digits> anywhere in the reply (not only right after "{").
+# The live block's observed_at (STATE_V2.md §4): the last round datad read
+# system info and traffic. It moves every round; a stale live block keeps it
+# still, so a datad that answers but no longer reads counts as stopped.
 state_ts() {
-    printf '%s' "$STATE" | grep -o '"ts"[[:space:]]*:[[:space:]]*[0-9][0-9]*' | head -n 1 | sed 's/.*://; s/[^0-9]//g'
+    printf '%s' "$STATE" | grep -oE '"live"[[:space:]]*:[[:space:]]*[{][^{}]*"observed_at"[[:space:]]*:[[:space:]]*[0-9]+' |
+        head -n 1 | sed 's/.*://; s/[^0-9]//g'
+}
+
+# signal_read_ok: the signal block is fresh and says wan_status (a string, or
+# null with no SIM / while dialling). A stale block keeps its old wan_status,
+# so it needs "stale": false as well.
+signal_read_ok() {
+    printf '%s' "$STATE" | grep -qE '"signal"[[:space:]]*:[[:space:]]*[{][^{}]*"stale"[[:space:]]*:[[:space:]]*false' &&
+        printf '%s' "$STATE" | grep -qE '"wan_status"[[:space:]]*:[[:space:]]*("|null)'
 }
 
 # num <string>: decimal digits only, leading zeros dropped ("08" → 8; ash
@@ -280,7 +291,7 @@ netwatch_read() {
         NW_SRC="zte-agent 计数文件 $NETWATCH_FILE"
         NW_VAL=$(num "$_n")
     else
-        NW_SRC="自己读 /state（有 ts 没有 wan_status 算一次；$NETWATCH_FILE 不存在或不是数字）"
+        NW_SRC="自己读 /v2/state（有 live 块、信号块过时或没有 wan_status 算一次；$NETWATCH_FILE 不存在或不是数字）"
         NW_VAL=$NW_OWN
     fi
 }
@@ -316,14 +327,14 @@ start_prod() {
     _try=1
     while [ $_try -le 2 ]; do
         step "$TO_INITD" "$INITD_DATAD" start >/dev/null 2>&1
-        # Back = the process exists AND /state answers with a ts, within 20 s.
+        # Back = the process exists AND /v2/state has a live block, within 20 s.
         _i=0
         while [ $_i -lt 20 ]; do
             _p=$($PIDOF "$PROD_NAME" 2>/dev/null)
             if [ -n "$_p" ]; then
                 fetch_state
                 if [ -n "$(state_ts)" ]; then
-                    log "正式版已恢复（pid $_p，/state 有 ts）"
+                    log "正式版已恢复（pid $_p，/v2/state 有 live 块）"
                     return 0
                 fi
             fi
@@ -475,7 +486,7 @@ stop_prod() {
 
 # launch_test_build [VAR=value …]: start the test build detached (no
 # supervise.sh: a crash must stay a crash) and wait ≤ 20 s until it runs and
-# /state answers with a ts. 1 = not up, why in _why.
+# /v2/state has a live block. 1 = not up, why in _why.
 launch_test_build() {
     mkdir -p "$(dirname "$TEST_LOG")" 2>/dev/null
     echo "=== $($DATE '+%Y-%m-%d %H:%M:%S') $(launch_cmd "$@")" >>"$TEST_LOG"
@@ -489,7 +500,7 @@ launch_test_build() {
         $SLEEP 1
         _i=$((_i + 1))
         [ -n "$($PIDOF "$TEST_NAME" 2>/dev/null)" ] || continue
-        _why="/state 没有 ts"
+        _why="/v2/state 没有 live 块"
         fetch_state
         [ -n "$(state_ts)" ] || continue
         log "launch：测试版已起来（pid $($PIDOF "$TEST_NAME" 2>/dev/null)，${_i}s）"
@@ -558,7 +569,7 @@ watch_datad() {
     NW_BASE=$NW_VAL
     NW_LAST_SRC=$NW_SRC
     log "netwatch 信号：$NW_SRC（基线 $NW_BASE）"
-    log "开始：$3 pid $($PIDOF "$_wname" 2>/dev/null)，窗口 ${_wwin}s，每 ${INTERVAL}s 查一次；ts=${LAST_TS:-无}"
+    log "开始：$3 pid $($PIDOF "$_wname" 2>/dev/null)，窗口 ${_wwin}s，每 ${INTERVAL}s 查一次；observed_at=${LAST_TS:-无}"
 
     while :; do
         wait_step
@@ -572,7 +583,7 @@ watch_datad() {
             LAST_TS=$TS
             LAST_CHANGE=$T
         elif [ $((T - LAST_CHANGE)) -gt "$STALE" ]; then
-            REASON="屏幕数据停了（/state 的 ts ${LAST_TS:-无} 已 $((T - LAST_CHANGE))s 没变）"
+            REASON="屏幕数据停了（/v2/state 的 live.observed_at ${LAST_TS:-无} 已 $((T - LAST_CHANGE))s 没变）"
             return 1
         fi
 
@@ -599,7 +610,7 @@ watch_datad() {
 
         # 4. netwatch
         # a string, or null (no SIM / dialling), is a reply; missing is not
-        if [ -n "$STATE" ] && [ -n "$TS" ] && ! printf '%s' "$STATE" | grep -qE '"wan_status"[[:space:]]*:[[:space:]]*("|null)'; then
+        if [ -n "$STATE" ] && [ -n "$TS" ] && ! signal_read_ok; then
             NW_OWN=$((NW_OWN + 1))
         fi
         netwatch_read
@@ -834,7 +845,7 @@ c_datad_stop() {
 }
 c_datad_start() {
     start_prod && return 0
-    REASON="正式版没起来（/state 没有 ts）"
+    REASON="正式版没起来（/v2/state 没有 live 块）"
     return 1
 }
 c_datad_launch_test() { launch_test_build; }
@@ -1922,7 +1933,7 @@ record_list() {
     echo "tuning.env $ROOT/data/tailscale/tuning.env"
     echo "tailscaled $ROOT/data/tailscale/tailscaled"
     echo "tailscaled-nofight $ROOT/data/tailscale/nofight/tailscaled"
-    for _s in zte-agent zwrt-datad u60-guard u60-uid; do echo "init.d/$_s $ROOT/etc/init.d/$_s"; done
+    for _s in zte-agent zwrt-datad u60-guard u60-uid tailscale; do echo "init.d/$_s $ROOT/etc/init.d/$_s"; done
     echo "rc.local $ROOT/etc/rc.local"
     echo "u60-recover.sh $SHIP_DIR/u60-recover.sh"
     # directories (third word "tree"): recorded by their fingerprint

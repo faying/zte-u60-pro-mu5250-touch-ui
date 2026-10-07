@@ -6,15 +6,12 @@
 /u60pro-devui.stripped
 /u60pro-devui.*
 /corner-wake
-/drm-owner
 /u60pro-devui-aarch64
 /u60pro-devui.sse
 /html-poc
 /html-poc.stripped
 /html-poc.zig
 /html-poc.zig.stripped
-/drm_test
-/fbserver
 /touchsim
 /.zig-build/
 /zig-build-obj/
@@ -36,10 +33,6 @@ screenshot.png
 /u60pro-devui.new
 /previews/
 /-S
-
-# Generated icon assets — the renderer does not draw images yet, so these are
-# unused. Author UI with CSS shapes / Unicode instead (see docs/UI-GUIDE.md).
-ui/icon/
 
 # --- Do NOT commit vendor blobs (analysis only, proprietary) ---
 # These belong to ZTE and must never enter this open-source repo.

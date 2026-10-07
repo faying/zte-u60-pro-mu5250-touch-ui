@@ -449,3 +449,12 @@ journal	journal-cell	Last changed
 journal	journal-cell	10-03 14:32 · Web
 op-notice	home	Auto revert on: reverts a mode change
 op-notice	home	Got it
+# USB attach mode (usbmode.c, 10-07)
+*	system	When a phone is plugged in
+*	system	Ask every time
+*	usb-attach	Use the plugged-in device for
+*	usb-attach	Charge + internet
+*	usb-attach	Fast charging
+*	usb-attach	Ethernet adapter
+*	usb-attach	Remember, do this every time
+*	usb-attach	OK

@@ -27,7 +27,6 @@ int esim_poll(int active);
 const char *esim_current(void);     /* 当前启用的 profile */
 const char *esim_state(void);       /* 状态行：就绪 / 切换中 · 已 N 秒 / 失败原因…（已按界面语言 TR，只显示，别拿去比） */
 int esim_ready(void);               /* 1 = esim_state() 是「就绪」：没在切换、没出错、没有待看的结果 */
-const char *esim_list_html(void);   /* 生成的 profile 列表（act:esim:N） */
 
 #define ESIM_SEL_FAIL    -1
 #define ESIM_SEL_ARMED    0         /* 第一次点：亮起，4 秒内再点才切换 */
@@ -42,8 +41,7 @@ int esim_select(int index);
 /* agent_post()/agent_request()（带登录的请求，给别的页面用）已移到 agent_client.h。 */
 #include "agent_client.h"
 
-/* Raw list access for renderers that build native widgets instead of parsing
- * esim_list_html()'s markup (the LVGL path). */
+/* The profile list, as data. */
 int esim_profile_count(void);
 
 typedef struct {
@@ -60,13 +58,8 @@ typedef struct {
 
 void esim_get_profile(int index, esim_profile_t *out);
 
-/* True while the list is display-only (a switch is running on this device or
- * another client, or the agent isn't responding) — mirrors esim_list_html()'s
- * "ro" vs clickable distinction. */
-int esim_locked(void);
-
-/* A switch started on this screen is waiting for its answer (esim_locked()
- * also covers another client's job, e.g. the agent sending notifications). */
+/* A switch started on this screen is waiting for its answer (another client's
+ * job, e.g. the agent sending notifications, does not count). */
 int esim_switching(void);
 
 /* A profile list has been read from the card at least once: an empty list

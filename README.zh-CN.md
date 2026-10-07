@@ -18,7 +18,7 @@
 |---|---|
 | [manager](https://github.com/faying/zte-u60-pro-mu5250-manager) | `zte-agent`（:9090）+ 管理网页 + 装机包 |
 | **[touch-ui](https://github.com/faying/zte-u60-pro-mu5250-touch-ui)**（本仓库） | 前面板触屏界面、屏幕守护进程、进程监督与 Wi-Fi 兜底脚本 |
-| [data-service](https://github.com/faying/zte-u60-pro-mu5250-data-service) | `zwrt-datad`：本机数据服务（`127.0.0.1:9460` 的 `/state` + SSE） |
+| [data-service](https://github.com/faying/zte-u60-pro-mu5250-data-service) | `zwrt-datad`：本机数据服务（`127.0.0.1:9460` 的 `/v2/state` + SSE `/v2/events`） |
 
 ```
 zwrt-datad :9460 ──▶ 触屏界面 ──(eSIM 页)──▶ zte-agent :9090 ──▶ lpac ──▶ eUICC 卡
@@ -33,6 +33,7 @@ zwrt-datad :9460 ──▶ 触屏界面 ──(eSIM 页)──▶ zte-agent :909
 - 蜂窝：载波、信号、网络模式、APN、SIM 与 eSIM 切换（经 zte-agent 调 lpac）。
 - 出口：出口 IP 与归属地；Tailscale。不带代理功能，要的话见 manager 仓库的 [docs/PROXY.md](https://github.com/faying/zte-u60-pro-mu5250-manager/blob/main/docs/PROXY.zh-CN.md)。
 - 系统：亮度、息屏、浅色 / 深色 / 自动，电池与负载、告警详情。
+- USB-C 口插上手机：和原厂屏幕一样问用来做什么——充电 + 上网（手机得到 USB 网卡）、18W 快速充电宝、网口配件——可以记住选择（系统 › 插入手机等设备时）。
 - 每次点击都有即时反馈；要确认的操作按两次。
 - **u60-uid**：屏幕唯一的主人。拉起或接管界面，崩了自动拉起并记告警；连续两次起不来就交还原厂界面（避免被固件升级成整机重启），长按屏幕右下角 3 秒回来。
 - `scripts/`：procd 监督（`supervise.sh` + `*.init`）、Wi-Fi 兜底看门狗兼告警短信（`u60-guard.sh`）、只读体检（`doctor.sh`）、配置备份（`config-backup.sh`）等，约定见 manager 仓库的 [docs/RELIABILITY.md](https://github.com/faying/zte-u60-pro-mu5250-manager/blob/main/docs/RELIABILITY.md)。

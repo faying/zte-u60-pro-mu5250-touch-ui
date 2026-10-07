@@ -73,10 +73,6 @@ int main(void)
     CHECK("auto bad window → 19:00-07:00 default", ui_is_dark(UI_APPEAR_AUTO, M(22, 0), -1, 5000));
     CHECK("auto bad now → light", !ui_is_dark(UI_APPEAR_AUTO, -5, F, T));
 
-    puts("legacy theme=");
-    CHECK("dark writes 0 (litehtml: 0 = dark)", ui_legacy_theme_value(1) == 0);
-    CHECK("light writes 1", ui_legacy_theme_value(0) == 1);
-
     /* operator logos, IMSI → PLMN: zwrt-datad screen.rs (tests there) */
 
     puts("exec guard");
@@ -381,6 +377,31 @@ int main(void)
             CHECK("key: released 2 s later, never polled while held → long", key_input_poll(&k, 7000) == KEY_EV_LONG);
             close(p[0]); close(p[1]);
         } else CHECK("key: pipe", 0);
+    }
+
+    /* ---- 插线时的 USB 用法 ---- */
+    {
+        ui_usb_pref_t p = UI_USB_ASK;
+        CHECK("usb pref: parse share", ui_usb_pref_parse("share\n", &p) == 0 && p == UI_USB_SHARE);
+        CHECK("usb pref: parse fast_charge", ui_usb_pref_parse("fast_charge", &p) == 0 && p == UI_USB_FAST);
+        CHECK("usb pref: bad value keeps", ui_usb_pref_parse("shares", &p) == -1 && p == UI_USB_FAST);
+        CHECK("usb pref: names round-trip", ui_usb_pref_parse(ui_usb_pref_name(UI_USB_ACCESSORY), &p) == 0 &&
+                                             p == UI_USB_ACCESSORY && !strcmp(ui_usb_pref_name(UI_USB_ASK), "ask"));
+
+        ui_usb_track_t t = { 0, 0, 0 };
+        CHECK("usb: phone already in at start is not a plug-in", ui_usb_track(&t, 1, 1, 100) == UI_USB_EV_NONE);
+        CHECK("usb: unknown changes nothing", ui_usb_track(&t, -1, 0, 200) == UI_USB_EV_NONE && !t.seen0);
+        ui_usb_track_t u = { 0, 0, 0 };
+        CHECK("usb: unplugged at start", ui_usb_track(&u, 0, 0, 100) == UI_USB_EV_NONE && u.seen0);
+        CHECK("usb: charger (sink) is not a phone", ui_usb_track(&u, 1, 0, 200) == UI_USB_EV_NONE && u.seen0);
+        CHECK("usb: phone 0 → 1 is a plug-in", ui_usb_track(&u, 1, 1, 300) == UI_USB_EV_PLUGGED);
+        CHECK("usb: still in, nothing again", ui_usb_track(&u, 1, 0, 400) == UI_USB_EV_NONE);
+        CHECK("usb: a short drop is not an unplug", ui_usb_track(&u, 0, 0, 1000) == UI_USB_EV_NONE &&
+                                                     ui_usb_track(&u, 0, 0, 2999) == UI_USB_EV_NONE);
+        CHECK("usb: back within 2 s, no second plug-in", ui_usb_track(&u, 1, 1, 3000) == UI_USB_EV_NONE);
+        ui_usb_track(&u, 0, 0, 5000);
+        CHECK("usb: 0 for 2 s is an unplug", ui_usb_track(&u, 0, 0, 7000) == UI_USB_EV_UNPLUGGED && !u.attached);
+        CHECK("usb: plug in again", ui_usb_track(&u, 1, 1, 8000) == UI_USB_EV_PLUGGED);
     }
 
     printf("passed %d, failed %d\n", pass, fail);

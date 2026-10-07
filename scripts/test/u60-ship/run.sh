@@ -97,7 +97,7 @@ EOF
 case "\$*" in *agent.test:9090*) exec $T/bin/agent-curl "\$@" ;; esac
 [ -f $T/curl-fail ] && exit 7
 if [ -f $T/frozen ]; then ts=\$(cat $T/frozen-ts); else ts=\$(cut -d. -f1 $T/uptime | tr -dc 0-9); echo \$ts >$T/frozen-ts; fi
-echo "{\"ts\":\$ts,\"net\":{\"wan_status\":\"ipv4_ipv6_connected\"}}"
+echo "{\"epoch\":\"e\",\"seq\":3,\"blocks\":{\"live\":{\"revision\":1,\"observed_at\":\$ts,\"stale\":false,\"data\":{}},\"signal\":{\"revision\":1,\"observed_at\":\$ts,\"stale\":false,\"data\":{\"wan_status\":\"ipv4_ipv6_connected\"}}}}"
 EOF
     cat >"$T/bin/logread" <<EOF
 #!/bin/sh

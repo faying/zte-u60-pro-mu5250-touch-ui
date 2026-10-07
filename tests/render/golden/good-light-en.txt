@@ -1,7 +1,7 @@
 charts-collecting.0 ceea47a3cefd08de
 charts-collecting.1 0671f889a3b26140
-charts-collecting.2 7c6a547ac3161ae7
-charts-collecting.3 ffd973d43cc0c5ae
+charts-collecting.2 9ebf48397dfa81a9
+charts-collecting.3 8bc22c605b03052d
 home.0 b77c7f2cd1f18700
 home.1 6385f507c579d18c
 cellular.0 bc3ea88d442c0a0d
@@ -13,8 +13,8 @@ wifi.2 8328d435a0a89ac4
 exit.0 3e3c7661058af3ec
 system.0 ceea47a3cefd08de
 system.1 c5a69c62c48dca6f
-system.2 7c6a547ac3161ae7
-system.3 ffd973d43cc0c5ae
+system.2 9ebf48397dfa81a9
+system.3 8bc22c605b03052d
 sms.0 be65d28e44a101dd
 sms.1 4130b2e55764720a
 sms.2 4130b2e55764720a
@@ -47,10 +47,11 @@ scene.0 64d05a66415d810d
 apn.0 eaa1e2693ff057aa
 apn.1 4814d96f262c0f1a
 power-menu.0 eab8d2b49bf9d656
+usb-attach.0 d19f03c18b788a32
 system-vendor-armed.0 ceea47a3cefd08de
 system-vendor-armed.1 c5a69c62c48dca6f
-system-vendor-armed.2 d236e98e19155e18
-system-vendor-armed.3 386225c1ca1d2a98
+system-vendor-armed.2 9ebf48397dfa81a9
+system-vendor-armed.3 a30a0246216c89f7
 lock-mode-armed.0 bc3ea88d442c0a0d
 lock-mode-armed.1 d8b40f8e8e3cbcab
 lock-mode-armed.2 f41d510328eca493
@@ -75,6 +76,6 @@ esim-armed.0 2c77d5e8fc2ba1ed
 esim-armed.1 f147094b2848fe96
 system-lang-failed.0 9132373ad5e3a63a
 system-lang-failed.1 c5a69c62c48dca6f
-system-lang-failed.2 7c6a547ac3161ae7
-system-lang-failed.3 ffd973d43cc0c5ae
+system-lang-failed.2 9ebf48397dfa81a9
+system-lang-failed.3 8bc22c605b03052d
 lang-switching.0 35db060aa8377bc0

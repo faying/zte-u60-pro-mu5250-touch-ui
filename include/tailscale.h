@@ -17,11 +17,7 @@
  */
 int tailscale_poll(int active);
 
-/* 整张卡片的 HTML；没装 tailscaled 时返回 ""。locked = 锁屏预览，只露状态和在线数。 */
-const char *tailscale_card_html(int locked);
-
-/* Raw fields behind the HTML card, for renderers that bind widgets directly
- * instead of parsing markup (the LVGL path). Mirrors tailscale_poll()'s
+/* The fields behind the Tailscale card and page. Mirrors tailscale_poll()'s
  * internal state 1:1 — call after tailscale_poll() to read the latest data. */
 typedef struct {
     int  available;      /* tailscaled socket found on this device */

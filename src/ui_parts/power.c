@@ -17,7 +17,7 @@ static void power_menu_set(int v)
 static int power_menu_visible(void) { return uk_sheet_visible(&s_pw_sheet); }
 static int any_sheet_open(void)
 {
-    return power_menu_visible();
+    return power_menu_visible() || usbmode_visible();
 }
 
 /* 关机/重启: first tap arms the row (5 s), second tap runs it. Then a full
@@ -149,10 +149,11 @@ static void key_poll_cb(lv_timer_t *t)
     /* Auto screen-off after inactivity. Waking is the key, or a double tap
      * (ui_touch_filter); touches on a dark screen never reach the UI, so they
      * do not count as activity here either. Not while the power menu is up:
-     * a menu that went dark under the finger read as a dead menu. */
+     * a menu that went dark under the finger read as a dead menu. Nor while
+     * the 插线用法 sheet waits for an answer. */
     /* 摆放模式 is watched while the device is moved: no auto screen-off while it
      * is up (idle time keeps counting, so leaving it lets the timer act again) */
-    if (s_autooff_ms && !power_menu_visible() && s_sub_cur != SUB_PLACE) {
+    if (s_autooff_ms && !power_menu_visible() && !usbmode_visible() && s_sub_cur != SUB_PLACE) {
         uint32_t idle = lv_display_get_inactive_time(NULL);
         /* Exec'd with the screen off (theme switch): inactivity restarted at
          * zero with the new process, which would read as "just touched" and

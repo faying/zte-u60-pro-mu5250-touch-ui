@@ -72,6 +72,9 @@ extern ui_launch_t rt_exec_last;      /* what the last one asked for            
 extern int  rt_apn_calls;             /* netinfo_apn_use() calls                         */
 extern char rt_apn_last[24];
 extern int  rt_system_calls;
+/* the USB-C port (插线时的 USB 用法): 0 nothing, 1 a phone powered by the
+ * U60 (source + host), 2 the same switched to charge + internet (device) */
+extern int  rt_usb_phone;
 /* data_control() calls (E4): how many, and the last action and params */
 extern int  rt_control_calls;
 extern char rt_control_last[48], rt_control_params[160];

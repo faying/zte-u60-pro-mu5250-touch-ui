@@ -28,20 +28,23 @@
 #define DEVUI_BACKEND_PORT 9460
 #endif
 
+/* datad's /v2 (data-service docs/STATE_V2.md): GET /v2/state is one snapshot,
+ * /v2/events a snapshot then per-block events. The blocks are put back into
+ * the old /state shape (v2_rebuild) so parse_snapshot() stays the one parser. */
 #ifndef DEVUI_BACKEND_STATE_PATH
-#define DEVUI_BACKEND_STATE_PATH "/state"
+#define DEVUI_BACKEND_STATE_PATH "/v2/state"
 #endif
 
 #ifndef DEVUI_BACKEND_EVENTS_PATH
-#define DEVUI_BACKEND_EVENTS_PATH "/events"
+#define DEVUI_BACKEND_EVENTS_PATH "/v2/events"
 #endif
 
 #ifndef DEVUI_BACKEND_RETRY_MS
 #define DEVUI_BACKEND_RETRY_MS 1000
 #endif
 
-/* datad's SSE sends a keep-alive comment every 15 s (axum default), so 45 s
- * with no byte at all — no snapshot, no keep-alive, no HTTP reply — means it
+/* datad's /v2 stream sends a heartbeat at least every 5 s (STATE_V2.md §7), so
+ * 45 s with no byte at all — no event, no heartbeat, no HTTP reply — means it
  * is gone even if a half-dead TCP stream still looks open. */
 #ifndef DEVUI_BACKEND_SILENT_MS
 #define DEVUI_BACKEND_SILENT_MS 45000
@@ -101,6 +104,11 @@ struct backend_state {
     uint32_t alive_ms;
     long alive_wall;
     int silent;
+    /* /v2 stream position (V2-1..3): another epoch or a seq gap = reconnect */
+    char epoch[40];
+    unsigned long long seq;
+    int have_seq;
+    int resync;
 };
 
 static struct backend_state g_backend;
@@ -220,6 +228,7 @@ static int parse_snapshot(devui_data_t *d, const char *buf)
     memset(d, 0, sizeof *d);
     d->cpu_usage = -1;
     d->dps_mode = d->cell_data = d->cell_roam = -1;
+    d->usb_cc = d->powerbank = -1;
     d->valid = 0;
     if (!buf || !buf[0]) return 0;
 
@@ -365,6 +374,14 @@ static int parse_snapshot(devui_data_t *d, const char *buf)
 
     if (json_get(buf, "nfc", sec, sizeof sec))
         d->nfc_switch = (int)json_get_int(sec, "switch", 0);
+
+    if (json_get(buf, "typec", sec, sizeof sec)) {
+        d->usb_cc = (int)json_get_int(sec, "cc_attch_state", -1);
+        getstr(sec, "power_role", d->usb_power_role, sizeof d->usb_power_role);
+        getstr(sec, "data_role",  d->usb_data_role,  sizeof d->usb_data_role);
+    }
+    if (json_get(buf, "powerbank", sec, sizeof sec))
+        d->powerbank = (int)json_get_int(sec, "state", -1);
 
     if (json_get(buf, "dhcp", sec, sizeof sec)) {
         getstr(sec, "ip",        d->dhcp_ip,        sizeof d->dhcp_ip);
@@ -541,6 +558,8 @@ static void close_sse_stream(void)
     g_backend.sse_fd = -1;
     g_backend.sse_len = 0;
     g_backend.sse_parse_fail_streak = 0;
+    g_backend.have_seq = 0;
+    g_backend.resync = 0;
     g_backend.next_retry_ms = mono_ms() + DEVUI_BACKEND_RETRY_MS;
 }
 
@@ -558,6 +577,153 @@ static int trim_json_copy(const char *src, size_t len, char *dst, size_t cap, si
     dst[len] = 0;
     if (outlen) *outlen = len;
     return 1;
+}
+
+/* ---- /v2 blocks ----
+ * The blocks the screen reads and where they go in the old /state shape.
+ * A stale block is left out, the way the old /state renders a failed read
+ * (V2-29): /v2 keeps the last value, the screen must not show it as live. */
+enum { B_SIGNAL, B_BATTERY, B_CHARGER, B_LIVE, B_SMS, B_SMS_LIST, B_SIM, B_QOS,
+       B_CLIENTS, B_WLAN, B_NFC, B_DHCP, B_INTERFACES, B_TYPEC, B_POWERBANK, B_COUNT };
+static const char *const v2_names[B_COUNT] = {
+    "signal", "battery", "charger", "live", "sms", "sms_list", "sim", "qos",
+    "clients", "wlan", "nfc", "dhcp", "interfaces", "typec", "powerbank",
+};
+static struct { char *data; size_t cap; int fresh; } v2_blk[B_COUNT];
+
+/* blk = {"stale":..,"data":..} (a snapshot entry or a block event). 0 = malformed. */
+static int v2_set_block(int i, const char *blk)
+{
+    static char data[DEVUI_STATE_BUF_MAX];
+    char stale[8];
+    size_t n;
+
+    if (!json_get(blk, "stale", stale, sizeof stale) ||
+        !json_get(blk, "data", data, sizeof data)) return 0;
+    v2_blk[i].fresh = !strcmp(stale, "false") && data[0] == '{';
+    if (!v2_blk[i].fresh) return 1;
+    n = strlen(data) + 1;
+    if (n > v2_blk[i].cap) {
+        char *p = realloc(v2_blk[i].data, n);
+        if (!p) { v2_blk[i].fresh = 0; return 0; }
+        v2_blk[i].data = p;
+        v2_blk[i].cap = n;
+    }
+    memcpy(v2_blk[i].data, data, n);
+    return 1;
+}
+
+static int cat(char *dst, size_t cap, size_t *len, const char *a, const char *b, const char *c)
+{
+    const char *part[3] = { a, b, c };
+    for (int k = 0; k < 3; k++) {
+        if (!part[k]) continue;
+        size_t n = strlen(part[k]);
+        if (*len + n >= cap) return 0;
+        memcpy(dst + *len, part[k], n);
+        *len += n;
+    }
+    dst[*len] = 0;
+    return 1;
+}
+
+/* The fresh blocks as one old-/state object: signal → net, charger → power,
+ * live → system + traffic, sms + sms_list → sms {unread, list}. */
+static int v2_rebuild(char *out, size_t cap, size_t *len)
+{
+    static const struct { int b; const char *key; } same[] = {
+        { B_SIGNAL, "net" }, { B_BATTERY, "battery" }, { B_CHARGER, "power" },
+        { B_SIM, "sim" }, { B_QOS, "qos" }, { B_CLIENTS, "clients" }, { B_WLAN, "wlan" },
+        { B_NFC, "nfc" }, { B_DHCP, "dhcp" }, { B_INTERFACES, "interfaces" },
+        { B_TYPEC, "typec" }, { B_POWERBANK, "powerbank" },   /* /v2 only (V2-48), same names */
+    };
+    static char sub[DEVUI_STATE_BUF_MAX];
+    int ok = 1;
+
+    *len = 0;
+    ok &= cat(out, cap, len, "{\"v2\":1", NULL, NULL);
+    for (size_t k = 0; k < sizeof same / sizeof same[0]; k++)
+        if (v2_blk[same[k].b].fresh)
+            ok &= cat(out, cap, len, ",\"", same[k].key, "\":") &&
+                  cat(out, cap, len, v2_blk[same[k].b].data, NULL, NULL);
+    if (v2_blk[B_LIVE].fresh) {
+        if (json_get(v2_blk[B_LIVE].data, "system", sub, sizeof sub))
+            ok &= cat(out, cap, len, ",\"system\":", sub, NULL);
+        if (json_get(v2_blk[B_LIVE].data, "traffic", sub, sizeof sub))
+            ok &= cat(out, cap, len, ",\"traffic\":", sub, NULL);
+    }
+    if (v2_blk[B_SMS].fresh || v2_blk[B_SMS_LIST].fresh) {
+        char num[24];
+        snprintf(num, sizeof num, "%ld",
+                 v2_blk[B_SMS].fresh ? json_get_int(v2_blk[B_SMS].data, "unread", 0) : 0L);
+        ok &= cat(out, cap, len, ",\"sms\":{\"unread\":", num, NULL);
+        if (v2_blk[B_SMS_LIST].fresh && json_get(v2_blk[B_SMS_LIST].data, "list", sub, sizeof sub))
+            ok &= cat(out, cap, len, ",\"list\":", sub, NULL);
+        ok &= cat(out, cap, len, "}", NULL, NULL);
+    }
+    ok &= cat(out, cap, len, "}", NULL, NULL);
+    return ok;
+}
+
+static int apply_snapshot_json(const char *json, size_t len);
+
+static int v2_apply_blocks(void)
+{
+    static char composite[DEVUI_STATE_BUF_MAX];
+    size_t n;
+    if (!v2_rebuild(composite, sizeof composite, &n)) return -1;
+    return apply_snapshot_json(composite, n);
+}
+
+/* A snapshot (an SSE "snapshot" event or the GET /v2/state body): every block
+ * afresh. stream=1 also takes its epoch and cut seq (V2-4). */
+static int v2_apply_snapshot(const char *json, int stream)
+{
+    static char blocks[DEVUI_STATE_BUF_MAX], blk[DEVUI_STATE_BUF_MAX];
+    char epoch[sizeof g_backend.epoch];
+
+    if (!json_get(json, "blocks", blocks, sizeof blocks) || blocks[0] != '{') return -1;
+    for (int i = 0; i < B_COUNT; i++) {
+        v2_blk[i].fresh = 0;
+        if (json_get(blocks, v2_names[i], blk, sizeof blk) && !v2_set_block(i, blk)) return -1;
+    }
+    if (stream) {
+        if (!json_get(json, "epoch", epoch, sizeof epoch)) return -1;
+        memcpy(g_backend.epoch, epoch, sizeof epoch);
+        g_backend.seq = (unsigned long long)json_get_int(json, "seq", 0);
+        g_backend.have_seq = 1;
+    }
+    return v2_apply_blocks();
+}
+
+/* A "block" or "heartbeat" event: the next seq of the same epoch, or resync
+ * (V2-3: the only way back in step is a new connection's snapshot). */
+static int v2_in_step(const char *json)
+{
+    char epoch[sizeof g_backend.epoch];
+    long seq = json_get_int(json, "seq", -1);
+    if (!g_backend.have_seq || seq < 0 ||
+        !json_get(json, "epoch", epoch, sizeof epoch) || strcmp(epoch, g_backend.epoch) ||
+        (unsigned long long)seq != g_backend.seq + 1) {
+        g_backend.resync = 1;
+        return 0;
+    }
+    g_backend.seq = (unsigned long long)seq;
+    return 1;
+}
+
+static int v2_apply_event(const char *name, const char *json)
+{
+    char block[24];
+    if (!strcmp(name, "snapshot")) return v2_apply_snapshot(json, 1);
+    if (strcmp(name, "block") && strcmp(name, "heartbeat")) return 0;
+    if (!v2_in_step(json)) return 0;
+    if (!strcmp(name, "heartbeat")) return 0;
+    if (!json_get(json, "name", block, sizeof block)) return -1;
+    for (int i = 0; i < B_COUNT; i++)
+        if (!strcmp(block, v2_names[i]))
+            return v2_set_block(i, json) ? v2_apply_blocks() : -1;
+    return 0;                                   /* a block the screen does not read */
 }
 
 static int apply_snapshot_json(const char *json, size_t len)
@@ -630,7 +796,7 @@ static int fetch_state_http(void)
     }
     if (!body) return -1;
     mark_alive();
-    return apply_snapshot_json(body, n - (size_t)(body - resp));
+    return v2_apply_snapshot(body, 0);
 }
 
 static size_t next_sse_event_bytes(const char *buf, size_t len)
@@ -685,11 +851,10 @@ static int process_sse_event(const char *buf, size_t len)
         }
         line_start = i + 1;
     }
-    if (!payload_len) return 0;
-    if (event_name[0] && strcmp(event_name, "state") != 0) return 0;
+    if (!payload_len || !event_name[0]) return 0;
     payload[payload_len] = 0;
 
-    int rc = apply_snapshot_json(payload, payload_len);
+    int rc = v2_apply_event(event_name, payload);
     if (rc < 0) {
         g_backend.sse_parse_fail_streak++;
         fprintf(stderr, "devui: SSE snapshot parse failed (%u/%d)\n",
@@ -710,6 +875,7 @@ static int process_sse_buffer(void)
         if (!ev_len) break;
         changed |= process_sse_event(g_backend.sse_buf + consumed, ev_len);
         consumed += ev_len;
+        if (g_backend.resync) break;            /* the rest is out of step too */
     }
     if (consumed) {
         memmove(g_backend.sse_buf, g_backend.sse_buf + consumed, g_backend.sse_len - consumed);
@@ -806,10 +972,21 @@ static int sse_drop_if_unparseable(void)
     return 1;
 }
 
+/* Out of step with the stream (V2-3): reconnect now; the new connection
+ * starts with a snapshot. Returns 1 when the stream was closed. */
+static int sse_drop_if_out_of_step(void)
+{
+    if (g_backend.sse_fd < 0 || !g_backend.resync) return 0;
+    fprintf(stderr, "devui: /v2 stream out of step (epoch or seq), reconnecting\n");
+    close_sse_stream();
+    g_backend.next_retry_ms = 0;
+    return 1;
+}
+
 static int drain_sse_stream(void)
 {
     int changed = process_sse_buffer();
-    if (sse_drop_if_unparseable()) return changed;
+    if (sse_drop_if_unparseable() || sse_drop_if_out_of_step()) return changed;
 
     while (g_backend.sse_fd >= 0) {
         ssize_t rd;
@@ -824,7 +1001,7 @@ static int drain_sse_stream(void)
             g_backend.sse_len += (size_t)rd;
             g_backend.sse_buf[g_backend.sse_len] = 0;
             changed |= process_sse_buffer();
-            if (sse_drop_if_unparseable()) break;
+            if (sse_drop_if_unparseable() || sse_drop_if_out_of_step()) break;
             continue;
         }
         if (rd == 0) {

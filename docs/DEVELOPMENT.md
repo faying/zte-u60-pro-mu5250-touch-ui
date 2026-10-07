@@ -3,7 +3,7 @@
 **English** · [中文](DEVELOPMENT.zh-CN.md)
 
 The current touch UI is the **LVGL version** (the one `make` builds). The old litehtml version (`src/htmlmain.c`, `scripts/build.sh`) has been deleted
-and is kept at git tag `legacy-litehtml`; `ui/*.html` are its leftover templates, which the LVGL version does not read.
+and is kept at git tag `legacy-litehtml`, together with its `ui/*.html` templates and docs.
 
 ## Code layout
 
@@ -12,10 +12,10 @@ and is kept at git tag `legacy-litehtml`; `ui/*.html` are its leftover templates
 | `src/main.c` | Entry point: initializes DRM, touch, keys and backlight; main loop |
 | `src/ui.c` + `src/ui_parts/*.c`, `src/ui_kit.c`, `src/ui_theme.c` | Layout of the 5 tabs and their subpages, shared widgets, light/dark themes and font loading. `ui.c` holds the shared parts (navigation, shared widgets, theme, subpage layer, status bar); each page is one file in `src/ui_parts/`, `#include`d by `ui.c` and compiled as a single unit (they share its static state and are not compiled separately) |
 | `src/ui_logic.c`, `src/ui_exec.c` | Decision logic and "what happens after a tap", with no LVGL dependency; testable on their own |
-| `src/data.c`, `src/json.c` | Read data from `zwrt-datad` (`/state` + `/events` on `127.0.0.1:9460`) |
-| `src/screen_feed.c`, `src/net_view.c` | The conclusions on the home signal card and status bar (smooth / slow: weak signal …, 5G-A / 4G+, carriers, roaming, logo) are computed by `zwrt-datad`'s `GET /v2/screen`; this code reads and parses it once per new snapshot. The rules themselves live in data-service `rust/src/screen.rs`; the C code no longer makes these decisions |
+| `src/data.c`, `src/json.c` | Read data from `zwrt-datad` (`/v2/state` + `/v2/events` on `127.0.0.1:9460`; the blocks are put back into the old `/state` shape for one parser) |
+| `src/screen_feed.c`, `src/net_view.c` | The conclusions on the home signal card and status bar (smooth / slow: weak signal …, 5G-A / 4G+, carriers, roaming, logo) are computed by `zwrt-datad`'s `GET /v2/screen`; this code reads and parses it once per new snapshot. The rules themselves live in data-service `rust/src/project/screen.rs`; the C code no longer makes these decisions |
 | `src/op_view.c`, `src/ui_parts/op.c` | Device writes in progress and their results (E4 write transactions): `zwrt-datad` sends them in `/v2/screen`'s `op` with every sentence in both languages; `op_view.c` parses it, `op.c` draws the transaction row under the title bar, the transaction page (revert / keep, got it, retry, restart) and hands the network-mode line datad's verdict. Writes themselves go through `data_control()` in `src/data.c`; the emergency script `scripts/u60-fallback.sh` runs only when datad cannot be reached |
-| `src/http.c`, `src/agent_client.c` | Shared HTTP client (timeouts, chunked decoding, no SIGPIPE) and authenticated zte-agent requests (password, token, one re-login on 401); every feature module goes through it, except `data.c`, which has its own because of the frozen semantics of `/events` and `/control` |
+| `src/http.c`, `src/agent_client.c` | Shared HTTP client (timeouts, chunked decoding, no SIGPIPE) and authenticated zte-agent requests (password, token, one re-login on 401); every feature module goes through it, except `data.c`, which has its own because of the stream semantics of `/v2/events` and `/control` |
 | `src/esim.c`, `src/tailscale.c`, `src/speedtest.c`, `src/netinfo.c`, `src/scenario.c`, `src/alerts.c` | Feature backends: eSIM / APN and other write operations go through zte-agent (`127.0.0.1:9090`) |
 | `src/drm_disp.c`, `src/touch_input.c`, `src/key_input.c`, `src/backlight.c` | Hardware interfaces, see [HARDWARE.md](HARDWARE.md) |
 | `src/uid.c`, `src/uid_core.c` | Screen daemon `u60-uid` (decision logic in `uid_core.c`, testable on its own) |

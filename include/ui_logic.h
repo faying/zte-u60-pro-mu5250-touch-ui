@@ -4,8 +4,8 @@
  *   make ui-logic-test  → tests/ui_logic_test (static, runs in an arm64 container)
  *
  * Covers: appearance (light/dark/auto with a window that may cross midnight),
- * the legacy theme= value the litehtml UI reads, the exec-restart guard used
- * when switching themes (and the argv it hands the next process), the status-bar rate fallback, battery rendering state
+ * the exec-restart guard used when switching themes (and the argv it hands the
+ * next process), the status-bar rate fallback, battery rendering state
  * and the home signal-card state.
  *
  * SPDX-License-Identifier: MIT
@@ -32,9 +32,6 @@ int ui_hhmm_parse(const char *s);
  * dark window [from, to) may wrap past midnight (19:00–07:00). from == to
  * means "never dark" for auto. Invalid minutes fall back to 19:00–07:00. */
 int ui_is_dark(ui_appear_t a, int now_min, int from_min, int to_min);
-
-/* Value written back to the legacy theme= key (litehtml: 0 = dark, 1 = light). */
-int ui_legacy_theme_value(int dark);
 
 /* DHCP pool text for the Wi-Fi page from datad's /state dhcp block:
  * ip "192.168.0.1", start "100" (host number; a full address also works),
@@ -258,5 +255,28 @@ int  ui_arm_live(const ui_arm_t *a, int id, unsigned now, unsigned ms);
 /* Drop an arm past `ms`; 1 = it just lapsed (redraw the plain state). */
 int  ui_arm_expire(ui_arm_t *a, unsigned now, unsigned ms);
 void ui_arm_clear(ui_arm_t *a);
+
+/* ---- 插线时的 USB 用法 (manager docs/designs/usb-attach-mode.md) ----
+ * What to do when a phone is plugged in and the U60 powers it (source +
+ * host, so the phone gets no network). devui.conf usb_attach=: ask (the
+ * sheet), share (charge + internet), fast_charge (18 W power bank),
+ * accessory (an Ethernet adapter: stay host, write nothing). */
+typedef enum { UI_USB_ASK = 0, UI_USB_SHARE, UI_USB_FAST, UI_USB_ACCESSORY } ui_usb_pref_t;
+/* datad's usb.attach_mode mode for SHARE/FAST/ACCESSORY; "ask" for ASK. */
+const char *ui_usb_pref_name(ui_usb_pref_t p);
+/* 0 = understood (*out set), -1 = not (*out unchanged). */
+int ui_usb_pref_parse(const char *s, ui_usb_pref_t *out);
+
+/* Plug-in edge from the typec block. Only a 0 → 1 seen by this process
+ * counts: the first snapshot after start (a theme switch execs a fresh
+ * copy), or after an SSE reconnect, finding a phone already there is not a
+ * plug-in, so nothing is asked or done twice. An unplug counts after cc has
+ * read 0 for UI_USB_UNPLUG_MS (the role swap may drop cc for a moment). */
+#define UI_USB_UNPLUG_MS 2000u
+typedef struct { int seen0, attached; unsigned off_since; } ui_usb_track_t;
+typedef enum { UI_USB_EV_NONE = 0, UI_USB_EV_PLUGGED, UI_USB_EV_UNPLUGGED } ui_usb_ev_t;
+/* cc: typec.cc_attch_state, -1 = unknown (block stale or missing: no
+ * change). phone: power_role source and data_role host. */
+ui_usb_ev_t ui_usb_track(ui_usb_track_t *t, int cc, int phone, unsigned now_ms);
 
 #endif /* U60PRO_UI_LOGIC_H */
